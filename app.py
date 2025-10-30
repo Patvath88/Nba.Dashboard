@@ -4,12 +4,16 @@ from nba_api.stats.endpoints import playercareerstats, playergamelogs, teamgamel
 import pandas as pd
 import re # Import regex for parsing matchup string
 import numpy as np # Import numpy for handling NaN values and calculations
+import time # Import time to add delays for API calls
+
 
 # Define core stats columns globally so they are accessible by all functions and the main app
 stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
 
 
 # Define the get_player_stats function (reusing the refined version)
+# This function is now primarily used for fetching career summary data for season list
+# and potentially latest season game logs for detailed view/prediction.
 def get_player_stats(player_id, season='2023-24'):
     """
     Fetches player stats and calculates various averages using player ID.
@@ -78,53 +82,37 @@ def get_player_stats(player_id, season='2023-24'):
 
 
         # Fetch game logs for the specified season and the previous season
-        game_logs_df = None
+        # This is now handled by get_player_career_game_logs and filtered if needed
+        game_logs_df = None # This will be fetched by get_player_career_game_logs now
+
+        # Calculate recent game averages from the most recent games (across career)
         last_5_games_avg = None
         last_10_games_avg = None
         last_20_games_avg = None
         last_5_games_individual = None
 
-        all_game_logs_list = []
+        # Fetch career game logs to calculate recent averages
+        career_game_logs_for_recent = get_player_career_game_logs(player_id)
 
-        try:
-            # Fetch game logs for the current season
-            current_season_game_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season).get_data_frames()[0]
-            all_game_logs_list.append(current_season_game_logs)
+        if career_game_logs_for_recent is not None and not career_game_logs_for_recent.empty:
+             # Ensure game logs are sorted by date in descending order (most recent first)
+             career_game_logs_for_recent['GAME_DATE'] = pd.to_datetime(career_game_logs_for_recent['GAME_DATE'])
+             career_game_logs_for_recent = career_game_logs_for_recent.sort_values(by='GAME_DATE', ascending=False)
 
-            # Fetch game logs for the last season if available
-            if last_season_id:
-                 last_season_game_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=last_season_id).get_data_frames()[0]
-                 all_game_logs_list.append(last_season_game_logs)
+             # Calculate recent game averages from the most recent games
+             valid_game_stats_columns = [col for col in stats_columns if col in career_game_logs_for_recent.columns]
 
-
-            # Combine game logs from all fetched seasons
-            if all_game_logs_list:
-                 game_logs_df = pd.concat(all_game_logs_list, ignore_index=True)
-
-
-            if game_logs_df is not None and not game_logs_df.empty:
-                # Ensure game logs are sorted by date in descending order (most recent first)
-                game_logs_df['GAME_DATE'] = pd.to_datetime(game_logs_df['GAME_DATE'])
-                game_logs_df = game_logs_df.sort_values(by='GAME_DATE', ascending=False)
-
-                # Calculate recent game averages from the most recent games
-                # Ensure stats_columns only contains columns present in game_logs_df
-                valid_game_stats_columns = [col for col in stats_columns if col in game_logs_df.columns]
-
-                if len(game_logs_df) >= 5:
-                    last_5_games_avg = game_logs_df.head(5)[valid_game_stats_columns].mean()
-                    last_5_games_avg = last_5_games_avg.to_frame(name='Last 5 Games Avg').T # Convert to DataFrame
-                    last_5_games_individual = game_logs_df.head(5)[['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + valid_game_stats_columns] # Get individual game stats, include season year
-                if len(game_logs_df) >= 10:
-                    last_10_games_avg = game_logs_df.head(10)[valid_game_stats_columns].mean()
-                    last_10_games_avg = last_10_games_avg.to_frame(name='Last 10 Games Avg').T # Convert to DataFrame
-                if len(game_logs_df) >= 20:
-                    last_20_games_avg = game_logs_df.head(20)[valid_game_stats_columns].mean()
-                    last_20_games_avg = last_20_games_avg.to_frame(name='Last 20 Games Avg').T # Convert to DataFrame
-
-
-        except Exception as e:
-            st.warning(f"Could not fetch game logs for recent game calculations across seasons. Error: {e}")
+             if len(career_game_logs_for_recent) >= 5:
+                 last_5_games_avg = career_game_logs_for_recent.head(5)[valid_game_stats_columns].mean()
+                 last_5_games_avg = last_5_games_avg.to_frame(name='Last 5 Games Avg').T # Convert to DataFrame
+                 last_5_games_individual = career_game_logs_for_recent.head(5)[['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + valid_game_stats_columns] # Get individual game stats, include season year
+             if len(career_game_logs_for_recent) >= 10:
+                 last_10_games_avg = career_game_logs_for_recent.head(10)[valid_game_stats_columns].mean()
+                 last_10_games_avg = last_10_games_avg.to_frame(name='Last 10 Games Avg').T # Convert to DataFrame
+             if len(career_game_logs_for_recent) >= 20:
+                 last_20_games_avg = career_game_logs_for_recent.head(20)[valid_game_stats_columns].mean()
+                 last_20_games_avg = last_20_games_avg.to_frame(name='Last 20 Games Avg').T # Convert to DataFrame
+             game_logs_df = career_game_logs_for_recent # Assign career game logs for potential prediction use
 
 
         return {
@@ -135,7 +123,7 @@ def get_player_stats(player_id, season='2023-24'):
             'last_5_games_avg': last_5_games_avg,
             'last_10_games_avg': last_10_games_avg,
             'last_20_games_avg': last_20_games_avg,
-            'game_logs_df': game_logs_df, # Return game logs for prediction feature engineering
+            'game_logs_df': game_logs_df, # Return game logs for prediction feature engineering (using career logs now)
             'last_5_games_individual': last_5_games_individual # Return individual last 5 games
         }
 
@@ -143,11 +131,11 @@ def get_player_stats(player_id, season='2023-24'):
         st.error(f"An error occurred while fetching career stats: {e}")
         return None
 
-# Define a function to get a player's career game logs
+# Define a function to get a player's career game logs by season
 @st.cache_data # Cache this data
 def get_player_career_game_logs(player_id):
     """
-    Fetches a player's career game logs across all available seasons.
+    Fetches a player's career game logs across all available seasons by iterating through seasons.
 
     Args:
         player_id (int): The ID of the NBA player.
@@ -156,11 +144,40 @@ def get_player_career_game_logs(player_id):
         DataFrame: A DataFrame containing the player's career game logs,
                    or None if data fetching fails.
     """
+    all_game_logs_list = []
     try:
-        career_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable='ALL').get_data_frames()[0]
+        # First, get the player's career summary to find all seasons played
+        career_stats = playercareerstats.PlayerCareerStats(player_id=player_id)
+        career_df = career_stats.get_data_frames()[0]
+
+        if career_df.empty:
+            st.info("No career data found for this player.")
+            return None
+
+        seasons_played = career_df['SEASON_ID'].tolist()
+
+        # Fetch game logs for each season
+        for season in seasons_played:
+            try:
+                st.write(f"Fetching game logs for {season}...") # Add a message to show progress
+                season_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season).get_data_frames()[0]
+                all_game_logs_list.append(season_logs)
+                time.sleep(0.5) # Add a small delay between API calls
+            except Exception as e:
+                st.warning(f"Could not fetch game logs for season {season}. Error: {e}")
+                # Continue to the next season if one season fails
+
+        if not all_game_logs_list:
+            st.info("No game logs found for this player's career.")
+            return None
+
+        # Combine game logs from all fetched seasons
+        career_logs = pd.concat(all_game_logs_list, ignore_index=True)
         career_logs['GAME_DATE'] = pd.to_datetime(career_logs['GAME_DATE'])
         career_logs = career_logs.sort_values(by='GAME_DATE').reset_index(drop=True)
+
         return career_logs
+
     except Exception as e:
         st.error(f"An error occurred while fetching career game logs: {e}")
         return None
@@ -180,7 +197,7 @@ def get_player_vs_team_career_stats(player_id, team_id):
                    the specified team, or None if data fetching fails or they
                    didn't play against that team in their career.
     """
-    stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
 
     try:
         # Fetch player's career game logs
@@ -203,13 +220,21 @@ def get_player_vs_team_career_stats(player_id, team_id):
              return None
 
         # Filter player logs for games against the specific opponent team across career
-        def played_against_team(matchup, opponent_abbr_to_find):
+        def played_against_team(matchup, opponent_abbr_to_find): # Renamed parameter to avoid conflict
             # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
-            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE)
-            return bool(match)
+            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE) # Use the parameter
+            # Refined check: also ensure the found abbreviation is not the player's team abbreviation in this game
+            if match:
+                 found_abbr = match.group(1) or match.group(2) or match.group(3)
+                 # Need player's team abbreviation for the current game to avoid self-matches
+                 # This is complex to get accurately within this function without game logs.
+                 # For simplicity, we'll rely on the strict matching for now.
+                 return bool(found_abbr) # Return True if a match is found
+
+            return False # Return False if no match
 
         player_logs_vs_team_career = career_game_logs[
-            career_game_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr))
+            career_game_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr)) # Pass the found opponent_team_abbr
         ].copy() # Use .copy() to avoid SettingWithCopyWarning
 
 
@@ -528,8 +553,8 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
 
         # Calculate season average for the player from the game logs (using the primary selected season)
         # Filter game logs for the primary selected season
-        current_season_data = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR_player'] == season]
-        player_season_avg_pred = current_season_data[valid_stats_columns_pred].mean() if not current_season_data.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
+        current_season_game_logs_for_avg = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR_player'] == season]
+        player_season_avg_pred = current_season_game_logs_for_avg[valid_stats_columns_pred].mean() if not current_season_game_logs_for_avg.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
 
 
         # Generate prediction using the simplified approach with calculated features
@@ -549,10 +574,10 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                stat_col_rolling_20 in player_features_for_pred:
 
 
-                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                season_avg_val = player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0 # Handle potential NaN season avg if no games played
+                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
 
 
                 predicted_value = (0.4 * recent_5_val +

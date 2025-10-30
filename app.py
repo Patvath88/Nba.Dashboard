@@ -1,5 +1,3 @@
-i# This code can be saved as a Python file (e.g., nba_dashboard.py) and run with streamlit run nba_dashboard.py
-
 import streamlit as st
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playercareerstats, playergamelogs

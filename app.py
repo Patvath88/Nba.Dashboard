@@ -5,11 +5,11 @@ import pandas as pd
 import re
 import numpy as np
 import time # Import time for delays
-import plotly.graph_objects as go # Import Plotly for visualizations
-import requests # Import requests for fetching player images
-from PIL import Image # Import Pillow for image handling
-from io import BytesIO # Import BytesIO for handling image bytes
-import altair as alt # Import Altair for declarative visualizations
+# import plotly.graph_objects as go # Removed Plotly
+# import requests # Removed requests for fetching player images
+# from PIL import Image # Removed Pillow for image handling
+# from io import BytesIO # Removed BytesIO for handling image bytes
+# import altair as alt # Removed Altair
 
 
 # Define core stats columns globally
@@ -18,18 +18,13 @@ stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DRE
 # Define prediction targets globally
 prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
 
-# Function to get player image (attempting to fetch from a common source)
-@st.cache_data # Cache this data
-def get_player_image_url(player_id):
-    """
-    Attempts to get a player's image URL from a common source.
-    Note: This is not an official NBA API endpoint and may not work for all players or be stable.
-    A more robust solution might involve a dedicated image hosting service or a more reliable API.
-    """
-    # Example URL pattern (this might need adjustment based on actual sources)
-    # Common sources: stats.nba.com, basketball-reference.com, etc.
-    # Let's try a common pattern for stats.nba.com
-    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{player_id}.png"
+# Function to get player image (Attempting to fetch is removed to simplify)
+# def get_player_image_url(player_id):
+#     """
+#     Attempts to get a player's image URL from a common source.
+#     Removed for simplicity and reliability.
+#     """
+#     return None # Return None as image fetching is removed
 
 # Fetch data for a player (Career Stats and Career Game Logs)
 @st.cache_data(ttl=3600) # Cache for 1 hour
@@ -388,61 +383,54 @@ if player1_name_select:
         if career_df_all_seasons is not None and not career_df_all_seasons.empty:
             st.header(f"{player1_name_select} Stats Dashboard")
 
-            # Layout with columns for image and key stats
-            col1, col2 = st.columns([1, 2]) # Adjust column widths as needed
+            # Layout with columns for key stats (Image column removed)
+            # col1, col2 = st.columns([1, 2]) # Adjust column widths as needed
+            # Removed col1 for image, only using one column for stats now
 
-            with col1:
-                 # --- Player Image ---
-                 player_image_url = get_player_image_url(player1_id)
-                 try:
-                     response = requests.get(player_image_url)
-                     if response.status_code == 200:
-                         image = Image.open(BytesIO(response.content))
-                         st.image(image, caption=player1_name_select, use_column_width=True) # Use column width
-                     else:
-                         st.info("Could not fetch player image.")
-                 except Exception as e:
-                     st.info(f"Error fetching player image: {e}")
+            # with col1:
+            #      # --- Player Image ---
+            #      # Image fetching code removed
+            #      pass # Keep column structure if needed for other elements
 
-            with col2:
-                 st.subheader("Career Summary")
-                 # Calculate overall career averages from career_df_all_seasons
-                 overall_total_games = career_df_all_seasons['GP'].sum()
-                 overall_career_totals = career_df_all_seasons[stats_columns].sum()
-                 # Ensure stats_columns only contains columns present in overall_career_totals
-                 valid_stats_columns_overall = [col for col in stats_columns if col in overall_career_totals.index]
+            # with col2: # Using the main column for stats now
+            st.subheader("Career Summary")
+            # Calculate overall career averages from career_df_all_seasons
+            overall_total_games = career_df_all_seasons['GP'].sum()
+            overall_career_totals = career_df_all_seasons[stats_columns].sum()
+            # Ensure stats_columns only contains columns present in overall_career_totals
+            valid_stats_columns_overall = [col for col in stats_columns if col in overall_career_totals.index]
 
-                 # Calculate overall career averages per game
-                 overall_career_averages = None
-                 if overall_total_games > 0:
-                      overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
-                      overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
+            # Calculate overall career averages per game
+            overall_career_averages = None
+            if overall_total_games > 0:
+                 overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
+                 overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
 
 
-                      # Define max values for stat bars (can be based on league averages, player's best season, etc.)
-                      # Let's use a simple heuristic: max of player's career high for key stats + a buffer
-                      # Ensure career_game_logs_df is not None and has the column before calculating max
-                      max_pts = career_game_logs_df['PTS'].max() if career_game_logs_df is not None and 'PTS' in career_game_logs_df.columns and not career_game_logs_df['PTS'].empty else 30.0
-                      max_reb = career_game_logs_df['REB'].max() if career_game_logs_df is not None and 'REB' in career_game_logs_df.columns and not career_game_logs_df['REB'].empty else 15.0
-                      max_ast = career_game_logs_df['AST'].max() if career_game_logs_df is not None and 'AST' in career_game_logs_df.columns and not career_game_logs_df['AST'].empty else 10.0
-                      max_min = career_game_logs_df['MIN'].max() if career_game_logs_df is not None and 'MIN' in career_game_logs_df.columns and not career_game_logs_df['MIN'].empty else 40.0
+                 # Define max values for stat bars (can be based on league averages, player's best season, etc.)
+                 # Let's use a simple heuristic: max of player's career high for key stats + a buffer
+                 # Ensure career_game_logs_df is not None and has the column before calculating max
+                 max_pts = career_game_logs_df['PTS'].max() if career_game_logs_df is not None and 'PTS' in career_game_logs_df.columns and not career_game_logs_df['PTS'].empty else 30.0
+                 max_reb = career_game_logs_df['REB'].max() if career_game_logs_df is not None and 'REB' in career_game_logs_df.columns and not career_game_logs_df['REB'].empty else 15.0
+                 max_ast = career_game_logs_df['AST'].max() if career_game_logs_df is not None and 'AST' in career_game_logs_df.columns and not career_game_logs_df['AST'].empty else 10.0
+                 max_min = career_game_logs_df['MIN'].max() if career_game_logs_df is not None and 'MIN' in career_game_logs_df.columns and not career_game_logs_df['MIN'].empty else 40.0
 
-                      # Ensure max values are reasonable if career highs are very low
-                      max_pts = max(max_pts, 20.0) # Minimum threshold
-                      max_reb = max(max_reb, 10.0)
-                      max_ast = max(max_ast, 7.0)
-                      max_min = max(max_min, 30.0)
+                 # Ensure max values are reasonable if career highs are very low
+                 max_pts = max(max_pts, 20.0) # Minimum threshold
+                 max_reb = max(max_reb, 10.0)
+                 max_ast = max(max_ast, 7.0)
+                 max_min = max(max_min, 30.0)
 
 
-                      # Display stat bars for key career averages
-                      st.write("Overall Career Averages:")
-                      create_stat_bar("Points", overall_career_avg.get('PTS'), max_pts)
-                      create_stat_bar("Rebounds", overall_career_avg.get('REB'), max_reb)
-                      create_stat_bar("Assists", overall_career_avg.get('AST'), max_ast)
-                      create_stat_bar("Minutes", overall_career_avg.get('MIN'), max_min)
+                 # Display stat bars for key career averages
+                 st.write("Overall Career Averages:")
+                 create_stat_bar("Points", overall_career_avg.get('PTS'), max_pts)
+                 create_stat_bar("Rebounds", overall_career_avg.get('REB'), max_reb)
+                 create_stat_bar("Assists", overall_career_avg.get('AST'), max_ast)
+                 create_stat_bar("Minutes", overall_career_avg.get('MIN'), max_min)
 
-                 else:
-                      st.info("Overall Career Averages not available.")
+            else:
+                 st.info("Overall Career Averages not available.")
 
 
             # Using Tabs for better organization

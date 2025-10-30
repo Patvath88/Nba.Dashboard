@@ -404,7 +404,7 @@ if player1_name_select:
             overall_career_averages = None
             if overall_total_games > 0:
                  overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
-                 overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
+                 # overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
 
 
                  # Define max values for stat bars (can be based on league averages, player's best season, etc.)
@@ -424,10 +424,10 @@ if player1_name_select:
 
                  # Display stat bars for key career averages
                  st.write("Overall Career Averages:")
-                 create_stat_bar("Points", overall_career_avg.get('PTS'), max_pts)
-                 create_stat_bar("Rebounds", overall_career_avg.get('REB'), max_reb)
-                 create_stat_bar("Assists", overall_career_avg.get('AST'), max_ast)
-                 create_stat_bar("Minutes", overall_career_avg.get('MIN'), max_min)
+                 create_stat_bar("Points", overall_career_averages.get('PTS'), max_pts) # Corrected variable name
+                 create_stat_bar("Rebounds", overall_career_averages.get('REB'), max_reb) # Corrected variable name
+                 create_stat_bar("Assists", overall_career_averages.get('AST'), max_ast) # Corrected variable name
+                 create_stat_bar("Minutes", overall_career_averages.get('MIN'), max_min) # Corrected variable name
 
             else:
                  st.info("Overall Career Averages not available.")

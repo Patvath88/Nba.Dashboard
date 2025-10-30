@@ -5,6 +5,9 @@ import pandas as pd
 import re # Import regex for parsing matchup string
 import numpy as np # Import numpy for handling NaN values and calculations
 
+# Define core stats columns globally so they are accessible by all functions and the main app
+stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+
 
 # Define the get_player_stats function (reusing the refined version)
 def get_player_stats(player_id, season='2023-24'):
@@ -26,7 +29,7 @@ def get_player_stats(player_id, season='2023-24'):
         career_df = career_stats.get_data_frames()[0]
 
         # Calculate career averages
-        stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+        # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
 
         # Filter out the row for the current season for historical career averages
         historical_career_averages = None
@@ -155,7 +158,7 @@ def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
                    the specified team, or None if data fetching fails or they
                    didn't play against that team in the specified season.
     """
-    stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
 
     try:
         # Fetch game logs for the player for the specified season
@@ -386,7 +389,7 @@ def engineer_features(combined_data):
         st.warning("No data available for feature engineering.")
         return None, None, None
 
-    stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
     prediction_targets = ['PTS', 'AST', 'REB', 'FG3M'] # Specific targets for prediction
 
     # Ensure data is sorted by date before calculating rolling averages and rest days
@@ -481,8 +484,8 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
 
 
     # Calculate rolling averages from the combined player's game logs (across seasons)
-    stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
-    valid_stats_columns_pred = [col for col in stats_columns_pred if f'{col}_player' in combined_data_for_prediction.columns] # Use _player suffix
+    # stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
+    valid_stats_columns_pred = [col for col in stats_columns if f'{col}_player' in combined_data_for_prediction.columns] # Use _player suffix
 
     player_features_for_pred = {}
     if not combined_data_for_prediction.empty:
@@ -707,7 +710,7 @@ if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detaile
                 st.subheader("Last 5 Games (Individual Performance - Most Recent)")
                 if player1_stats.get('last_5_games_individual') is not None and not player1_stats['last_5_games_individual'].empty:
                      # Select relevant columns and format date
-                     cols_to_display = ['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + [col for col in stats_columns if col in player1_stats['last_5_games_individual'].columns]
+                     cols_to_display = ['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + [col for col in stats_columns if col in player1_stats['last_5_games_individual'].columns] # Use the global stats_columns
                      display_df = player1_stats['last_5_games_individual'][cols_to_display].copy()
                      display_df['GAME_DATE'] = display_df['GAME_DATE'].dt.strftime('%Y-%m-%d') # Format date for display
                      st.dataframe(display_df)
@@ -753,9 +756,8 @@ if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detaile
 
                     if game_logs_for_pred is not None and not game_logs_for_pred.empty:
                         # Calculate rolling averages from the player's game logs (across seasons)
-                        stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
-                        # Need to ensure columns exist in game_logs_for_pred before selecting
-                        valid_stats_columns_pred = [col for col in stats_columns_pred if col in game_logs_for_pred.columns]
+                        # stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
+                        valid_stats_columns_pred = [col for col in stats_columns if col in game_logs_for_pred.columns] # Use the global stats_columns
 
 
                         # Sort game logs by date ascending for rolling window calculation
@@ -796,6 +798,7 @@ if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detaile
 
                              for stat in stats_for_prediction:
                                  stat_col = stat
+                                 stat_col_player = f'{stat}_player'
                                  stat_col_rolling_5 = f'{stat}_rolling_5'
                                  stat_col_rolling_10 = f'{stat}_rolling_10'
                                  stat_col_rolling_20 = f'{stat}_rolling_20'

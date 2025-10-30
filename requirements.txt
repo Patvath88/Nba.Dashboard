@@ -1,9 +1,0 @@
-%%writefile requirements.txt
-streamlit
-nba_api
-pandas
-numpy
-requests
-Pillow
-plotly
-altair

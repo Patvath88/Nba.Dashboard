@@ -1,532 +1,206 @@
 import streamlit as st
-from nba_api.stats.static import players, teams # Import teams module
+from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playercareerstats, playergamelogs, teamgamelogs
 import pandas as pd
-import re # Import regex for parsing matchup string
-import numpy as np # Import numpy for handling NaN values and calculations
-import time # Import time to add delays for API calls
+import re
+import numpy as np
+import time # Import time for delays
+import plotly.graph_objects as go # Import Plotly for visualizations
+import requests # Import requests for fetching player images
+from PIL import Image # Import Pillow for image handling
+from io import BytesIO # Import BytesIO for handling image bytes
+import altair as alt # Import Altair for declarative visualizations
 
 
-# Define core stats columns globally so they are accessible by all functions and the main app
+# Define core stats columns globally
 stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
 
+# Define prediction targets globally
+prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
 
-# Define the get_player_stats function (reusing the refined version)
-# This function is now primarily used for fetching career summary data for season list
-# and potentially latest season game logs for detailed view/prediction.
-def get_player_stats(player_id, season='2023-24'):
-    """
-    Fetches player stats and calculates various averages using player ID.
-    Includes recent game averages across season boundaries.
-
-    Args:
-        player_id (int): The ID of the NBA player.
-        season (str): The primary season to fetch data for (e.g., '2023-24').
-
-    Returns:
-        dict: A dictionary containing career, last season, and recent game averages,
-              or None if data fetching fails.
-    """
-    try:
-        # Fetch career stats
-        career_stats = playercareerstats.PlayerCareerStats(player_id=player_id)
-        career_df = career_stats.get_data_frames()[0]
-
-        # Calculate career averages
-        # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
-
-        # Filter out the row for the current season for historical career averages
-        historical_career_averages = None
-        if len(career_df) > 1:
-            historical_career_df = career_df.iloc[:-1]
-            total_games = historical_career_df['GP'].sum()
-            # Ensure stats_columns only contains columns present in historical_career_df
-            valid_stats_columns_hist = [col for col in stats_columns if col in historical_career_df.columns]
-            career_totals = historical_career_df[valid_stats_columns_hist].sum()
-            historical_career_averages = career_totals / total_games
-            historical_career_averages = historical_career_averages.to_frame(name='Historical Career Avg').T # Convert to DataFrame for display
-
-
-        # Calculate overall career averages
-        overall_total_games = career_df['GP'].sum()
-        overall_career_totals = career_df[stats_columns].sum()
-        # Ensure stats_columns only contains columns present in overall_career_totals
-        valid_stats_columns_overall = [col for col in stats_columns if col in overall_career_totals.index]
-        overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
-        overall_career_averages = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
-
-
-        # Get last season's averages (Corrected to calculate averages per game)
-        last_season_averages = None
-        last_season_id = None
-        # Find the row for the selected season
-        if season in career_df['SEASON_ID'].values:
-            season_index = career_df[career_df['SEASON_ID'] == season].index[0]
-            if season_index > 0:
-                 last_season_df = career_df.iloc[season_index - 1]
-                 last_season_id = last_season_df['SEASON_ID'] # Get last season's ID
-                 last_season_games = last_season_df['GP']
-                 if last_season_games > 0:
-                     # Ensure stats_columns only contains columns present in last_season_df
-                     valid_stats_columns_last = [col for col in stats_columns if col in last_season_df.index]
-                     last_season_totals = last_season_df[valid_stats_columns_last]
-                     last_season_averages = last_season_totals / last_season_games
-                     last_season_averages = last_season_averages.to_frame(name=f"Last Season ({last_season_id}) Avg").T # Convert to DataFrame for display
-                 else:
-                      st.info(f"Player played 0 games in the season before {season}. Last season averages not available.")
-
-            # If season_index is 0 and len(career_df) > 1, the selected season is the earliest, no last season before it
-            # If season_index is 0 and len(career_df) == 1, only one season available, no last season
-        # else:
-             # st.warning(f"Selected season {season} not found in career history. Cannot determine last season's averages relative to this season.")
-
-
-        # Fetch game logs for the specified season and the previous season
-        # This is now handled by get_player_career_game_logs and filtered if needed
-        game_logs_df = None # This will be fetched by get_player_career_game_logs now
-
-        # Calculate recent game averages from the most recent games (across career)
-        last_5_games_avg = None
-        last_10_games_avg = None
-        last_20_games_avg = None
-        last_5_games_individual = None
-
-        # Fetch career game logs to calculate recent averages
-        career_game_logs_for_recent = get_player_career_game_logs(player_id)
-
-        if career_game_logs_for_recent is not None and not career_game_logs_for_recent.empty:
-             # Ensure game logs are sorted by date in descending order (most recent first)
-             career_game_logs_for_recent['GAME_DATE'] = pd.to_datetime(career_game_logs_for_recent['GAME_DATE'])
-             career_game_logs_for_recent = career_game_logs_for_recent.sort_values(by='GAME_DATE', ascending=False)
-
-             # Calculate recent game averages from the most recent games
-             valid_game_stats_columns = [col for col in stats_columns if col in career_game_logs_for_recent.columns]
-
-             if len(career_game_logs_for_recent) >= 5:
-                 last_5_games_avg = career_game_logs_for_recent.head(5)[valid_game_stats_columns].mean()
-                 last_5_games_avg = last_5_games_avg.to_frame(name='Last 5 Games Avg').T # Convert to DataFrame
-                 last_5_games_individual = career_game_logs_for_recent.head(5)[['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + valid_game_stats_columns] # Get individual game stats, include season year
-             if len(career_game_logs_for_recent) >= 10:
-                 last_10_games_avg = career_game_logs_for_recent.head(10)[valid_game_stats_columns].mean()
-                 last_10_games_avg = last_10_games_avg.to_frame(name='Last 10 Games Avg').T # Convert to DataFrame
-             if len(career_game_logs_for_recent) >= 20:
-                 last_20_games_avg = career_game_logs_for_recent.head(20)[valid_game_stats_columns].mean()
-                 last_20_games_avg = last_20_games_avg.to_frame(name='Last 20 Games Avg').T # Convert to DataFrame
-             game_logs_df = career_game_logs_for_recent # Assign career game logs for potential prediction use
-
-
-        return {
-            'career_df': career_df, # Return career_df to display all season averages
-            'historical_career_averages': historical_career_averages,
-            'overall_career_averages': overall_career_averages,
-            'last_season_averages': last_season_averages,
-            'last_5_games_avg': last_5_games_avg,
-            'last_10_games_avg': last_10_games_avg,
-            'last_20_games_avg': last_20_games_avg,
-            'game_logs_df': game_logs_df, # Return game logs for prediction feature engineering (using career logs now)
-            'last_5_games_individual': last_5_games_individual # Return individual last 5 games
-        }
-
-    except Exception as e:
-        st.error(f"An error occurred while fetching career stats: {e}")
-        return None
-
-# Define a function to get a player's career game logs by season
+# Function to get player image (attempting to fetch from a common source)
 @st.cache_data # Cache this data
-def get_player_career_game_logs(player_id):
+def get_player_image_url(player_id):
     """
-    Fetches a player's career game logs across all available seasons by iterating through seasons.
+    Attempts to get a player's image URL from a common source.
+    Note: This is not an official NBA API endpoint and may not work for all players or be stable.
+    A more robust solution might involve a dedicated image hosting service or a more reliable API.
+    """
+    # Example URL pattern (this might need adjustment based on actual sources)
+    # Common sources: stats.nba.com, basketball-reference.com, etc.
+    # Let's try a common pattern for stats.nba.com
+    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{player_id}.png"
+
+# Fetch data for a player (Career Stats and Career Game Logs)
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def fetch_player_data(player_id):
+    """
+    Fetches a player's career stats and career game logs across all available seasons.
 
     Args:
         player_id (int): The ID of the NBA player.
 
     Returns:
-        DataFrame: A DataFrame containing the player's career game logs,
-                   or None if data fetching fails.
+        tuple: A tuple containing the career stats DataFrame and career game logs DataFrame,
+               or (None, None) if data fetching fails.
     """
-    all_game_logs_list = []
+    career_df = None
+    career_game_logs = None
+
     try:
-        # First, get the player's career summary to find all seasons played
+        # Fetch career stats summary
         career_stats = playercareerstats.PlayerCareerStats(player_id=player_id)
         career_df = career_stats.get_data_frames()[0]
 
         if career_df.empty:
             st.info("No career data found for this player.")
-            return None
+            return career_df, career_game_logs # Return what we have
 
         seasons_played = career_df['SEASON_ID'].tolist()
+        all_game_logs_list = []
 
         # Fetch game logs for each season
         for season in seasons_played:
             try:
-                st.write(f"Fetching game logs for {season}...") # Add a message to show progress
+                # st.write(f"Fetching game logs for {season}...") # Can uncomment for debugging progress
                 season_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season).get_data_frames()[0]
                 all_game_logs_list.append(season_logs)
-                time.sleep(0.5) # Add a small delay between API calls
+                time.sleep(0.2) # Add a small delay between API calls
             except Exception as e:
                 st.warning(f"Could not fetch game logs for season {season}. Error: {e}")
                 # Continue to the next season if one season fails
 
-        if not all_game_logs_list:
-            st.info("No game logs found for this player's career.")
-            return None
+        if all_game_logs_list:
+            # Combine game logs from all fetched seasons
+            career_game_logs = pd.concat(all_game_logs_list, ignore_index=True)
+            career_game_logs['GAME_DATE'] = pd.to_datetime(career_game_logs['GAME_DATE'])
+            career_game_logs = career_game_logs.sort_values(by='GAME_DATE').reset_index(drop=True)
+        else:
+             st.info("No game logs found for this player's career.")
 
-        # Combine game logs from all fetched seasons
-        career_logs = pd.concat(all_game_logs_list, ignore_index=True)
-        career_logs['GAME_DATE'] = pd.to_datetime(career_logs['GAME_DATE'])
-        career_logs = career_logs.sort_values(by='GAME_DATE').reset_index(drop=True)
 
-        return career_logs
+        return career_df, career_game_logs
 
     except Exception as e:
-        st.error(f"An error occurred while fetching career game logs: {e}")
-        return None
+        st.error(f"An error occurred while fetching player data: {e}")
+        return None, None
 
 
-# Define a function to calculate player vs team career stats
-def get_player_vs_team_career_stats(player_id, team_id):
+# Define a function to calculate player vs team career stats for ALL opponents
+def get_player_vs_all_teams_career_stats(career_game_logs_df):
     """
-    Fetches a player's career game logs and calculates averages against a specific team.
+    Calculates a player's career averages against all teams they have played against.
 
     Args:
-        player_id (int): The ID of the player.
-        team_id (int): The ID of the opponent team.
+        career_game_logs_df (DataFrame): DataFrame containing the player's career game logs.
 
     Returns:
         DataFrame: A pandas DataFrame containing the player's career averages against
-                   the specified team, or None if data fetching fails or they
-                   didn't play against that team in their career.
+                   each opponent team, or None if data is insufficient.
     """
-    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
+    if career_game_logs_df is None or career_game_logs_df.empty:
+        return None
+
+    stats_columns_to_average = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
 
     try:
-        # Fetch player's career game logs
-        career_game_logs = get_player_career_game_logs(player_id)
-
-        if career_game_logs is None or career_game_logs.empty:
-            st.info("Could not fetch career game logs for player vs team stats.")
+        # Extract opponent team abbreviation from the 'MATCHUP' column
+        def extract_opponent_team_abbr(matchup):
+            # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
+            match = re.search(r'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*([A-Z]{3})', matchup, re.IGNORECASE)
+            if match:
+                 return (match.group(1) or match.group(2) or match.group(3)).upper()
             return None
 
-        # Get the abbreviation of the opponent team ID
-        opponent_team_abbr = None
-        team_info = teams.get_teams() # Use teams.get_teams()
-        for team in team_info:
-             if team['id'] == team_id:
-                 opponent_team_abbr = team['abbreviation']
-                 break
+        career_game_logs_df['OPPONENT_TEAM_ABBREVIATION'] = career_game_logs_df['MATCHUP'].apply(extract_opponent_team_abbr)
 
-        if opponent_team_abbr is None:
-             st.error(f"Could not find abbreviation for team ID: {team_id}")
+        # Filter out rows where opponent team could not be extracted
+        career_game_logs_df_filtered = career_game_logs_df.dropna(subset=['OPPONENT_TEAM_ABBREVIATION']).copy()
+
+        if career_game_logs_df_filtered.empty:
+             st.info("Could not determine opponent teams from game logs.")
              return None
 
-        # Filter player logs for games against the specific opponent team across career
-        def played_against_team(matchup, opponent_abbr_to_find): # Renamed parameter to avoid conflict
-            # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
-            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE) # Use the parameter
-            # Refined check: also ensure the found abbreviation is not the player's team abbreviation in this game
-            if match:
-                 found_abbr = match.group(1) or match.group(2) or match.group(3)
-                 # Need player's team abbreviation for the current game to avoid self-matches
-                 # This is complex to get accurately within this function without game logs.
-                 # For simplicity, we'll rely on the strict matching for now.
-                 return bool(found_abbr) # Return True if a match is found
+        # Group by opponent team and calculate averages
+        player_vs_all_teams_career_avg = career_game_logs_df_filtered.groupby('OPPONENT_TEAM_ABBREVIATION')[stats_columns_to_average].mean()
 
-            return False # Return False if no match
+        # Optionally, count games played against each team
+        games_played_vs_team = career_game_logs_df_filtered.groupby('OPPONENT_TEAM_ABBREVIATION').size().to_frame(name='GP')
+        player_vs_all_teams_career_avg = player_vs_all_teams_career_avg.join(games_played_vs_team)
 
-        player_logs_vs_team_career = career_game_logs[
-            career_game_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr)) # Pass the found opponent_team_abbr
-        ].copy() # Use .copy() to avoid SettingWithCopyWarning
+        # Reorder columns to have GP first
+        cols = ['GP'] + [col for col in player_vs_all_teams_career_avg.columns if col != 'GP']
+        player_vs_all_teams_career_avg = player_vs_all_teams_career_avg[cols]
 
 
-        if player_logs_vs_team_career.empty:
-            # st.info(f"Player {player_id} did not play against team {team_id} in their career.")
-            return None
-
-        # Calculate player's career averages in games against the specific team
-        valid_stats_columns_vs_team = [col for col in stats_columns if col in player_logs_vs_team_career.columns]
-        player_vs_team_career_avg = player_logs_vs_team_career[valid_stats_columns_vs_team].mean()
-        player_vs_team_career_avg = player_vs_team_career_avg.to_frame(name=f"Career Avg vs {opponent_team_abbr}").T # Convert to DataFrame
-
-        return player_vs_team_career_avg
+        return player_vs_all_teams_career_avg
 
     except Exception as e:
-        st.error(f"An error occurred while fetching player vs team career stats: {e}")
+        st.error(f"An error occurred while calculating player vs all teams career stats: {e}")
         return None
 
 
-
-# Define the fetch_and_combine_game_data function for prediction features
-# This function is primarily for generating data for the prediction model (if implemented)
-# It fetches data for the selected season and the previous one.
-def fetch_and_combine_game_data(player_id, season):
+# Define a function to calculate recent game averages
+def calculate_recent_game_averages(career_game_logs_df):
     """
-    Fetches player and team game logs for a given season and combines them
-    for feature engineering for prediction.
-    Includes game logs from the previous season for potentially more data.
-
+    Calculates recent game averages from career game logs.
 
     Args:
-        player_id (int): The ID of the NBA player.
-        season (str): The primary season to fetch data for (e.g., '2023-24').
+        career_game_logs_df (DataFrame): DataFrame containing the player's career game logs.
 
     Returns:
-        DataFrame: A DataFrame containing combined player and opponent team stats
-                   for each game the player played in that season, or None if
-                   data fetching fails.
+        dict: A dictionary containing DataFrames for last 5, 10, and 20 game averages and individual last 5 games.
     """
-    all_game_logs_list = []
-    combined_data = None
+    recent_averages = {}
+    if career_game_logs_df is None or career_game_logs_df.empty:
+        return recent_averages
 
-    try:
-        # Fetch player game logs for the current season
-        player_logs_current = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season).get_data_frames()[0]
-        player_logs_current['GAME_DATE'] = pd.to_datetime(player_logs_current['GAME_DATE'])
-        all_game_logs_list.append(player_logs_current)
+    # Ensure game logs are sorted by date in descending order (most recent first)
+    career_game_logs_df = career_game_logs_df.sort_values(by='GAME_DATE', ascending=False)
 
-        # Determine the previous season
-        current_season_year = int(season.split('-')[0])
-        previous_season_year = current_season_year - 1
-        previous_season = f"{previous_season_year}-{str(previous_season_year + 1)[-2:]}"
+    valid_game_stats_columns = [col for col in stats_columns if col in career_game_logs_df.columns]
 
+    if len(career_game_logs_df) >= 5:
+        recent_averages['last_5_games_avg'] = career_game_logs_df.head(5)[valid_game_stats_columns].mean().to_frame(name='Last 5 Games Avg').T
+    if len(career_game_logs_df) >= 10:
+        recent_averages['last_10_games_avg'] = career_game_logs_df.head(10)[valid_game_stats_columns].mean().to_frame(name='Last 10 Games Avg').T
+    if len(career_game_logs_df) >= 20:
+        recent_averages['last_20_games_avg'] = career_game_logs_df.head(20)[valid_game_stats_columns].mean().to_frame(name='Last 20 Games Avg').T
 
-        # Fetch player game logs for the previous season
-        try:
-            player_logs_previous = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=previous_season).get_data_frames()[0]
-            player_logs_previous['GAME_DATE'] = pd.to_datetime(player_logs_previous['GAME_DATE'])
-            all_game_logs_list.append(player_logs_previous)
-        except Exception as e:
-             st.warning(f"Could not fetch game logs for the previous season ({previous_season}). Skipping previous season data for combined logs. Error: {e}")
-
-
-        # Fetch all team game logs for the current and previous seasons to easily access opponent team data
-        all_team_logs_list = []
-        try:
-            all_team_logs_current = teamgamelogs.TeamGameLogs(season_nullable=season).get_data_frames()[0]
-            all_team_logs_current['GAME_DATE'] = pd.to_datetime(all_team_logs_current['GAME_DATE'])
-            all_team_logs_list.append(all_team_logs_current)
-
-            # Determine the last season ID fetched in get_player_stats for team logs as well
-            last_season_id_fetched = None
-            # Re-fetch career stats to get the last season ID reliably
-            try:
-                career_df_check = playercareerstats.PlayerCareerStats(player_id=player_id).get_data_frames()[0]
-                if season in career_df_check['SEASON_ID'].values:
-                    season_index_in_career = career_df_check[career_df_check['SEASON_ID'] == season].index[0]
-                    if season_index_in_career > 0:
-                        last_season_id_fetched = career_df_check.iloc[season_index_in_career - 1]['SEASON_ID']
-            except Exception as e:
-                 st.warning(f"Could not fetch career stats to determine last season ID for team logs. Error: {e}")
+    # Get individual last 5 games
+    if len(career_game_logs_df) >= 5:
+         cols_to_display_individual = ['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + [col for col in stats_columns if col in career_game_logs_df.columns]
+         recent_averages['last_5_games_individual'] = career_game_logs_df.head(5)[cols_to_display_individual].copy()
+         recent_averages['last_5_games_individual']['GAME_DATE'] = recent_averages['last_5_games_individual']['GAME_DATE'].dt.strftime('%Y-%m-%d')
 
 
-            if last_season_id_fetched: # Check if last_season_id was successfully determined
-                 all_team_logs_previous = teamgamelogs.TeamGameLogs(season_nullable=last_season_id_fetched).get_data_frames()[0]
-                 all_team_logs_previous['GAME_DATE'] = pd.to_datetime(all_team_logs_previous['GAME_DATE'])
-                 all_team_logs_list.append(all_team_logs_previous)
-
-        except Exception as e:
-             st.warning(f"Could not fetch team game logs for combined data across seasons. Error: {e}")
-
-        all_team_logs_combined = pd.concat(all_team_logs_list, ignore_index=True) if all_team_logs_list else pd.DataFrame()
-
-
-        if all_game_logs_list and not all_team_logs_combined.empty:
-            player_logs_combined = pd.concat(all_game_logs_list, ignore_index=True)
-
-            # Merge player logs with team logs to get player's team's stats for each game
-            # Need to handle potential duplicate columns carefully or merge in stages
-            # Let's merge player logs with all team logs to get player's team stats for that game
-            player_team_combined = pd.merge(
-                player_logs_combined,
-                all_team_logs_combined,
-                on=['GAME_ID', 'GAME_DATE', 'TEAM_ID'],
-                suffixes=('_player', '_team'),
-                how='left' # Use left join to keep all player's games
-                )
-
-
-            # Extract opponent team abbreviation from the 'MATCHUP_player' column
-            def extract_opponent_team_abbr(matchup, player_team_abbr):
-                # Corrected regex to avoid referencing opponent_abbr in the pattern
-                match = re.search(r'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*([A-Z]{3})', matchup, re.IGNORECASE) # Capture any 3 uppercase letters after @ or vs.
-                if match:
-                    opponent_abbr = match.group(1) or match.group(2) or match.group(3) # Capture from any group
-                    # Basic check to ensure the extracted opponent is not the player's team
-                    if opponent_abbr and player_team_abbr and opponent_abbr.upper() != player_team_abbr.upper():
-                        return opponent_abbr.upper() # Return uppercase for consistent matching
-                    elif opponent_abbr: # Handle cases where the team might be the opponent but the abbreviation matches player's team (e.g., both are LAL in different games)
-                         # Need a more robust check here, maybe compare team IDs from game logs if available
-                         pass # For now, rely on the basic check
-                return None # Return None if no match or if it matches player's team abbr
-
-            # Apply the function to extract opponent team abbreviation
-            player_team_combined['OPPONENT_TEAM_ABBREVIATION'] = player_team_combined.apply(
-                lambda row: extract_opponent_team_abbr(row.get('MATCHUP_player', ''), row.get('TEAM_ABBREVIATION_player', '')), axis=1
-            )
-
-            # Get a mapping of team abbreviation to team ID from the combined team logs
-            team_abbr_to_id = all_team_logs_combined[['TEAM_ABBREVIATION', 'TEAM_ID']].drop_duplicates().set_index('TEAM_ABBREVIATION')['TEAM_ID'].to_dict()
-
-            # Map opponent abbreviation to opponent team ID
-            player_team_combined['OPPONENT_TEAM_ID'] = player_team_combined['OPPONENT_TEAM_ABBREVIATION'].map(team_abbr_to_id)
-
-            # Merge with all_team_logs_combined again to get opponent stats, using GAME_ID and OPPONENT_TEAM_ID
-            # Need to rename columns in all_team_logs_combined before merging to avoid conflicts
-            # Exclude columns that might already be in player_team_combined from the opponent logs
-            cols_to_rename_opponent = [col for col in all_team_logs_combined.columns if col not in player_team_combined.columns or col in ['GAME_ID', 'GAME_DATE', 'TEAM_ID']]
-            opponent_cols_mapping = {col: f'{col}_opponent' for col in cols_to_rename_opponent}
-            all_team_logs_renamed = all_team_logs_combined.rename(columns=opponent_cols_mapping)
-
-            # Perform the merge for opponent stats
-            combined_data = pd.merge(
-                player_team_combined,
-                all_team_logs_renamed,
-                left_on=['GAME_ID', 'OPPONENT_TEAM_ID'],
-                right_on=[opponent_cols_mapping.get('GAME_ID', 'GAME_ID_opponent'), opponent_cols_mapping.get('TEAM_ID', 'TEAM_ID_opponent')],
-                how='left' # Use left join to keep all player's games
-            )
-
-            # Drop redundant columns after merge - adjusted based on potential renamed columns
-            cols_to_drop_after_merge = [opponent_cols_mapping.get('GAME_ID', 'GAME_ID_opponent'), opponent_cols_mapping.get('TEAM_ID', 'TEAM_ID_opponent')]
-            # Add other potential redundant columns if they weren't used in the merge key
-            cols_to_drop_after_merge.extend([col for col in opponent_cols_mapping.values() if col not in combined_data.columns and col not in cols_to_drop_after_merge])
-            # Also drop original columns that were only needed for merging or extracting opponent info if they have a _player or _team suffix
-            cols_to_drop_after_merge.extend(['OPPONENT_TEAM_ABBREVIATION']) # This was a helper column
-
-            combined_data = combined_data.drop(columns=cols_to_drop_after_merge, errors='ignore')
-
-
-            # Ensure data is sorted by date for feature engineering
-            combined_data['GAME_DATE'] = pd.to_datetime(combined_data['GAME_DATE'])
-            combined_data = combined_data.sort_values(by='GAME_DATE').reset_index(drop=True)
-
-        elif all_game_logs_list:
-             st.warning("Could not fetch team logs. Combined data with opponent stats will not be available.")
-             combined_data = pd.concat(all_game_logs_list, ignore_index=True) # Still return player logs if team logs failed
-
-
-        return combined_data
-
-    except Exception as e:
-        st.error(f"An error occurred while fetching and combining data for prediction: {e}")
-        return None
-
-# Define the feature engineering function
-def engineer_features(combined_data):
-    """
-    Engineers features and defines targets for prediction from combined game data.
-    Calculates rolling averages and rest days based on combined data across seasons.
-
-
-    Args:
-        combined_data (DataFrame): DataFrame containing combined player and opponent game data.
-
-    Returns:
-        tuple: A tuple containing the feature DataFrame (X), target DataFrame (y),
-               and the cleaned DataFrame with features and targets.
-               Returns (None, None, None) if data is insufficient.
-    """
-    if combined_data is None or combined_data.empty:
-        st.warning("No data available for feature engineering.")
-        return None, None, None
-
-    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
-    prediction_targets = ['PTS', 'AST', 'REB', 'FG3M'] # Specific targets for prediction
-
-    # Ensure data is sorted by date before calculating rolling averages and rest days
-    combined_data['GAME_DATE'] = pd.to_datetime(combined_data['GAME_DATE'])
-    combined_data = combined_data.sort_values(by='GAME_DATE').reset_index(drop=True)
-
-
-    # Calculate rolling averages for player stats across combined seasons
-    for col in stats_columns:
-        # Use a helper function to handle potential NaN values at the start
-        # and ensure rolling is done by player across the combined dataset
-        combined_data[f'{col}_rolling_5'] = combined_data.groupby('PLAYER_ID')[f'{col}_player'].transform(lambda x: x.rolling(window=5, min_periods=1).mean().shift(1))
-        combined_data[f'{col}_rolling_10'] = combined_data.groupby('PLAYER_ID')[f'{col}_player'].transform(lambda x: x.rolling(window=10, min_periods=1).mean().shift(1))
-        combined_data[f'{col}_rolling_20'] = combined_data.groupby('PLAYER_ID')[f'{col}_player'].transform(lambda x: x.rolling(window=20, min_periods=1).mean().shift(1))
-
-    # Create a binary feature indicating home or away game
-    def is_home_game(matchup):
-        # Check if the matchup string contains "vs." (typically indicates a home game)
-        return 1 if 'vs.' in matchup else 0
-
-    combined_data['IS_HOME_player'] = combined_data['MATCHUP_player'].apply(is_home_game)
-
-    # Calculate rest days since the last game across combined seasons
-    combined_data['PREV_GAME_DATE'] = combined_data.groupby('PLAYER_ID')['GAME_DATE'].shift(1)
-    combined_data['REST_DAYS_player'] = (combined_data['GAME_DATE'] - combined_data['PREV_GAME_DATE']).dt.days.fillna(0) # Fill NaN for the first game
-
-
-    # Select feature columns - adjusted to account for combined data
-    # Include rolling averages
-    feature_columns = [col for col in combined_data.columns if '_rolling_' in col]
-
-    # Include opponent statistics if available (check if any opponent columns exist)
-    opponent_cols = [col for col in combined_data.columns if '_opponent' in col and col not in ['SEASON_YEAR_opponent']]
-    if opponent_cols:
-         feature_columns.extend(opponent_cols)
-    else:
-         st.warning("Opponent statistics are not available for feature engineering.")
-
-    # Include home/away and rest days features
-    feature_columns.append('IS_HOME_player')
-    feature_columns.append('REST_DAYS_player')
-
-    # Define target variables (the actual stats from the current game)
-    target_columns = [f'{col}_player' for col in prediction_targets]
-
-    # Create X and y, dropping rows with NaNs created by rolling averages or missing opponent data
-    # We also need to shift the target variables up by one row to predict the *next* game's stats
-    # Ensure all required columns exist before dropping NaNs
-    required_cols = feature_columns + target_columns
-    combined_data_cleaned = combined_data.dropna(subset=required_cols).copy()
-    combined_data_cleaned[target_columns] = combined_data_cleaned[target_columns].shift(-1)
-
-    # Drop the last row after shifting targets, as its target will be NaN
-    combined_data_cleaned = combined_data_cleaned.iloc[:-1].copy()
-
-    # Select the features (X) and targets (y) from the cleaned data
-    # Re-select feature columns from the cleaned data in case some were dropped due to NaNs
-    X = combined_data_cleaned[feature_columns]
-    y = combined_data_cleaned[target_columns]
-
-
-    if X.empty or y.empty:
-        st.warning("Insufficient data after feature engineering and cleaning to generate predictions.")
-        return None, None, None
-
-    return X, y, combined_data_cleaned
+    return recent_averages
 
 # Define a simple prediction function (simplified approach)
-def predict_next_game_stats(player_id, season, player_name, combined_data_for_prediction):
+def predict_next_game_stats(career_game_logs_df, latest_season):
     """
     Generates a simplified prediction for the next game's stats using combined data.
     This uses a weighted average of recent game averages and season average from the
     combined data across seasons.
 
     Args:
-        player_id (int): The ID of the NBA player.
-        season (str): The primary season for which data was fetched.
-        player_name (str): The name of the player.
-        combined_data_for_prediction (DataFrame): DataFrame containing combined player
+        career_game_logs_df (DataFrame): DataFrame containing combined player
                                                   and opponent game data across seasons.
+        latest_season (str): The latest season played by the player.
 
     Returns:
         dict: A dictionary containing predicted stats, or None if prediction is not possible.
     """
-    if combined_data_for_prediction is None or combined_data_for_prediction.empty:
-        st.info("No combined data available to generate prediction.")
+    if career_game_logs_df is None or career_game_logs_df.empty:
+        st.info("No career game logs available to generate prediction.")
         return None
 
     # Ensure data is sorted by date before calculating recent averages
-    combined_data_for_prediction['GAME_DATE'] = pd.to_datetime(combined_data_for_prediction['GAME_DATE'])
-    combined_data_for_prediction = combined_data_for_prediction.sort_values(by='GAME_DATE', ascending=True).reset_index(drop=True)
+    combined_data_for_prediction = career_game_logs_df.sort_values(by='GAME_DATE', ascending=True).reset_index(drop=True)
 
 
     # Calculate rolling averages from the combined player's game logs (across seasons)
-    # stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
-    valid_stats_columns_pred = [col for col in stats_columns if col in combined_data_for_prediction.columns] # Use the global stats_columns
-
+    valid_stats_columns_pred = [col for col in stats_columns if col in combined_data_for_prediction.columns]
 
     player_features_for_pred = {}
     if not combined_data_for_prediction.empty:
@@ -547,23 +221,22 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                  rolling_20 = np.nan # Not enough games for rolling 20
 
 
-            player_features_for_pred[f'{col}_rolling_5'] = rolling_5 # Store with original stat name prefix
+            player_features_for_pred[f'{col}_rolling_5'] = rolling_5
             player_features_for_pred[f'{col}_rolling_10'] = rolling_10
             player_features_for_pred[f'{col}_rolling_20'] = rolling_20
 
         # Calculate season average for the player from the game logs (using the primary selected season)
-        # Filter game logs for the primary selected season
-        current_season_game_logs_for_avg = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR_player'] == season]
+        # Filter game logs for the primary selected season (latest season for simplicity)
+        current_season_game_logs_for_avg = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR'] == latest_season]
         player_season_avg_pred = current_season_game_logs_for_avg[valid_stats_columns_pred].mean() if not current_season_game_logs_for_avg.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
 
 
         # Generate prediction using the simplified approach with calculated features
         predicted_stats = {}
-        stats_for_prediction = ['PTS', 'AST', 'REB', 'FG3M']
+        stats_for_prediction = ['PTS', 'AST', 'REB', 'FG3M'] # Use global prediction targets
 
         for stat in stats_for_prediction:
             stat_col = stat
-            stat_col_player = f'{stat}_player'
             stat_col_rolling_5 = f'{stat}_rolling_5'
             stat_col_rolling_10 = f'{stat}_rolling_10'
             stat_col_rolling_20 = f'{stat}_rolling_20'
@@ -590,6 +263,14 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                  predicted_stats[stat] = "N/A" # Cannot predict if data is missing
 
 
+        if predicted_stats:
+            return predicted_stats
+        else:
+            st.info("Could not generate prediction based on available data.")
+            return None
+
+
+
     if predicted_stats:
         return predicted_stats
     else:
@@ -597,8 +278,61 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
         return None
 
 
+# Function to create a stat bar
+def create_stat_bar(label, value, max_value):
+    """Creates a simple horizontal bar for visualizing a stat."""
+    # Ensure value and max_value are not None or NaN and max_value is positive
+    if value is None or pd.isna(value) or max_value is None or pd.isna(max_value) or max_value <= 0:
+        display_value = value if value is not None and pd.notna(value) else "N/A"
+        st.write(f"**{label}:** {display_value}")
+        st.progress(0.0) # Display empty progress bar if data is invalid or zero max
+        return
+
+    percentage = (value / max_value) * 100
+    # Clamp percentage between 0 and 100
+    percentage = max(0, min(100, percentage))
+
+    st.write(f"**{label}:** {value:.2f}")
+    st.progress(percentage / 100.0) # Streamlit progress bar expects value between 0.0 and 1.0
+
 
 # --- Streamlit App Layout and Logic ---
+
+st.set_page_config(layout="wide", page_title="NBA Player Stats Dashboard", initial_sidebar_state="expanded") # Set wide layout, page title, and expanded sidebar
+
+# Add some basic styling using markdown
+st.markdown("""
+<style>
+    .main {
+        background-color: #f0f2f6;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 48px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #e6e6e6;
+        border-radius: 4px 4px 0px 0px;
+        gap: 4px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        margin: 0;
+        cursor: pointer;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #007bff;
+        color: white;
+    }
+    .stMarkdown h1, h2, h3 {
+        color: #333333;
+    }
+    .stDataFrame {
+        font-size: 0.9em;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 st.title("NBA Player Stats Dashboard")
 
@@ -637,25 +371,82 @@ player_names = sorted(list(player_name_to_id.keys())) # Sort names alphabeticall
 # Add dropdown for selecting player
 player1_name_select = st.selectbox("Select Player", player_names)
 
-# Fetch player stats including career_df when a player is selected
 player1_id = None # Initialize player_id
-player1_stats = None
 career_df_all_seasons = None # Initialize to None
+career_game_logs_df = None # Initialize career game logs
 
 if player1_name_select:
     player1_id = player_name_to_id.get(player1_name_select)
     if player1_id is not None:
-        # Fetch career_df to display all season averages
-        try:
-            career_stats_all_seasons = playercareerstats.PlayerCareerStats(player_id=player1_id)
-            career_df_all_seasons = career_stats_all_seasons.get_data_frames()[0]
+        # Fetch all data for the selected player
+        career_df_all_seasons, career_game_logs_df = fetch_player_data(player1_id)
 
-            # Display all season averages in a table
-            if career_df_all_seasons is not None and not career_df_all_seasons.empty:
-                st.subheader(f"{player1_name_select} Season Averages")
+        if career_df_all_seasons is not None and not career_df_all_seasons.empty:
+            st.header(f"{player1_name_select} Stats Dashboard")
+
+            # Layout with columns for image and key stats
+            col1, col2 = st.columns([1, 2]) # Adjust column widths as needed
+
+            with col1:
+                 # --- Player Image ---
+                 player_image_url = get_player_image_url(player1_id)
+                 try:
+                     response = requests.get(player_image_url)
+                     if response.status_code == 200:
+                         image = Image.open(BytesIO(response.content))
+                         st.image(image, caption=player1_name_select, use_column_width=True) # Use column width
+                     else:
+                         st.info("Could not fetch player image.")
+                 except Exception as e:
+                     st.info(f"Error fetching player image: {e}")
+
+            with col2:
+                 st.subheader("Career Summary")
+                 # Calculate overall career averages from career_df_all_seasons
+                 overall_total_games = career_df_all_seasons['GP'].sum()
+                 overall_career_totals = career_df_all_seasons[stats_columns].sum()
+                 # Ensure stats_columns only contains columns present in overall_career_totals
+                 valid_stats_columns_overall = [col for col in stats_columns if col in overall_career_totals.index]
+
+                 # Calculate overall career averages per game
+                 overall_career_averages = None
+                 if overall_total_games > 0:
+                      overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
+                      overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
+
+
+                      # Define max values for stat bars (can be based on league averages, player's best season, etc.)
+                      # Let's use a simple heuristic: max of player's career high for key stats + a buffer
+                      max_pts = career_game_logs_df['PTS'].max() if career_game_logs_df is not None and 'PTS' in career_game_logs_df.columns and not career_game_logs_df['PTS'].empty else 30.0
+                      max_reb = career_game_logs_df['REB'].max() if career_game_logs_df is not None and 'REB' in career_game_logs_df.columns and not career_game_logs_df['REB'].empty else 15.0
+                      max_ast = career_game_logs_df['AST'].max() if career_game_logs_df is not None and 'AST' in career_game_logs_df.columns and not career_game_logs_df['AST'].empty else 10.0
+                      max_min = career_game_logs_df['MIN'].max() if career_game_logs_df is not None and 'MIN' in career_game_logs_df.columns and not career_game_logs_df['MIN'].empty else 40.0
+
+                      # Ensure max values are reasonable if career highs are very low
+                      max_pts = max(max_pts, 20.0) # Minimum threshold
+                      max_reb = max(max_reb, 10.0)
+                      max_ast = max(max_ast, 7.0)
+                      max_min = max(max_min, 30.0)
+
+
+                      # Display stat bars for key career averages
+                      st.write("Overall Career Averages:")
+                      create_stat_bar("Points", overall_career_avg.get('PTS'), max_pts)
+                      create_stat_bar("Rebounds", overall_career_avg.get('REB'), max_reb)
+                      create_stat_bar("Assists", overall_career_avg.get('AST'), max_ast)
+                      create_stat_bar("Minutes", overall_career_avg.get('MIN'), max_min)
+
+                 else:
+                      st.info("Overall Career Averages not available.")
+
+
+            # Using Tabs for better organization
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["Season Averages", "Vs. Opponents", "Recent Games", "Predictions", "Saved Predictions"])
+
+            with tab1:
+                st.subheader("Season Averages")
                 # Select relevant columns for display and calculate averages per game
                 stats_columns_for_display = ['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
-                # Ensure columns exist before selecting
                 valid_cols_for_display = [col for col in stats_columns_for_display if col in career_df_all_seasons.columns]
                 display_career_df = career_df_all_seasons[valid_cols_for_display].copy()
 
@@ -666,256 +457,122 @@ if player1_name_select:
                          display_career_df[col] = display_career_df.apply(lambda row: round(row[col] / row['GP'], 2) if row['GP'] > 0 else 0, axis=1) # Round averages here
 
 
-                st.dataframe(display_career_df) # Display the career dataframe
+                st.dataframe(display_career_df.set_index('SEASON_ID')) # Display the career dataframe, using Season ID as index for better readability
 
 
-            else:
-                 st.info(f"No career season data available for {player1_name_select}.")
+            with tab2:
+                 st.subheader("Career Statistics Against All Opponent Teams")
+                 if career_game_logs_df is not None and not career_game_logs_df.empty:
+                      player_vs_all_teams_career_avg = get_player_vs_all_teams_career_stats(career_game_logs_df)
+                      if player_vs_all_teams_career_avg is not None and not player_vs_all_teams_career_avg.empty:
+                           st.dataframe(player_vs_all_teams_career_avg.round(2)) # Round for display
+                      else:
+                           st.info("Could not calculate career statistics against opponent teams.")
+                 else:
+                      st.info("Career game logs not available to calculate player vs team stats.")
 
-        except Exception as e:
-            st.error(f"An error occurred while fetching career stats for display: {e}")
+            with tab3:
+                st.subheader("Detailed Statistics")
 
+                # Determine the latest season played by the player
+                latest_season_for_detailed_view = career_df_all_seasons['SEASON_ID'].iloc[-1]
 
-# Add dropdown for selecting opponent team for H2H
-opponent_team_name_select = st.selectbox("Select Opponent Team (for Career Stats Against)", [''] + team_names) # Add empty option
-
-
-# Display player vs team career stats when an opponent team is selected
-if player1_id is not None and opponent_team_name_select:
-    opponent_team_id = team_name_to_id.get(opponent_team_name_select)
-    if opponent_team_id:
-        st.subheader(f"{player1_name_select} Career Statistics Against {opponent_team_name_select}")
-        player_vs_team_career_avg = get_player_vs_team_career_stats(player1_id, opponent_team_id)
-        if player_vs_team_career_avg is not None and not player_vs_team_career_avg.empty:
-             st.dataframe(player_vs_team_career_avg.round(2)) # Round for display
-        else:
-             st.info(f"{player1_name_select} did not play against {opponent_team_name_select} in their career.")
-    else:
-         st.error(f"Could not find ID for team: {opponent_team_name_select}")
-
-
-# Add a button to trigger detailed stats and predictions for the latest season
-# Determine the latest season from the career data if available, otherwise use current year logic
-# Generate a list of seasons from 2000-01 to current/next season (Moved outside the button block)
-current_year = pd.Timestamp.now().year
-seasons = [f"{y}-{str(y+1)[-2:]}" for y in range(2000, current_year + 1)]
-
-latest_season_for_detailed_view = seasons[-1] # Default to the latest season in the generated list
-if career_df_all_seasons is not None and not career_df_all_seasons.empty:
-     latest_season_for_detailed_view = career_df_all_seasons['SEASON_ID'].iloc[-1]
+                # Calculate Last Season Averages
+                last_season_averages = None
+                if len(career_df_all_seasons) > 1:
+                     last_season_df = career_df_all_seasons.iloc[-2] # Second to last row is the previous season
+                     last_season_id = last_season_df['SEASON_ID']
+                     last_season_games = last_season_df['GP']
+                     if last_season_games > 0:
+                         valid_stats_columns_last = [col for col in stats_columns if col in last_season_df.index]
+                         last_season_totals = last_season_df[valid_stats_columns_last]
+                         last_season_averages = (last_season_totals / last_season_games).to_frame(name=f"Last Season ({last_season_id}) Avg").T
+                     else:
+                          st.info(f"Player played 0 games in their second to last season. Last season averages not available.")
+                if last_season_averages is not None and not last_season_averages.empty:
+                     st.write("Last Season Averages:")
+                     st.dataframe(last_season_averages.round(2))
 
 
-if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detailed_view}"):
-    if not player1_name_select:
-        st.warning("Please select a Player.")
-    else:
-        player1_id = player_name_to_id.get(player1_name_select)
-        if player1_id is None:
-             st.error(f"Could not find ID for player: {player1_name_select}")
-        else:
-            # Call the get_player_stats function for the selected player and latest season
-            player1_stats = get_player_stats(player1_id, season=latest_season_for_detailed_view)
+                # Calculate and display Recent Game Averages
+                recent_averages_data = calculate_recent_game_averages(career_game_logs_df)
 
-            if player1_stats:
-                st.header(f"{player1_name_select} Detailed Statistics ({latest_season_for_detailed_view} Season)")
-
-                # Display career averages (already displayed above, can remove or keep for redundancy)
-                # st.subheader("Career Averages")
-                # if player1_stats.get('historical_career_averages') is not None and not player1_stats['historical_career_averages'].empty:
-                #     st.write("Historical Career (excluding current season):")
-                #     st.dataframe(player1_stats['historical_career_averages'].round(2)) # Round for display
-                # else:
-                #      st.write("Historical Career Averages Not Available.")
-
-
-                # if player1_stats.get('overall_career_averages') is not None and not player1_stats['overall_career_averages'].empty:
-                #     st.write("Overall Career (including current season):")
-                #     st.dataframe(player1_stats['overall_career_averages'].round(2)) # Round for display
-                # else:
-                #      st.write("Overall Career Averages Not Available.")
-
-
-                if player1_stats.get('last_season_averages') is not None and not player1_stats['last_season_averages'].empty:
-                     st.subheader(f"Last Season Averages ({player1_stats['last_season_averages'].index[0].replace('Last Season (','').replace(') Avg','')})") # Extract season year from index
-                     st.dataframe(player1_stats['last_season_averages'].round(2)) # Round for display
-                else:
-                     st.subheader("Last Season Averages Not Available.")
-
-
-                # Display recent game averages in expanders
-                st.subheader("Recent Game Averages (Across Seasons if Needed)")
-                if player1_stats.get('last_5_games_avg') is not None and not player1_stats['last_5_games_avg'].empty:
+                st.write("Recent Game Averages (Across Seasons if Needed):")
+                if recent_averages_data.get('last_5_games_avg') is not None and not recent_averages_data['last_5_games_avg'].empty:
                     with st.expander("Last 5 Games Average"):
-                        st.dataframe(player1_stats['last_5_games_avg'].round(2)) # Round for display
+                        st.dataframe(recent_averages_data['last_5_games_avg'].round(2))
                 else:
                      st.write("Last 5 Games Averages Not Available (not enough recent games).")
 
-
-                if player1_stats.get('last_10_games_avg') is not None and not player1_stats['last_10_games_avg'].empty:
+                if recent_averages_data.get('last_10_games_avg') is not None and not recent_averages_data['last_10_games_avg'].empty:
                     with st.expander("Last 10 Games Average"):
-                        st.dataframe(player1_stats['last_10_games_avg'].round(2)) # Round for display
+                        st.dataframe(recent_averages_data['last_10_games_avg'].round(2))
                 else:
                      st.write("Last 10 Games Averages Not Available (not enough recent games).")
 
-                if player1_stats.get('last_20_games_avg') is not None and not player1_stats['last_20_games_avg'].empty:
+                if recent_averages_data.get('last_20_games_avg') is not None and not recent_averages_data['last_20_games_avg'].empty:
                     with st.expander("Last 20 Games Average"):
-                        st.dataframe(player1_stats['last_20_games_avg'].round(2)) # Round for display
+                        st.dataframe(recent_averages_data['last_20_games_avg'].round(2))
                 else:
                      st.write("Last 20 Games Averages Not Available (not enough recent games).")
 
                 # Display individual last 5 games stats
-                st.subheader("Last 5 Games (Individual Performance - Most Recent)")
-                if player1_stats.get('last_5_games_individual') is not None and not player1_stats['last_5_games_individual'].empty:
-                     # Select relevant columns and format date
-                     cols_to_display = ['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + [col for col in stats_columns if col in player1_stats['last_5_games_individual'].columns] # Use the global stats_columns
-                     display_df = player1_stats['last_5_games_individual'][cols_to_display].copy()
-                     display_df['GAME_DATE'] = display_df['GAME_DATE'].dt.strftime('%Y-%m-%d') # Format date for display
-                     st.dataframe(display_df)
+                st.write("Last 5 Games (Individual Performance - Most Recent):")
+                if recent_averages_data.get('last_5_games_individual') is not None and not recent_averages_data['last_5_games_individual'].empty:
+                     st.dataframe(recent_averages_data['last_5_games_individual'])
                 else:
                      st.write("Individual stats for the last 5 most recent games are not available.")
 
-
-                # --- Player vs Team Stats (for the selected season) ---
-                # This section is now triggered by the button press, and only shows stats for the latest season
-                # The career vs team stats are displayed above based on the dropdown selection
-                # if opponent_team_name_select:
-                #      opponent_team_id = team_name_to_id.get(opponent_team_name_select)
-                #      if opponent_team_id:
-                #          st.header(f"{player1_name_select} Statistics Against {opponent_team_name_select} ({latest_season_for_detailed_view} Season)")
-                #          player_vs_team_avg = get_player_vs_team_stats(player1_id, opponent_team_id, season=latest_season_for_detailed_view)
-                #          if player_vs_team_avg is not None and not player_vs_team_avg.empty:
-                #               st.dataframe(player_vs_team_avg.round(2)) # Round for display
-                #          else:
-                #               st.info(f"{player1_name_select} did not play against {opponent_team_name_select} in the {latest_season_for_detailed_view} season.")
-                #      else:
-                #           st.error(f"Could not find ID for team: {opponent_team_name_select}")
-                # else:
-                #      st.info("Select an Opponent Team to see Player vs Team statistics.")
-
-
+            with tab4:
                 # --- Prediction Logic ---
-                st.header(f"{player1_name_select} Next Game Prediction ({latest_season_for_detailed_view} Season)")
-                # Fetch and engineer data for prediction
-                combined_data = fetch_and_combine_game_data(player1_id, latest_season_for_detailed_view)
+                st.header(f"{player1_name_select} Next Game Prediction")
+                # Use the fetched career_game_logs_df for prediction
+                predicted_stats = predict_next_game_stats(career_game_logs_df, latest_season_for_detailed_view)
 
-                if combined_data is not None:
-                    # engineer_features also handles dropping NaNs and shifting targets for model training,
-                    # but we need the last row *before* the shift for prediction features.
-                    # Let's engineer features without shifting targets for prediction input.
-                    # We'll create a separate function or modify engineer_features to handle this.
+                if predicted_stats:
+                    st.subheader("Predicted Stats for Next Game:")
+                    predicted_df = pd.DataFrame([predicted_stats]) # Convert dict to DataFrame for display
+                    st.dataframe(predicted_df)
+                    st.caption("Prediction based on a weighted average of recent game averages and season average.")
 
-                    # Simpler approach: directly calculate features needed for prediction
-                    # from the fetched game logs, rather than re-using the training feature engineering.
-                    # This avoids the complexity of handling the "next game" target shift during feature engineering for prediction.
+                    # Add button to save prediction (using session state)
+                    if st.button(f"Save Prediction for {player1_name_select}"):
+                         if 'saved_predictions' not in st.session_state:
+                             st.session_state.saved_predictions = {}
 
-                    # Use the combined game logs fetched in get_player_stats for prediction features
-                    game_logs_for_pred = player1_stats.get('game_logs_df')
-
-
-                    if game_logs_for_pred is not None and not game_logs_for_pred.empty:
-                        # Calculate rolling averages from the player's game logs (across seasons)
-                        # stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
-                        valid_stats_columns_pred = [col for col in stats_columns if col in game_logs_for_pred.columns] # Use the global stats_columns
-
-
-                        # Sort game logs by date ascending for rolling window calculation
-                        game_logs_for_pred_sorted = game_logs_for_pred.sort_values(by='GAME_DATE', ascending=True).copy()
-
-                        player_features_for_pred = {}
-                        if not game_logs_for_pred_sorted.empty:
-                             for col in valid_stats_columns_pred:
-                                # Calculate rolling averages and get the last value (most recent game)
-                                # Handle potential errors if not enough games for rolling window
-                                try:
-                                     rolling_5 = game_logs_for_pred_sorted[col].rolling(window=5, min_periods=1).mean().iloc[-1]
-                                except IndexError:
-                                     rolling_5 = np.nan # Not enough games for rolling 5
-                                try:
-                                     rolling_10 = game_logs_for_pred_sorted[col].rolling(window=10, min_periods=1).mean().iloc[-1]
-                                except IndexError:
-                                     rolling_10 = np.nan # Not enough games for rolling 10
-                                try:
-                                     rolling_20 = game_logs_for_pred_sorted[col].rolling(window=20, min_periods=1).mean().iloc[-1]
-                                except IndexError:
-                                     rolling_20 = np.nan # Not enough games for rolling 20
-
-
-                                player_features_for_pred[f'{col}_rolling_5'] = rolling_5 # Store with original stat name prefix
-                                player_features_for_pred[f'{col}_rolling_10'] = rolling_10
-                                player_features_for_pred[f'{col}_rolling_20'] = rolling_20
-
-                             # Calculate season average for the player from the game logs (using the primary selected season)
-                             # Filter game logs for the primary selected season
-                             current_season_game_logs_for_avg = game_logs_for_pred_sorted[game_logs_for_pred_sorted['SEASON_YEAR'] == latest_season_for_detailed_view]
-                             player_season_avg_pred = current_season_game_logs_for_avg[valid_stats_columns_pred].mean() if not current_season_game_logs_for_avg.empty else game_logs_for_pred_sorted[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
-
-
-                             # Generate prediction using the simplified approach with calculated features
-                             predicted_stats = {}
-                             stats_for_prediction = ['PTS', 'AST', 'REB', 'FG3M']
-
-                             for stat in stats_for_prediction:
-                                 stat_col = stat
-                                 stat_col_player = f'{stat}_player'
-                                 stat_col_rolling_5 = f'{stat}_rolling_5'
-                                 stat_col_rolling_10 = f'{stat}_rolling_10'
-                                 stat_col_rolling_20 = f'{stat}_rolling_20'
-
-                                 # Ensure rolling average features exist in player_features_for_pred before accessing
-                                 if stat_col_rolling_5 in player_features_for_pred and \
-                                    stat_col_rolling_10 in player_features_for_pred and \
-                                    stat_col_rolling_20 in player_features_for_pred:
-
-
-                                     recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                                     recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                                     recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                                     season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
-
-
-                                     predicted_value = (0.4 * recent_5_val +
-                                                        0.3 * recent_10_val +
-                                                        0.2 * recent_20_val +
-                                                        0.1 * season_avg_val)
-                                     predicted_stats[stat] = round(predicted_value, 2) # Round predictions
-
-                                 else:
-                                      predicted_stats[stat] = "N/A" # Cannot predict if data is missing
-
-
-                             if predicted_stats:
-                                 st.subheader("Predicted Stats for Next Game:")
-                                 predicted_df = pd.DataFrame([predicted_stats]) # Convert dict to DataFrame for display
-                                 st.dataframe(predicted_df)
-                                 st.caption("Prediction based on a weighted average of recent game averages and season average.")
-
-                                 # Add button to save prediction (using session state)
-                                 if st.button(f"Save Prediction for {player1_name_select}"):
-                                      if 'saved_predictions' not in st.session_state:
-                                          st.session_state.saved_predictions = {}
-
-                                      # Store prediction with player name and season as key
-                                      prediction_key = f"{player1_name_select} ({latest_season_for_detailed_view})"
-                                      st.session_state.saved_predictions[prediction_key] = {
-                                           'PTS': predicted_stats.get('PTS', 'N/A'),
-                                           'AST': predicted_stats.get('AST', 'N/A'),
-                                           'REB': predicted_stats.get('REB', 'N/A'),
-                                           'FG3M': predicted_stats.get('FG3M', 'N/A'),
-                                           'Season': latest_season_for_detailed_view # Store season as well
-                                           # Add other relevant prediction details here
-                                      }
-                                      st.success(f"Prediction for {player1_name_select} saved!")
-
-
-                             else:
-                                 st.info("Could not generate prediction for the next game based on available data.")
-                        else:
-                             st.info("Insufficient game logs available to generate prediction.")
+                         # Store prediction with player name and season as key
+                         prediction_key = f"{player1_name_select} ({latest_season_for_detailed_view})" # Using latest season for key
+                         st.session_state.saved_predictions[prediction_key] = {
+                              'PTS': predicted_stats.get('PTS', 'N/A'),
+                              'AST': predicted_stats.get('AST', 'N/A'),
+                              'REB': predicted_stats.get('REB', 'N/A'),
+                              'FG3M': predicted_stats.get('FG3M', 'N/A'),
+                              'Season': latest_season_for_detailed_view # Store season as well
+                              # Add other relevant prediction details here
+                         }
+                         st.success(f"Prediction for {player1_name_select} saved!")
 
 
                 else:
-                     st.info("Could not fetch combined game data for prediction.")
+                     st.info("Could not generate prediction for the next game based on available data.")
+
+            with tab5:
+                 # Display saved predictions
+                 if 'saved_predictions' in st.session_state and st.session_state.saved_predictions:
+                     st.subheader("Saved Predictions")
+                     # Convert saved predictions dictionary to a DataFrame for display
+                     saved_predictions_df = pd.DataFrame.from_dict(st.session_state.saved_predictions, orient='index')
+                     st.dataframe(saved_predictions_df)
+
+                     if st.button("Clear Saved Predictions"):
+                         st.session_state.saved_predictions = {}
+                         st.success("Saved predictions cleared.")
+                 else:
+                     st.info("No predictions saved yet.")
 
 
-            else:
-                st.error(f"Could not fetch stats for {player1_name_select}.")
+        elif player1_id is not None: # Player selected but no career data found
+            st.info(f"No data available for {player1_name_select}.")
+
+    else: # No player selected
+        st.info("Please select a player from the dropdown to view their stats.")

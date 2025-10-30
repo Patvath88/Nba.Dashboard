@@ -1,3 +1,5 @@
+# This code can be saved as a Python file (e.g., nba_dashboard.py) and run with streamlit run nba_dashboard.py
+
 import streamlit as st
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playercareerstats, playergamelogs, teamgamelogs
@@ -353,37 +355,31 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_cleane
     # Calculate simple season average from the cleaned data for the player
     player_season_avg = combined_data_cleaned[[f'{col}_player' for col in stats_for_prediction]].mean()
 
-    # Calculate recent averages from the raw game logs (if available) - need to refetch or pass
-    # Let's use the rolling averages from the last row of combined_data_cleaned as proxies for recent form
-    recent_5_avg = last_game_features_row[[f'{col}_rolling_5' for col in stats_for_prediction]]
-    recent_10_avg = last_game_features_row[[f'{col}_rolling_10' for col in stats_for_prediction]]
-    recent_20_avg = last_game_features_row[[f'{col}_rolling_20' for col in stats_for_prediction]]
-
-
     # Apply a simple weighted average. Example weights: 40% last 5, 30% last 10, 20% last 20, 10% season avg
     # Need to handle potential NaN values in rolling averages if the player hasn't played enough games
     # Fill NaN rolling averages with the season average
-    recent_5_avg = recent_5_avg.fillna(player_season_avg)
-    recent_10_avg = recent_10_avg.fillna(player_season_avg)
-    recent_20_avg = recent_20_avg.fillna(player_season_avg)
-
-
+    # Also ensure rolling average columns exist
     for stat in stats_for_prediction:
         stat_col_player = f'{stat}_player'
         stat_col_rolling_5 = f'{stat}_rolling_5'
         stat_col_rolling_10 = f'{stat}_rolling_10'
         stat_col_rolling_20 = f'{stat}_rolling_20'
 
-        # Ensure the rolling average columns exist before accessing
-        if stat_col_rolling_5 in recent_5_avg.index and \
-           stat_col_rolling_10 in recent_10_avg.index and \
-           stat_col_rolling_20 in recent_20_avg.index and \
+        if stat_col_rolling_5 in last_game_features_row.index and \
+           stat_col_rolling_10 in last_game_features_row.index and \
+           stat_col_rolling_20 in last_game_features_row.index and \
            stat_col_player in player_season_avg.index:
 
-            predicted_value = (0.4 * recent_5_avg[stat_col_rolling_5] +
-                               0.3 * recent_10_avg[stat_col_rolling_10] +
-                               0.2 * recent_20_avg[stat_col_rolling_20] +
-                               0.1 * player_season_avg[stat_col_player])
+            recent_5_val = last_game_features_row[stat_col_rolling_5] if pd.notna(last_game_features_row[stat_col_rolling_5]) else player_season_avg[stat_col_player]
+            recent_10_val = last_game_features_row[stat_col_rolling_10] if pd.notna(last_game_features_row[stat_col_rolling_10]) else player_season_avg[stat_col_player]
+            recent_20_val = last_game_features_row[stat_col_rolling_20] if pd.notna(last_game_features_row[stat_col_rolling_20]) else player_season_avg[stat_col_player]
+            season_avg_val = player_season_avg[stat_col_player] if pd.notna(player_season_avg[stat_col_player]) else 0 # Handle potential NaN season avg if no games played
+
+
+            predicted_value = (0.4 * recent_5_val +
+                               0.3 * recent_10_val +
+                               0.2 * recent_20_val +
+                               0.1 * season_avg_val)
             predicted_stats[stat] = round(predicted_value, 2) # Round predictions
 
         else:
@@ -444,21 +440,21 @@ if st.button("Get Player Stats"):
                 st.subheader("Career Averages")
                 if player1_stats.get('historical_career_averages') is not None and not player1_stats['historical_career_averages'].empty:
                     st.write("Historical Career (excluding current season):")
-                    st.dataframe(player1_stats['historical_career_averages'])
+                    st.dataframe(player1_stats['historical_career_averages'].round(2)) # Round for display
                 else:
                      st.write("Historical Career Averages Not Available.")
 
 
                 if player1_stats.get('overall_career_averages') is not None and not player1_stats['overall_career_averages'].empty:
                     st.write("Overall Career (including current season):")
-                    st.dataframe(player1_stats['overall_career_averages'])
+                    st.dataframe(player1_stats['overall_career_averages'].round(2)) # Round for display
                 else:
                      st.write("Overall Career Averages Not Available.")
 
 
                 if player1_stats.get('last_season_averages') is not None and not player1_stats['last_season_averages'].empty:
                      st.subheader(f"Last Season Averages")
-                     st.dataframe(player1_stats['last_season_averages'])
+                     st.dataframe(player1_stats['last_season_averages'].round(2)) # Round for display
                 else:
                      st.subheader("Last Season Averages Not Available.")
 
@@ -467,20 +463,20 @@ if st.button("Get Player Stats"):
                 st.subheader("Recent Game Averages")
                 if player1_stats.get('last_5_games_avg') is not None and not player1_stats['last_5_games_avg'].empty:
                     with st.expander("Last 5 Games Average"):
-                        st.dataframe(player1_stats['last_5_games_avg'])
+                        st.dataframe(player1_stats['last_5_games_avg'].round(2)) # Round for display
                 else:
                      st.write("Last 5 Games Averages Not Available for the selected season or not enough games played.")
 
 
                 if player1_stats.get('last_10_games_avg') is not None and not player1_stats['last_10_games_avg'].empty:
                     with st.expander("Last 10 Games Average"):
-                        st.dataframe(player1_stats['last_10_games_avg'])
+                        st.dataframe(player1_stats['last_10_games_avg'].round(2)) # Round for display
                 else:
                      st.write("Last 10 Games Averages Not Available for the selected season or not enough games played.")
 
                 if player1_stats.get('last_20_games_avg') is not None and not player1_stats['last_20_games_avg'].empty:
                     with st.expander("Last 20 Games Average"):
-                        st.dataframe(player1_stats['last_20_games_avg'])
+                        st.dataframe(player1_stats['last_20_games_avg'].round(2)) # Round for display
                 else:
                      st.write("Last 20 Games Averages Not Available for the selected season or not enough games played.")
 
@@ -488,20 +484,82 @@ if st.button("Get Player Stats"):
                 st.header(f"{player1_name_select} Next Game Prediction ({selected_season} Season)")
                 # Fetch and engineer data for prediction
                 combined_data = fetch_and_combine_game_data(player1_id, selected_season)
-                X, y, combined_data_cleaned = engineer_features(combined_data)
 
-                if combined_data_cleaned is not None and not combined_data_cleaned.empty:
-                    # Generate prediction using the simplified approach
-                    predicted_stats = predict_next_game_stats(player1_id, selected_season, player1_name_select, combined_data_cleaned)
+                if combined_data is not None:
+                    # engineer_features also handles dropping NaNs and shifting targets for model training,
+                    # but we need the last row *before* the shift for prediction features.
+                    # Let's engineer features without shifting targets for prediction input.
+                    # We'll create a separate function or modify engineer_features to handle this.
 
-                    if predicted_stats:
-                        st.subheader("Predicted Stats for Next Game:")
-                        predicted_df = pd.DataFrame([predicted_stats]) # Convert dict to DataFrame for display
-                        st.dataframe(predicted_df)
+                    # Simpler approach: directly calculate features needed for prediction
+                    # from the fetched game logs, rather than re-using the training feature engineering.
+                    # This avoids the complexity of handling the "next game" target shift during feature engineering for prediction.
+
+                    game_logs_for_pred = player1_stats.get('game_logs_df')
+
+                    if game_logs_for_pred is not None and not game_logs_for_pred.empty:
+                        # Calculate rolling averages from the player's game logs
+                        stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+                        valid_stats_columns_pred = [col for col in stats_columns_pred if col in game_logs_for_pred.columns]
+
+                        # Sort game logs by date ascending for rolling window calculation
+                        game_logs_for_pred_sorted = game_logs_for_pred.sort_values(by='GAME_DATE', ascending=True).copy()
+
+                        player_features_for_pred = {}
+                        for col in valid_stats_columns_pred:
+                            player_features_for_pred[f'{col}_rolling_5'] = game_logs_for_pred_sorted[col].rolling(window=5, min_periods=1).mean().iloc[-1] # Last rolling 5 avg
+                            player_features_for_pred[f'{col}_rolling_10'] = game_logs_for_pred_sorted[col].rolling(window=10, min_periods=1).mean().iloc[-1] # Last rolling 10 avg
+                            player_features_for_pred[f'{col}_rolling_20'] = game_logs_for_pred_sorted[col].rolling(window=20, min_periods=1).mean().iloc[-1] # Last rolling 20 avg
+
+                        # Calculate season average for the player from the game logs
+                        player_season_avg_pred = game_logs_for_pred_sorted[valid_stats_columns_pred].mean()
+
+
+                        # Generate prediction using the simplified approach with calculated features
+                        predicted_stats = {}
+                        stats_for_prediction = ['PTS', 'AST', 'REB', 'FG3M']
+
+                        for stat in stats_for_prediction:
+                            stat_col = stat
+                            stat_col_rolling_5 = f'{stat}_rolling_5'
+                            stat_col_rolling_10 = f'{stat}_rolling_10'
+                            stat_col_rolling_20 = f'{stat}_rolling_20'
+
+                            # Ensure rolling average features exist before accessing
+                            if stat_col_rolling_5 in player_features_for_pred and \
+                               stat_col_rolling_10 in player_features_for_pred and \
+                               stat_col_rolling_20 in player_features_for_pred and \
+                               stat_col in player_season_avg_pred.index:
+
+                                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else player_season_avg_pred[stat_col]
+                                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else player_season_avg_pred[stat_col]
+                                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else player_season_avg_pred[stat_col]
+                                season_avg_val = player_season_avg_pred[stat_col] if pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
+
+
+                                predicted_value = (0.4 * recent_5_val +
+                                                   0.3 * recent_10_val +
+                                                   0.2 * recent_20_val +
+                                                   0.1 * season_avg_val)
+                                predicted_stats[stat] = round(predicted_value, 2) # Round predictions
+
+                            else:
+                                 predicted_stats[stat] = "N/A" # Cannot predict if data is missing
+
+
+                        if predicted_stats:
+                            st.subheader("Predicted Stats for Next Game:")
+                            predicted_df = pd.DataFrame([predicted_stats]) # Convert dict to DataFrame for display
+                            st.dataframe(predicted_df)
+                            st.caption("Prediction based on a weighted average of recent game averages and season average.")
+                        else:
+                            st.info("Could not generate prediction for the next game based on available data.")
                     else:
-                        st.info("Could not generate prediction for the next game based on available data.")
+                         st.info("Insufficient game logs available for the selected season to generate prediction.")
+
+
                 else:
-                     st.info("Insufficient data to generate prediction for the next game.")
+                     st.info("Could not fetch combined game data for prediction.")
 
 
             else:
@@ -520,10 +578,10 @@ if st.button("Get Player Stats"):
 
                 if player1_h2h is not None and player2_h2h is not None:
                     st.subheader(f"{player1_name_select} Head-to-Head Averages vs {player2_name_select}")
-                    st.dataframe(player1_h2h)
+                    st.dataframe(player1_h2h.round(2)) # Round for display
 
                     st.subheader(f"{player2_name_select} Head-to-Head Averages vs {player1_name_select}")
-                    st.dataframe(player2_h2h)
+                    st.dataframe(player2_h2h.round(2)) # Round for display
                 else:
                     st.info(f"No head-to-head games found between {player1_name_select} and {player2_name_select} in the {selected_season} season.")
         elif player2_name_select and player1_name_select == player2_name_select:

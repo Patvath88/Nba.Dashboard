@@ -1,3 +1,7 @@
+# Re-run the code from cell bd579bdc after fixing the NameError
+# Copy and paste the entire code from cell bd579bdc here to re-execute it
+# (Since I cannot directly re-execute a specific cell by ID, I will regenerate the code here)
+
 import streamlit as st
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playercareerstats, playergamelogs, teamgamelogs
@@ -185,9 +189,9 @@ def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
             # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
             match = re.search(rf'@\s*{opponent_abbr}|vs.\s*{opponent_abbr}|VS.\s*{opponent_abbr}', matchup, re.IGNORECASE) # Added IGNORECASE for robustness
             if match:
-                opponent_abbr = match.group(1) or match.group(2)
+                opponent_abbr = match.group(1) or match.group(2) or match.group(3) # Capture from any group
                 # Basic check to ensure the extracted opponent is not the player's team
-                if opponent_abbr and opponent_abbr.upper() != player_team_abbr.upper():
+                if opponent_abbr and player_team_abbr and opponent_abbr.upper() != player_team_abbr.upper():
                     return opponent_abbr.upper() # Return uppercase for consistent matching
                 elif opponent_abbr: # Handle cases where the team might be the opponent but the abbreviation matches player's team (e.g., both are LAL in different games)
                      # Need a more robust check here, maybe compare team IDs from game logs if available
@@ -265,10 +269,15 @@ def fetch_and_combine_game_data(player_id, season):
 
             # Determine the last season ID fetched in get_player_stats for team logs as well
             last_season_id_fetched = None
-            if season in players.PlayerCareerStats(player_id=player_id).get_data_frames()[0]['SEASON_ID'].values:
-                season_index_in_career = players.PlayerCareerStats(player_id=player_id).get_data_frames()[0][players.PlayerCareerStats(player_id=player_id).get_data_frames()[0]['SEASON_ID'] == season].index[0]
-                if season_index_in_career > 0:
-                    last_season_id_fetched = players.PlayerCareerStats(player_id=player_id).get_data_frames()[0].iloc[season_index_in_career - 1]['SEASON_ID']
+            # Re-fetch career stats to get the last season ID reliably
+            try:
+                career_df_check = playercareerstats.PlayerCareerStats(player_id=player_id).get_data_frames()[0]
+                if season in career_df_check['SEASON_ID'].values:
+                    season_index_in_career = career_df_check[career_df_check['SEASON_ID'] == season].index[0]
+                    if season_index_in_career > 0:
+                        last_season_id_fetched = career_df_check.iloc[season_index_in_career - 1]['SEASON_ID']
+            except Exception as e:
+                 st.warning(f"Could not fetch career stats to determine last season ID for team logs. Error: {e}")
 
 
             if last_season_id_fetched: # Check if last_season_id was successfully determined
@@ -299,11 +308,11 @@ def fetch_and_combine_game_data(player_id, season):
 
             # Extract opponent team abbreviation from the 'MATCHUP_player' column
             def extract_opponent_team_abbr(matchup, player_team_abbr):
-                match = re.search(rf'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*([A-Z]{3})', matchup, re.IGNORECASE) # Added IGNORECASE for robustness
+                match = re.search(rf'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*{opponent_abbr}', matchup, re.IGNORECASE) # Added IGNORECASE for robustness
                 if match:
                     opponent_abbr = match.group(1) or match.group(2) or match.group(3) # Capture from any group
                     # Basic check to ensure the extracted opponent is not the player's team
-                    if opponent_abbr and opponent_abbr.upper() != player_team_abbr.upper():
+                    if opponent_abbr and player_team_abbr and opponent_abbr.upper() != player_team_abbr.upper():
                         return opponent_abbr.upper() # Return uppercase for consistent matching
                     elif opponent_abbr: # Handle cases where the team might be the opponent but the abbreviation matches player's team (e.g., both are LAL in different games)
                          # Need a more robust check here, maybe compare team IDs from game logs if available
@@ -312,7 +321,7 @@ def fetch_and_combine_game_data(player_id, season):
 
             # Apply the function to extract opponent team abbreviation
             player_team_combined['OPPONENT_TEAM_ABBREVIATION'] = player_team_combined.apply(
-                lambda row: extract_opponent_team_abbr(row.get('MATCHUP_player'), row.get('TEAM_ABBREVIATION_player')), axis=1
+                lambda row: extract_opponent_team_abbr(row.get('MATCHUP_player', ''), row.get('TEAM_ABBREVIATION_player', '')), axis=1
             )
 
             # Get a mapping of team abbreviation to team ID from the combined team logs
@@ -483,16 +492,27 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
     if not combined_data_for_prediction.empty:
         for col in valid_stats_columns_pred:
             # Calculate rolling averages and get the last value (most recent game)
-            rolling_5 = combined_data_for_prediction[col].rolling(window=5, min_periods=1).mean().iloc[-1]
-            rolling_10 = combined_data_for_prediction[col].rolling(window=10, min_periods=1).mean().iloc[-1]
-            rolling_20 = combined_data_for_prediction[col].rolling(window=20, min_periods=1).mean().iloc[-1]
+            # Handle potential errors if not enough games for rolling window
+            try:
+                 rolling_5 = combined_data_for_prediction[col].rolling(window=5, min_periods=1).mean().iloc[-1]
+            except IndexError:
+                 rolling_5 = np.nan # Not enough games for rolling 5
+            try:
+                 rolling_10 = combined_data_for_prediction[col].rolling(window=10, min_periods=1).mean().iloc[-1]
+            except IndexError:
+                 rolling_10 = np.nan # Not enough games for rolling 10
+            try:
+                 rolling_20 = combined_data_for_prediction[col].rolling(window=20, min_periods=1).mean().iloc[-1]
+            except IndexError:
+                 rolling_20 = np.nan # Not enough games for rolling 20
+
 
             player_features_for_pred[f'{col.replace("_player", "")}_rolling_5'] = rolling_5 # Store with original stat name prefix
             player_features_for_pred[f'{col.replace("_player", "")}_rolling_10'] = rolling_10
             player_features_for_pred[f'{col.replace("_player", "")}_rolling_20'] = rolling_20
 
         # Calculate season average for the player from the combined game logs
-        # Calculate average for the primary season data only for a more relevant "season" average
+        # Calculate average for the primary selected season data only for a more relevant "season" average
         current_season_data = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR_player'] == season]
         player_season_avg_pred = current_season_data[valid_stats_columns_pred].mean() if not current_season_data.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
 
@@ -508,7 +528,7 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
             stat_col_rolling_10 = f'{stat}_rolling_10'
             stat_col_rolling_20 = f'{stat}_rolling_20'
 
-            # Ensure rolling average features exist before accessing
+            # Ensure rolling average features exist in player_features_for_pred before accessing
             if stat_col_rolling_5 in player_features_for_pred and \
                stat_col_rolling_10 in player_features_for_pred and \
                stat_col_rolling_20 in player_features_for_pred:
@@ -579,44 +599,53 @@ player1_name_select = st.selectbox("Select Player", player_names)
 
 # Fetch player stats including career_df when a player is selected
 player1_stats = None
+career_df_all_seasons = None # Initialize to None
 if player1_name_select:
     player1_id = player_name_to_id.get(player1_name_select)
     if player1_id is not None:
         # Fetch career_df to display all season averages
-        career_stats_all_seasons = playercareerstats.PlayerCareerStats(player_id=player1_id)
-        career_df_all_seasons = career_stats_all_seasons.get_data_frames()[0]
+        try:
+            career_stats_all_seasons = playercareerstats.PlayerCareerStats(player_id=player1_id)
+            career_df_all_seasons = career_stats_all_seasons.get_data_frames()[0]
 
-        # Display all season averages in a table
-        if career_df_all_seasons is not None and not career_df_all_seasons.empty:
-            st.subheader(f"{player1_name_select} Season Averages")
-            # Select relevant columns for display and calculate averages per game
-            stats_columns_for_display = ['SEASON_ID', 'GP', 'MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
-            # Ensure columns exist before selecting
-            valid_cols_for_display = [col for col in stats_columns_for_display if col in career_df_all_seasons.columns]
-            display_career_df = career_df_all_seasons[valid_cols_for_display].copy()
+            # Display all season averages in a table
+            if career_df_all_seasons is not None and not career_df_all_seasons.empty:
+                st.subheader(f"{player1_name_select} Season Averages")
+                # Select relevant columns for display and calculate averages per game
+                stats_columns_for_display = ['SEASON_ID', 'TEAM_ABBREVIATION', 'GP', 'MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+                # Ensure columns exist before selecting
+                valid_cols_for_display = [col for col in stats_columns_for_display if col in career_df_all_seasons.columns]
+                display_career_df = career_df_all_seasons[valid_cols_for_display].copy()
 
-            # Calculate averages per game for relevant columns
-            for col in ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']:
-                 if col in display_career_df.columns and 'GP' in display_career_df.columns:
-                     # Avoid division by zero if GP is 0
-                     display_career_df[col] = display_career_df.apply(lambda row: row[col] / row['GP'] if row['GP'] > 0 else 0, axis=1)
+                # Calculate averages per game for relevant columns
+                for col in ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']:
+                     if col in display_career_df.columns and 'GP' in display_career_df.columns:
+                         # Avoid division by zero if GP is 0
+                         display_career_df[col] = display_career_df.apply(lambda row: round(row[col] / row['GP'], 2) if row['GP'] > 0 else 0, axis=1) # Round averages here
 
 
-            st.dataframe(display_career_df.round(2)) # Display with 2 decimal places
+                st.dataframe(display_career_df) # Display the career dataframe
+
+
+            else:
+                 st.info(f"No career season data available for {player1_name_select}.")
+
+        except Exception as e:
+            st.error(f"An error occurred while fetching career stats for display: {e}")
 
 
 # Add dropdown for selecting opponent team for H2H
 opponent_team_name_select = st.selectbox("Select Opponent Team (for Stats Against)", [''] + team_names) # Add empty option
 
 
-# Add a button to trigger detailed stats and predictions for a selected season
-# Since we removed the season dropdown, we might default to the latest season for detailed view
-# Or we can add a selectbox specifically for the detailed view season if needed.
-# For now, let's assume the user wants detailed stats/predictions for the latest season.
-
+# Add a button to trigger detailed stats and predictions for the latest season
 # Determine the latest season from the career data if available, otherwise use current year logic
+# Generate a list of seasons from 2000-01 to current/next season (Moved outside the button block)
+current_year = pd.Timestamp.now().year
+seasons = [f"{y}-{str(y+1)[-2:]}" for y in range(2000, current_year + 1)]
+
 latest_season_for_detailed_view = seasons[-1] # Default to the latest season in the generated list
-if 'career_df_all_seasons' in locals() and not career_df_all_seasons.empty:
+if career_df_all_seasons is not None and not career_df_all_seasons.empty:
      latest_season_for_detailed_view = career_df_all_seasons['SEASON_ID'].iloc[-1]
 
 
@@ -755,7 +784,7 @@ if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detaile
                                      rolling_20 = np.nan # Not enough games for rolling 20
 
 
-                                player_features_for_pred[f'{col}_rolling_5'] = rolling_5
+                                player_features_for_pred[f'{col}_rolling_5'] = rolling_5 # Store with original stat name prefix
                                 player_features_for_pred[f'{col}_rolling_10'] = rolling_10
                                 player_features_for_pred[f'{col}_rolling_20'] = rolling_20
 

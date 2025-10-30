@@ -184,21 +184,21 @@ def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
         # Filter player logs for games against the specific opponent team
         # We can identify opponent by checking if the opponent team abbreviation is in the MATCHUP string
         # This requires parsing the MATCHUP string
-        def played_against_team(matchup, opponent_abbr):
+        def played_against_team(matchup, opponent_abbr_to_find): # Renamed parameter to avoid conflict
             # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
-            match = re.search(rf'@\s*{opponent_abbr}|vs.\s*{opponent_abbr}|VS.\s*{opponent_abbr}', matchup, re.IGNORECASE) # Added IGNORECASE for robustness
+            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE) # Use the parameter
+            # Refined check: also ensure the found abbreviation is not the player's team abbreviation in this game
             if match:
-                opponent_abbr = match.group(1) or match.group(2) or match.group(3) # Capture from any group
-                # Basic check to ensure the extracted opponent is not the player's team
-                if opponent_abbr and player_team_abbr and opponent_abbr.upper() != player_team_abbr.upper():
-                    return opponent_abbr.upper() # Return uppercase for consistent matching
-                elif opponent_abbr: # Handle cases where the team might be the opponent but the abbreviation matches player's team (e.g., both are LAL in different games)
-                     # Need a more robust check here, maybe compare team IDs from game logs if available
-                     pass # For now, rely on the basic check
-            return False # Return False if no match or if it matches player's team abbr
+                 found_abbr = match.group(1) or match.group(2) or match.group(3)
+                 # Need player's team abbreviation for the current game to avoid self-matches
+                 # This is complex to get accurately within this function without game logs.
+                 # For simplicity, we'll rely on the strict matching for now.
+                 return bool(found_abbr) # Return True if a match is found
+
+            return False # Return False if no match
 
         player_logs_vs_team = player_logs[
-            player_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr))
+            player_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr)) # Pass the found opponent_team_abbr
         ].copy() # Use .copy() to avoid SettingWithCopyWarning
 
 
@@ -307,7 +307,8 @@ def fetch_and_combine_game_data(player_id, season):
 
             # Extract opponent team abbreviation from the 'MATCHUP_player' column
             def extract_opponent_team_abbr(matchup, player_team_abbr):
-                match = re.search(rf'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*{opponent_abbr}', matchup, re.IGNORECASE) # Added IGNORECASE for robustness
+                # Corrected regex to avoid referencing opponent_abbr in the pattern
+                match = re.search(r'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})|VS.\s*([A-Z]{3})', matchup, re.IGNORECASE) # Capture any 3 uppercase letters after @ or vs.
                 if match:
                     opponent_abbr = match.group(1) or match.group(2) or match.group(3) # Capture from any group
                     # Basic check to ensure the extracted opponent is not the player's team
@@ -485,7 +486,8 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
 
     # Calculate rolling averages from the combined player's game logs (across seasons)
     # stats_columns_pred = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
-    valid_stats_columns_pred = [col for col in stats_columns if f'{col}_player' in combined_data_for_prediction.columns] # Use _player suffix
+    valid_stats_columns_pred = [col for col in stats_columns if col in combined_data_for_prediction.columns] # Use the global stats_columns
+
 
     player_features_for_pred = {}
     if not combined_data_for_prediction.empty:
@@ -506,12 +508,12 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                  rolling_20 = np.nan # Not enough games for rolling 20
 
 
-            player_features_for_pred[f'{col.replace("_player", "")}_rolling_5'] = rolling_5 # Store with original stat name prefix
-            player_features_for_pred[f'{col.replace("_player", "")}_rolling_10'] = rolling_10
-            player_features_for_pred[f'{col.replace("_player", "")}_rolling_20'] = rolling_20
+            player_features_for_pred[f'{col}_rolling_5'] = rolling_5 # Store with original stat name prefix
+            player_features_for_pred[f'{col}_rolling_10'] = rolling_10
+            player_features_for_pred[f'{col}_rolling_20'] = rolling_20
 
-        # Calculate season average for the player from the combined game logs
-        # Calculate average for the primary selected season data only for a more relevant "season" average
+        # Calculate season average for the player from the game logs (using the primary selected season)
+        # Filter game logs for the primary selected season
         current_season_data = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR_player'] == season]
         player_season_avg_pred = current_season_data[valid_stats_columns_pred].mean() if not current_season_data.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
 
@@ -533,10 +535,10 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                stat_col_rolling_20 in player_features_for_pred:
 
 
-                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
-                season_avg_val = player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0 # Handle potential NaN season avg if no games played
+                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
+                season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
 
 
                 predicted_value = (0.4 * recent_5_val +

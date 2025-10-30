@@ -9,7 +9,7 @@ import time # Import time for delays
 # import requests # Removed requests for fetching player images
 # from PIL import Image # Removed Pillow for image handling
 # from io import BytesIO # Removed BytesIO for handling image bytes
-import altair as alt # Reintroduce Altair
+# import altair as alt # Removed Altair
 
 
 # Define core stats columns globally
@@ -273,36 +273,38 @@ def predict_next_game_stats(career_game_logs_df, latest_season):
         return None
 
 
-# Function to create an Altair stat bar chart
-def create_stat_bar_chart(data, stat_column, title):
-    """
-    Creates an Altair bar chart for a given stat.
-    Data should be a DataFrame with a single row and columns for stats.
-    """
-    if data is None or data.empty:
-        return None
+# Function to create a stat bar (using Streamlit progress)
+def create_stat_bar(label, value, max_value):
+    """Creates a simple horizontal bar for visualizing a stat using st.progress."""
+    # Ensure value and max_value are not None or NaN and max_value is positive
+    if value is None or pd.isna(value) or max_value is None or pd.isna(max_value) or max_value <= 0:
+        display_value = value if value is not None and pd.notna(value) else "N/A"
+        st.write(f"**{label}:** {display_value}")
+        st.progress(0.0) # Display empty progress bar if data is invalid or zero max
+        return
 
-    # Convert the single row DataFrame to a format suitable for Altair
-    # We need 'Stat' (e.g., 'PTS') and 'Value' columns
-    chart_data = data.T.reset_index()
-    chart_data.columns = ['Stat', 'Value']
+    percentage = (value / max_value) * 100
+    # Clamp percentage between 0 and 100
+    percentage = max(0, min(100, percentage))
 
-    # Filter for the specific stat column
-    chart_data_filtered = chart_data[chart_data['Stat'] == stat_column]
+    st.write(f"**{label}:** {value:.2f}")
+    st.progress(percentage / 100.0) # Streamlit progress bar expects value between 0.0 and 1.0
 
-    if chart_data_filtered.empty:
-        st.warning(f"Data for stat '{stat_column}' not available for charting.")
-        return None
 
-    chart = alt.Chart(chart_data_filtered).mark_bar().encode(
-        x=alt.X('Stat', axis=None), # Hide x-axis label
-        y=alt.Y('Value', title=title),
-        tooltip=['Stat', 'Value']
-    ).properties(
-        title=title
-    ).interactive() # Make chart interactive
+# Removed Altair charting functions
+# def create_stat_bar_chart(data_series, title, max_value):
+#    """
+#    Creates an Altair bar chart for a single stat from a pandas Series.
+#    """
+#    # ... (Altair code) ...
+#    pass # Functionality removed
 
-    return chart
+# def create_multiple_stat_bar_charts(data_series, stat_columns, max_values):
+#    """
+#    Creates multiple Altair bar charts for specified stats side-by-side.
+#    """
+#    # ... (Altair code) ...
+#    pass # Functionality removed
 
 
 # --- Streamlit App Layout and Logic ---
@@ -339,7 +341,7 @@ st.markdown("""
     .stDataFrame {
         font-size: 0.9em;
     }
-    /* Style for stat bars (if still used elsewhere) */
+    /* Style for stat bars (using st.progress) */
     .stProgress > div > div > div > div {
         background-color: #007bff; /* Blue color for bars */
     }
@@ -401,12 +403,7 @@ if player1_name_select:
             # col1, col2 = st.columns([1, 2]) # Adjust column widths as needed
             # Removed col1 for image, only using one column for stats now
 
-            # with col1:
-            #      # --- Player Image ---
-            #      # Image fetching code removed
-            #      pass # Keep column structure if needed for other elements
-
-            # with col2: # Using the main column for stats now
+            # using a single column for stats now
             st.subheader("Career Summary")
             # Calculate overall career averages from career_df_all_seasons
             overall_total_games = career_df_all_seasons['GP'].sum()
@@ -418,7 +415,7 @@ if player1_name_select:
             overall_career_averages = None
             if overall_total_games > 0:
                  overall_career_averages = overall_career_totals[valid_stats_columns_overall] / overall_total_games
-                 overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
+                 # overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
 
 
                  # Define max values for stat bars (can be based on league averages, player's best season, etc.)
@@ -435,23 +432,15 @@ if player1_name_select:
                  max_ast = max(max_ast, 7.0)
                  max_min = max(max_min, 30.0)
 
+                 # Dictionary of max values for charting (still useful for scaling progress bars)
+                 max_values_dict = {'PTS': max_pts, 'REB': max_reb, 'AST': max_ast, 'MIN': max_min}
 
-                 # Display stat bar charts for key career averages using Altair
+                 # Display stat bars for key career averages using st.progress
                  st.write("Overall Career Averages:")
-                 # Create a small DataFrame for charting key stats
-                 key_stats_for_charting = overall_career_averages[['PTS', 'REB', 'AST', 'MIN']].to_frame(name='Value').reset_index()
-                 key_stats_for_charting.columns = ['Stat', 'Value']
-
-                 chart = alt.Chart(key_stats_for_charting).mark_bar().encode(
-                     x=alt.X('Stat', axis=None), # Hide x-axis label for cleaner look
-                     y=alt.Y('Value', title='Average Value'),
-                     color='Stat', # Color bars by stat type
-                     tooltip=['Stat', alt.Tooltip('Value', format='.2f')] # Format tooltip
-                 ).properties(
-                     title='Key Career Averages'
-                 ).interactive() # Make chart interactive
-
-                 st.altair_chart(chart, use_container_width=True) # Display the chart
+                 create_stat_bar("Points", overall_career_averages.get('PTS'), max_values_dict.get('PTS')) # Use create_stat_bar
+                 create_stat_bar("Rebounds", overall_career_averages.get('REB'), max_values_dict.get('REB')) # Use create_stat_bar
+                 create_stat_bar("Assists", overall_career_averages.get('AST'), max_values_dict.get('AST')) # Use create_stat_bar
+                 create_stat_bar("Minutes", overall_career_averages.get('MIN'), max_values_dict.get('MIN')) # Use create_stat_bar
 
 
             else:

@@ -1,9 +1,5 @@
-# Re-run the code from cell bd579bdc after fixing the NameError
-# Copy and paste the entire code from cell bd579bdc here to re-execute it
-# (Since I cannot directly re-execute a specific cell by ID, I will regenerate the code here)
-
 import streamlit as st
-from nba_api.stats.static import players
+from nba_api.stats.static import players, teams # Import teams module
 from nba_api.stats.endpoints import playercareerstats, playergamelogs, teamgamelogs
 import pandas as pd
 import re # Import regex for parsing matchup string
@@ -172,7 +168,7 @@ def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
 
         # Get the abbreviation of the opponent team ID
         opponent_team_abbr = None
-        team_info = players.get_teams() # Get team info to map ID to abbreviation
+        team_info = teams.get_teams() # Use teams.get_teams()
         for team in team_info:
              if team['id'] == team_id:
                  opponent_team_abbr = team['abbreviation']
@@ -577,7 +573,7 @@ active_players = get_active_nba_players()
 @st.cache_data # Cache this data
 def get_all_nba_teams():
     try:
-        return players.get_teams()
+        return teams.get_teams() # Use teams.get_teams()
     except Exception as e:
         st.error(f"Error fetching teams: {e}")
         return []

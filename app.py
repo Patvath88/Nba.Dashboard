@@ -143,31 +143,52 @@ def get_player_stats(player_id, season='2023-24'):
         st.error(f"An error occurred while fetching career stats: {e}")
         return None
 
-# Define the get_player_vs_team_stats function (MODIFIED for player vs team)
-def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
+# Define a function to get a player's career game logs
+@st.cache_data # Cache this data
+def get_player_career_game_logs(player_id):
     """
-    Fetches and calculates a player's statistics against a specific team.
+    Fetches a player's career game logs across all available seasons.
+
+    Args:
+        player_id (int): The ID of the NBA player.
+
+    Returns:
+        DataFrame: A DataFrame containing the player's career game logs,
+                   or None if data fetching fails.
+    """
+    try:
+        career_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable='ALL').get_data_frames()[0]
+        career_logs['GAME_DATE'] = pd.to_datetime(career_logs['GAME_DATE'])
+        career_logs = career_logs.sort_values(by='GAME_DATE').reset_index(drop=True)
+        return career_logs
+    except Exception as e:
+        st.error(f"An error occurred while fetching career game logs: {e}")
+        return None
+
+
+# Define a function to calculate player vs team career stats
+def get_player_vs_team_career_stats(player_id, team_id):
+    """
+    Fetches a player's career game logs and calculates averages against a specific team.
 
     Args:
         player_id (int): The ID of the player.
         team_id (int): The ID of the opponent team.
-        season (str): The season to fetch game logs for (e.g., '2023-24').
 
     Returns:
-        DataFrame: A pandas DataFrame containing the player's averages against
+        DataFrame: A pandas DataFrame containing the player's career averages against
                    the specified team, or None if data fetching fails or they
-                   didn't play against that team in the specified season.
+                   didn't play against that team in their career.
     """
-    # stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS'] # Moved to global scope
+    stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
 
     try:
-        # Fetch game logs for the player for the specified season
-        player_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season).get_data_frames()[0]
-        player_logs['GAME_DATE'] = pd.to_datetime(player_logs['GAME_DATE'])
+        # Fetch player's career game logs
+        career_game_logs = get_player_career_game_logs(player_id)
 
-        # Fetch game logs for the opponent team for the specified season
-        # We need this to get the opponent team's ID from the matchup string
-        # all_team_logs = teamgamelogs.TeamGameLogs(season_nullable=season).get_data_frames()[0] # Not directly needed here
+        if career_game_logs is None or career_game_logs.empty:
+            st.info("Could not fetch career game logs for player vs team stats.")
+            return None
 
         # Get the abbreviation of the opponent team ID
         opponent_team_abbr = None
@@ -181,44 +202,37 @@ def get_player_vs_team_stats(player_id, team_id, season='2023-24'):
              st.error(f"Could not find abbreviation for team ID: {team_id}")
              return None
 
-        # Filter player logs for games against the specific opponent team
-        # We can identify opponent by checking if the opponent team abbreviation is in the MATCHUP string
-        # This requires parsing the MATCHUP string
-        def played_against_team(matchup, opponent_abbr_to_find): # Renamed parameter to avoid conflict
+        # Filter player logs for games against the specific opponent team across career
+        def played_against_team(matchup, opponent_abbr_to_find):
             # Check if the opponent abbreviation appears after '@' or 'vs.' in the matchup string
-            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE) # Use the parameter
-            # Refined check: also ensure the found abbreviation is not the player's team abbreviation in this game
-            if match:
-                 found_abbr = match.group(1) or match.group(2) or match.group(3)
-                 # Need player's team abbreviation for the current game to avoid self-matches
-                 # This is complex to get accurately within this function without game logs.
-                 # For simplicity, we'll rely on the strict matching for now.
-                 return bool(found_abbr) # Return True if a match is found
+            match = re.search(rf'@\s*{opponent_abbr_to_find}|vs.\s*{opponent_abbr_to_find}|VS.\s*{opponent_abbr_to_find}', matchup, re.IGNORECASE)
+            return bool(match)
 
-            return False # Return False if no match
-
-        player_logs_vs_team = player_logs[
-            player_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr)) # Pass the found opponent_team_abbr
+        player_logs_vs_team_career = career_game_logs[
+            career_game_logs['MATCHUP'].apply(lambda x: played_against_team(x, opponent_team_abbr))
         ].copy() # Use .copy() to avoid SettingWithCopyWarning
 
 
-        if player_logs_vs_team.empty:
-            # st.info(f"Player {player_id} did not play against team {team_id} in the {season} season.")
+        if player_logs_vs_team_career.empty:
+            # st.info(f"Player {player_id} did not play against team {team_id} in their career.")
             return None
 
-        # Calculate player's averages in games against the specific team
-        # Ensure stats_columns only contains columns present in player_logs_vs_team
-        valid_stats_columns_vs_team = [col for col in stats_columns if col in player_logs_vs_team.columns]
-        player_vs_team_avg = player_logs_vs_team[valid_stats_columns_vs_team].mean()
-        player_vs_team_avg = player_vs_team_avg.to_frame(name=f"Avg vs {opponent_team_abbr} ({season})").T # Convert to DataFrame
+        # Calculate player's career averages in games against the specific team
+        valid_stats_columns_vs_team = [col for col in stats_columns if col in player_logs_vs_team_career.columns]
+        player_vs_team_career_avg = player_logs_vs_team_career[valid_stats_columns_vs_team].mean()
+        player_vs_team_career_avg = player_vs_team_career_avg.to_frame(name=f"Career Avg vs {opponent_team_abbr}").T # Convert to DataFrame
 
-        return player_vs_team_avg
+        return player_vs_team_career_avg
 
     except Exception as e:
-        st.error(f"An error occurred while fetching player vs team stats: {e}")
+        st.error(f"An error occurred while fetching player vs team career stats: {e}")
         return None
 
+
+
 # Define the fetch_and_combine_game_data function for prediction features
+# This function is primarily for generating data for the prediction model (if implemented)
+# It fetches data for the selected season and the previous one.
 def fetch_and_combine_game_data(player_id, season):
     """
     Fetches player and team game logs for a given season and combines them
@@ -535,10 +549,10 @@ def predict_next_game_stats(player_id, season, player_name, combined_data_for_pr
                stat_col_rolling_20 in player_features_for_pred:
 
 
-                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
+                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
+                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
+                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0)
+                season_avg_val = player_season_avg_pred[stat_col_player] if stat_col_player in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col_player]) else 0 # Handle potential NaN season avg if no games played
 
 
                 predicted_value = (0.4 * recent_5_val +
@@ -599,8 +613,10 @@ player_names = sorted(list(player_name_to_id.keys())) # Sort names alphabeticall
 player1_name_select = st.selectbox("Select Player", player_names)
 
 # Fetch player stats including career_df when a player is selected
+player1_id = None # Initialize player_id
 player1_stats = None
 career_df_all_seasons = None # Initialize to None
+
 if player1_name_select:
     player1_id = player_name_to_id.get(player1_name_select)
     if player1_id is not None:
@@ -636,7 +652,21 @@ if player1_name_select:
 
 
 # Add dropdown for selecting opponent team for H2H
-opponent_team_name_select = st.selectbox("Select Opponent Team (for Stats Against)", [''] + team_names) # Add empty option
+opponent_team_name_select = st.selectbox("Select Opponent Team (for Career Stats Against)", [''] + team_names) # Add empty option
+
+
+# Display player vs team career stats when an opponent team is selected
+if player1_id is not None and opponent_team_name_select:
+    opponent_team_id = team_name_to_id.get(opponent_team_name_select)
+    if opponent_team_id:
+        st.subheader(f"{player1_name_select} Career Statistics Against {opponent_team_name_select}")
+        player_vs_team_career_avg = get_player_vs_team_career_stats(player1_id, opponent_team_id)
+        if player_vs_team_career_avg is not None and not player_vs_team_career_avg.empty:
+             st.dataframe(player_vs_team_career_avg.round(2)) # Round for display
+        else:
+             st.info(f"{player1_name_select} did not play against {opponent_team_name_select} in their career.")
+    else:
+         st.error(f"Could not find ID for team: {opponent_team_name_select}")
 
 
 # Add a button to trigger detailed stats and predictions for the latest season
@@ -720,21 +750,22 @@ if st.button(f"Get Detailed Stats and Predictions for {latest_season_for_detaile
                      st.write("Individual stats for the last 5 most recent games are not available.")
 
 
-                # --- Player vs Team Stats ---
-                # Moved this section here to be triggered by the "Get Detailed Stats" button
-                if opponent_team_name_select:
-                     opponent_team_id = team_name_to_id.get(opponent_team_name_select)
-                     if opponent_team_id:
-                         st.header(f"{player1_name_select} Statistics Against {opponent_team_name_select} ({latest_season_for_detailed_view} Season)")
-                         player_vs_team_avg = get_player_vs_team_stats(player1_id, opponent_team_id, season=latest_season_for_detailed_view)
-                         if player_vs_team_avg is not None and not player_vs_team_avg.empty:
-                              st.dataframe(player_vs_team_avg.round(2)) # Round for display
-                         else:
-                              st.info(f"{player1_name_select} did not play against {opponent_team_name_select} in the {latest_season_for_detailed_view} season.")
-                     else:
-                          st.error(f"Could not find ID for team: {opponent_team_name_select}")
-                else:
-                     st.info("Select an Opponent Team to see Player vs Team statistics.")
+                # --- Player vs Team Stats (for the selected season) ---
+                # This section is now triggered by the button press, and only shows stats for the latest season
+                # The career vs team stats are displayed above based on the dropdown selection
+                # if opponent_team_name_select:
+                #      opponent_team_id = team_name_to_id.get(opponent_team_name_select)
+                #      if opponent_team_id:
+                #          st.header(f"{player1_name_select} Statistics Against {opponent_team_name_select} ({latest_season_for_detailed_view} Season)")
+                #          player_vs_team_avg = get_player_vs_team_stats(player1_id, opponent_team_id, season=latest_season_for_detailed_view)
+                #          if player_vs_team_avg is not None and not player_vs_team_avg.empty:
+                #               st.dataframe(player_vs_team_avg.round(2)) # Round for display
+                #          else:
+                #               st.info(f"{player1_name_select} did not play against {opponent_team_name_select} in the {latest_season_for_detailed_view} season.")
+                #      else:
+                #           st.error(f"Could not find ID for team: {opponent_team_name_select}")
+                # else:
+                #      st.info("Select an Opponent Team to see Player vs Team statistics.")
 
 
                 # --- Prediction Logic ---

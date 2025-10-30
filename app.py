@@ -6,9 +6,9 @@ import re
 import numpy as np
 import time # Import time for delays
 # import plotly.graph_objects as go # Removed Plotly
-# import requests # Removed requests for fetching player images
-# from PIL import Image # Removed Pillow for image handling
-# from io import BytesIO # Removed BytesIO for handling image bytes
+import requests # Reintroduce requests for fetching logo image
+from PIL import Image # Reintroduce Pillow for handling logo image
+from io import BytesIO # Reintroduce BytesIO for handling logo image bytes
 # import altair as alt # Removed Altair
 
 
@@ -18,13 +18,27 @@ stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DRE
 # Define prediction targets globally
 prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
 
-# Function to get player image (Attempting to fetch is removed to simplify)
-# def get_player_image_url(player_id):
-#     """
-#     Attempts to get a player's image URL from a common source.
-#     Removed for simplicity and reliability.
-#     """
-#     return None # Return None as image fetching is removed
+# Function to get NBA logo image (Attempting to fetch from a common source)
+@st.cache_data # Cache this data
+def get_nba_logo_image():
+    """
+    Attempts to get the NBA logo image from a common source.
+    """
+    # Example URL for NBA logo (this might need adjustment based on actual sources)
+    # Common sources: nba.com, Wikimedia Commons, etc.
+    logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/NBA_Logo.svg/800px-NBA_Logo.svg.png" # Example URL
+
+    try:
+        response = requests.get(logo_url)
+        if response.status_code == 200:
+            return Image.open(BytesIO(response.content))
+        else:
+            st.warning(f"Could not fetch NBA logo image from {logo_url}. Status code: {response.status_code}")
+            return None
+    except Exception as e:
+        st.warning(f"Error fetching NBA logo image: {e}")
+        return None
+
 
 # Fetch data for a player (Career Stats and Career Game Logs)
 @st.cache_data(ttl=3600) # Cache for 1 hour
@@ -311,11 +325,12 @@ def create_stat_bar(label, value, max_value):
 
 st.set_page_config(layout="wide", page_title="NBA Player Stats Dashboard", initial_sidebar_state="expanded") # Set wide layout, page title, and expanded sidebar
 
-# Add some basic styling using markdown
+# Add some basic styling using markdown for black and blue theme
 st.markdown("""
 <style>
     .main {
-        background-color: #f0f2f6;
+        background-color: #000000; /* Black background */
+        color: #ffffff; /* White text for readability */
     }
     .stTabs [data-baseweb="tab-list"] {
         gap: 48px;
@@ -323,7 +338,8 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         height: 50px;
         white-space: pre-wrap;
-        background-color: #e6e6e6;
+        background-color: #0d47a1; /* Darker blue for inactive tabs */
+        color: #ffffff; /* White text */
         border-radius: 4px 4px 0px 0px;
         gap: 4px;
         padding-top: 10px;
@@ -332,18 +348,29 @@ st.markdown("""
         cursor: pointer;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #007bff;
+        background-color: #1e88e5; /* Brighter blue for active tab */
         color: white;
     }
     .stMarkdown h1, h2, h3 {
-        color: #333333;
+        color: #1e88e5; /* Blue headings */
     }
     .stDataFrame {
         font-size: 0.9em;
+        color: #333333; /* Dark text for table content */
     }
+     .stDataFrame tbody tr {
+        background-color: #e3f2fd; /* Light blue for table rows */
+     }
+     .stDataFrame tbody tr:nth-child(odd) {
+        background-color: #bbdefb; /* Slightly darker blue for odd rows */
+     }
+     .stDataFrame th {
+         background-color: #0d47a1; /* Dark blue for table headers */
+         color: white;
+     }
     /* Style for stat bars (using st.progress) */
     .stProgress > div > div > div > div {
-        background-color: #007bff; /* Blue color for bars */
+        background-color: #1e88e5; /* Blue color for bars */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -398,6 +425,12 @@ if player1_name_select:
 
         if career_df_all_seasons is not None and not career_df_all_seasons.empty:
             st.header(f"{player1_name_select} Stats Dashboard")
+
+            # Display NBA logo
+            nba_logo = get_nba_logo_image()
+            if nba_logo:
+                 st.image(nba_logo, width=100) # Display logo with a fixed width
+
 
             # Layout with columns for key stats (Image column removed)
             # col1, col2 = st.columns([1, 2]) # Adjust column widths as needed

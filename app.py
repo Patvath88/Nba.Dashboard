@@ -1,810 +1,280 @@
-"""
-Streamlit Dashboard for NBA Player Statistics using the BALLDONTLIE API
-====================================================================
-
-This application provides a comprehensive look at an NBA player's recent
-performance and calculates several key averages.  It supports the
-following features:
-
-* **Player search** – quickly look up any active or historical NBA player.
-* **Recent performance** – compute averages over the last 5, 10 and 20
-  games for core counting stats (points, rebounds, assists, steals,
-  blocks, turnovers and minutes).
-* **Season and career averages** – pull a player's current and prior
-  season numbers and aggregate a career average by combining all
-  available season data.
-* **Head‑to‑head breakdown** – display the player’s per‑team averages
-  so you can see how they perform against each opponent.
-* **On‑demand projections** – a simple predictive model uses recent
-  trends to forecast what the player might do in the next game.
-
-To run this dashboard you will need a **GOAT tier** API key from
-`ballDontLie.io` and a Python environment with the packages listed in
-`requirements.txt` installed.  When the app starts it prompts for your
-API key; the key is sent on each request via the `Authorization`
-header.
-
-**Important:**  The BALLDONTLIE API now organizes endpoints by sport
-(e.g. `nba/v1`, `nfl/v1`).  This dashboard targets the NBA endpoints
-exclusively.  Calling the deprecated `/v1` routes with an API key
-results in HTTP 401 errors.  Make sure your API key is valid and
-has NBA access.
-
-Note: the BALLDONTLIE API uses cursor based pagination.  Helper
-functions below transparently follow the `next_cursor` field to
-retrieve all requested records.
-"""
-
-from __future__ import annotations
-
-import os
-from datetime import datetime
-from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-import requests
 import streamlit as st
-import time
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import playercareerstats, playergamelogs
+import pandas as pd
+import re # Import regex for parsing matchup string
 
+# Assume get_player_stats and get_head_to_head_stats functions are defined in previous steps
 
-###############################################################################
-# Configuration
-###############################################################################
+# Define the get_player_stats function
+def get_player_stats(player_id, season='2023-24'):
+    """
+    Fetches player stats and calculates various averages using player ID.
 
-# Base URL for the BALLDONTLIE API.
-#
-# Note: As of late 2024 the BALLDONTLIE API segments sport‑specific
-# endpoints under the `/nba/v1` prefix.  Attempting to call the
-# deprecated `/v1` paths with an API key will result in HTTP 401
-# errors.  Therefore, the base URL below explicitly targets the
-# NBA namespace.  If additional sports are needed you can adjust
-# this constant (e.g. use `https://api.balldontlie.io/nfl/v1` for NFL).  
-API_BASE_URL = "https://api.balldontlie.io/nba/v1"
+    Args:
+        player_id (int): The ID of the NBA player.
+        season (str): The season to fetch game logs for (e.g., '2023-24').
 
-# Path to persist the API key locally.  When the user enters a key via
-# the dashboard it will be saved to this file, and on subsequent runs
-# the stored key will be pre‑populated so the user does not need to
-# re‑enter it.  The file lives alongside this script.  If you prefer
-# another location you can modify the path below.
-API_KEY_FILE = Path(__file__).with_name("api_key.txt")
-
-def load_api_key_from_file() -> str:
-    """Load a persisted API key from disk.
-
-    Returns
-    -------
-    str
-        The API key if present; otherwise an empty string.
+    Returns:
+        dict: A dictionary containing career, last season, and recent game averages,
+              or None if data fetching fails.
     """
     try:
-        if API_KEY_FILE.exists():
-            return API_KEY_FILE.read_text(encoding="utf-8").strip()
-    except Exception:
-        pass
-    return ""
+        # Fetch career stats
+        career_stats = playercareerstats.PlayerCareerStats(player_id=player_id)
+        career_df = career_stats.get_data_frames()[0]
+
+        # Calculate career averages
+        # Filter out the row for the current season for historical career averages
+        # Need to handle cases where career_df has only one row (current season)
+        historical_career_averages = None
+        if len(career_df) > 1:
+            historical_career_df = career_df.iloc[:-1]
+            total_games = historical_career_df['GP'].sum()
+            stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+            career_totals = historical_career_df[stats_columns].sum()
+            historical_career_averages = career_totals / total_games
+            historical_career_averages = historical_career_averages.to_frame(name='Historical Career Avg').T # Convert to DataFrame for display
+
+        # Calculate overall career averages
+        overall_total_games = career_df['GP'].sum()
+        overall_career_totals = career_df[stats_columns].sum()
+        overall_career_averages = overall_career_totals / overall_total_games
+        overall_career_averages = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
 
 
-def save_api_key_to_file(key: str) -> None:
-    """Persist the provided API key to disk.
-
-    Parameters
-    ----------
-    key : str
-        The API key to save.  Leading/trailing whitespace will be removed.
-    """
-    try:
-        API_KEY_FILE.write_text(key.strip(), encoding="utf-8")
-    except Exception:
-        # If the file cannot be written (e.g. due to permissions) we
-        # silently ignore the error.  The user will simply have to
-        # enter the key again on the next run.
-        pass
-
-
-def build_headers(api_key: str) -> Dict[str, str]:
-    """Return headers including the required Authorization token.
-
-    Parameters
-    ----------
-    api_key : str
-        Your BALLDONTLIE API key.
-
-    Returns
-    -------
-    Dict[str, str]
-        A dictionary of HTTP headers.
-    """
-    return {"Authorization": api_key} if api_key else {}
+        # Get last season's averages
+        last_season_averages = None
+        # Find the row for the selected season or the season before it if selected season is the current
+        # Assuming career_df is sorted by season
+        season_index = career_df[career_df['SEASON_ID'] == season].index
+        if not season_index.empty and season_index[0] > 0:
+             last_season_df = career_df.iloc[season_index[0] - 1]
+             last_season_averages = last_season_df[stats_columns]
+             last_season_averages = last_season_averages.to_frame(name=f"Last Season ({last_season_df['SEASON_ID']}) Avg").T # Convert to DataFrame for display
+        elif not season_index.empty and season_index[0] == 0 and len(career_df) > 1:
+             # If selected season is the earliest in the career_df, take the next one if exists
+             last_season_df = career_df.iloc[season_index[0] + 1]
+             last_season_averages = last_season_df[stats_columns]
+             last_season_averages = last_season_averages.to_frame(name=f"Next Season ({last_season_df['SEASON_ID']}) Avg").T # Convert to DataFrame for display
 
 
-###############################################################################
-# API Helpers
-###############################################################################
+        # Fetch game logs for the specified season
+        game_logs_df = None
+        last_5_games_avg = None
+        last_10_games_avg = None
+        last_20_games_avg = None
 
-@lru_cache(maxsize=128)
-def search_players(query: str, api_key: str) -> List[Dict[str, Any]]:
-    """Search for players by name.
-
-    Uses the `players` endpoint with the `search` parameter to locate
-    matching players.  Results are cached to avoid repeated network calls.
-
-    Parameters
-    ----------
-    query : str
-        Partial or full name to search for.
-    api_key : str
-        API key for authorization.
-
-    Returns
-    -------
-    List[dict]
-        List of players (each a dict) returned by the API.
-    """
-    url = f"{API_BASE_URL}/players"
-    params: Dict[str, Any] = {"search": query, "per_page": 50}
-    # Implement simple retry logic to handle transient errors and rate limiting (HTTP 429).
-    # We'll attempt up to 3 times, waiting between attempts based on the Retry‑After header
-    # or a default pause.  If the request continues to fail, an error is surfaced.
-    max_attempts = 3
-    for attempt in range(max_attempts):
         try:
-            resp = requests.get(
-                url, headers=build_headers(api_key), params=params, timeout=20
-            )
-        except Exception as ex:
-            st.error(f"Player search failed: {ex}")
-            return []
-        # Success
-        if resp.status_code == 200:
-            return resp.json().get("data", [])
-        # Rate limit: 429 Too Many Requests
-        if resp.status_code == 429:
-            # Determine wait time from Retry‑After header, defaulting to 2 seconds
-            wait_time = 2
-            try:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after is not None:
-                    wait_time = int(float(retry_after))
-            except Exception:
-                pass
-            st.warning(
-                f"Rate limit reached, pausing for {wait_time} seconds..."
-            )
-            time.sleep(wait_time)
-            continue
-        # Other non‑success codes
-        st.error(
-            f"Failed to search players: {resp.status_code} – {resp.text}"
-        )
-        return []
-    # If all attempts exhausted
-    st.error(
-        "Failed to search players after multiple attempts due to rate limiting. "
-        "Please try again later."
-    )
-    return []
+            game_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=season)
+            game_logs_df = game_logs.get_data_frames()[0]
+
+            # Ensure game logs are sorted by date
+            game_logs_df['GAME_DATE'] = pd.to_datetime(game_logs_df['GAME_DATE'])
+            game_logs_df = game_logs_df.sort_values(by='GAME_DATE', ascending=False)
+
+            # Calculate recent game averages
+            if len(game_logs_df) >= 5:
+                last_5_games_avg = game_logs_df.head(5)[stats_columns].mean()
+                last_5_games_avg = last_5_games_avg.to_frame(name='Last 5 Games Avg').T # Convert to DataFrame
+            if len(game_logs_df) >= 10:
+                last_10_games_avg = game_logs_df.head(10)[stats_columns].mean()
+                last_10_games_avg = last_10_games_avg.to_frame(name='Last 10 Games Avg').T # Convert to DataFrame
+            if len(game_logs_df) >= 20:
+                last_20_games_avg = game_logs_df.head(20)[stats_columns].mean()
+                last_20_games_avg = last_20_games_avg.to_frame(name='Last 20 Games Avg').T # Convert to DataFrame
 
 
-def fetch_stats(
-    player_id: int,
-    api_key: str,
-    seasons: Optional[Iterable[int]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    max_records: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """Retrieve game stats for a player.
-
-    This helper wraps the `/stats` endpoint and automatically follows
-    pagination cursors until either all data is retrieved or
-    `max_records` records have been collected.  It supports filtering
-    by one or more seasons and/or a date range.
-
-    Parameters
-    ----------
-    player_id : int
-        The player's unique identifier.
-    api_key : str
-        API key for authorization.
-    seasons : iterable of int, optional
-        One or more seasons (e.g. 2023 for the 2023‑24 season).  If
-        provided, stats will be limited to these seasons.
-    start_date : str, optional
-        Filter stats occurring on or after this date (YYYY‑MM‑DD).
-    end_date : str, optional
-        Filter stats occurring on or before this date (YYYY‑MM‑DD).
-    max_records : int, optional
-        Maximum number of records to retrieve.  If None, all records
-        available will be pulled.
-
-    Returns
-    -------
-    list of dict
-        Each element corresponds to a single game’s stat line.
-    """
-    # Stats endpoint is namespaced under NBA.  The old `/v1/stats`
-    # route will return 401s when using an API key, so construct the
-    # path relative to the NBA base.
-    url = f"{API_BASE_URL}/stats"
-    # Build base parameters.  We allow duplicate keys like player_ids[] and
-    # seasons[] by assigning list values; requests will encode correctly.
-    params: Dict[str, Any] = {"player_ids[]": [player_id], "per_page": 100}
-    if seasons:
-        params["seasons[]"] = list(seasons)
-    if start_date:
-        params["start_date"] = start_date
-    if end_date:
-        params["end_date"] = end_date
-
-    stats: List[Dict[str, Any]] = []
-    cursor: Optional[int] = None
-    while True:
-        if cursor is not None:
-            params["cursor"] = cursor
-        try:
-            resp = requests.get(
-                url, headers=build_headers(api_key), params=params, timeout=30
-            )
-        except Exception as ex:
-            st.error(f"Failed to fetch stats: {ex}")
-            break
-        # Success
-        if resp.status_code == 200:
-            payload = resp.json()
-        elif resp.status_code == 429:
-            # Hit rate limit; sleep and retry the same page
-            wait_time = 2
-            try:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after is not None:
-                    wait_time = int(float(retry_after))
-            except Exception:
-                pass
-            st.warning(
-                f"Rate limit reached while fetching stats, pausing for {wait_time} seconds..."
-            )
-            time.sleep(wait_time)
-            # Do not advance cursor; simply retry this iteration
-            continue
-        else:
-            if resp.status_code == 401:
-                st.error(
-                    "Unauthorized – please verify your BALLDONTLIE API key and plan."
-                )
-            else:
-                st.error(
-                    f"Failed to fetch stats: {resp.status_code} – {resp.text}"
-                )
-            break
-        data_batch = payload.get("data", [])
-        stats.extend(data_batch)
-        # Stop if we have gathered enough records
-        if max_records is not None and len(stats) >= max_records:
-            stats = stats[:max_records]
-            break
-        cursor = payload.get("meta", {}).get("next_cursor")
-        if not cursor:
-            break
-    return stats
+        except Exception as e:
+            st.warning(f"Could not fetch game logs for the selected season ({season}). Recent game averages will not be available.")
 
 
-def fetch_season_average(
-    player_id: int,
-    api_key: str,
-    season: int,
-) -> Optional[Dict[str, Any]]:
-    """Retrieve season average stats for a player.
+        return {
+            'historical_career_averages': historical_career_averages,
+            'overall_career_averages': overall_career_averages,
+            'last_season_averages': last_season_averages,
+            'last_5_games_avg': last_5_games_avg,
+            'last_10_games_avg': last_10_games_avg,
+            'last_20_games_avg': last_20_games_avg
+        }
 
-    This helper wraps the `/season_averages` endpoint.  According to the
-    BALLDONTLIE API spec, the general season averages are obtained via
-    the `/nba/v1/season_averages` route and require only the `season`
-    and `player_id` parameters.  Additional categories and statistic
-    types are not currently used in this dashboard.
-
-    Parameters
-    ----------
-    player_id : int
-        Player ID to retrieve data for.
-    api_key : str
-        API key for authorization.
-    season : int
-        Year of the season (e.g., 2025 for the 2025‑26 season).  Season
-        is interpreted relative to the starting calendar year.
-
-    Returns
-    -------
-    dict or None
-        A dictionary containing the season average stats or None if no
-        data was returned.
-    """
-    url = f"{API_BASE_URL}/season_averages"
-    params = {"season": season, "player_id": player_id}
-    headers = build_headers(api_key)
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
-        except Exception as ex:
-            st.warning(f"Season averages unavailable for {season}: {ex}")
-            return None
-        if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            return data[0] if data else None
-        if resp.status_code == 429:
-            wait_time = 2
-            try:
-                ra = resp.headers.get("Retry-After")
-                if ra is not None:
-                    wait_time = int(float(ra))
-            except Exception:
-                pass
-            st.warning(
-                f"Rate limit reached while fetching season averages, pausing for {wait_time} seconds..."
-            )
-            time.sleep(wait_time)
-            continue
-        # handle other non‑success status codes
-        st.warning(
-            f"Season averages unavailable for {season}: {resp.status_code} – {resp.text}"
-        )
+    except Exception as e:
+        st.error(f"An error occurred while fetching career stats: {e}")
         return None
-    st.warning(
-        f"Season averages unavailable for {season} after multiple attempts due to rate limiting."
-    )
-    return None
 
-
-###############################################################################
-# Data Transformation Utilities
-###############################################################################
-
-def stats_to_dataframe(stats: List[Dict[str, Any]]) -> pd.DataFrame:
-    """Convert a list of raw stat dictionaries into a cleaned DataFrame.
-
-    The BALLDONTLIE stats payload includes nested player, team and game
-    objects alongside basic counting stats.  This function flattens
-    nested fields, converts minute strings to integers and ensures
-    numeric columns are numeric.
-
-    Parameters
-    ----------
-    stats : list of dict
-        Raw stat objects returned from the API.
-
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame with one row per game.  Columns include core
-        statistics plus metadata such as game date, opponent and
-        whether the game was at home or away.
+# Define the get_head_to_head_stats function
+def get_head_to_head_stats(player1_id, player2_id, season='2023-24'):
     """
-    if not stats:
-        return pd.DataFrame()
+    Fetches and calculates head-to-head statistics between two players.
 
-    # Flatten stats and nested fields
-    records = []
-    for entry in stats:
-        base = {k: entry.get(k) for k in [
-            "id",
-            "min",
-            "fgm",
-            "fga",
-            "fg_pct",
-            "fg3m",
-            "fg3a",
-            "fg3_pct",
-            "ftm",
-            "fta",
-            "ft_pct",
-            "oreb",
-            "dreb",
-            "reb",
-            "ast",
-            "stl",
-            "blk",
-            "turnover",
-            "pf",
-            "pts",
-        ]}
-        # Convert minutes (string) to integer total minutes
-        minutes_str = base.get("min")
-        if minutes_str is not None:
-            try:
-                base["min"] = int(minutes_str)
-            except (ValueError, TypeError):
-                base["min"] = 0
-        # Flatten nested game and team objects
-        game = entry.get("game", {})
-        base["game_id"] = game.get("id")
-        base["game_date"] = game.get("date")
-        base["season"] = game.get("season")
-        base["postseason"] = game.get("postseason")
-        base["home_team_id"] = game.get("home_team_id")
-        base["visitor_team_id"] = game.get("visitor_team_id")
-        base["home_team_score"] = game.get("home_team_score")
-        base["visitor_team_score"] = game.get("visitor_team_score")
-        team = entry.get("team", {})
-        base["team_id"] = team.get("id")
-        base["team_name"] = team.get("full_name")
-        base["team_abbr"] = team.get("abbreviation")
-        records.append(base)
+    Args:
+        player1_id (int): The ID of the first player.
+        player2_id (int): The ID of the second player.
+        season (str): The season to fetch game logs for (e.g., '2023-24').
 
-    df = pd.DataFrame.from_records(records)
-    # Ensure numeric columns are numeric
-    numeric_cols = [
-        "min",
-        "fgm",
-        "fga",
-        "fg_pct",
-        "fg3m",
-        "fg3a",
-        "fg3_pct",
-        "ftm",
-        "fta",
-        "ft_pct",
-        "oreb",
-        "dreb",
-        "reb",
-        "ast",
-        "stl",
-        "blk",
-        "turnover",
-        "pf",
-        "pts",
-        "home_team_score",
-        "visitor_team_score",
-    ]
-    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
-    # Convert game_date to datetime
-    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
-    # Determine opponent team ID
-    df["opponent_team_id"] = np.where(
-        df["team_id"] == df["home_team_id"], df["visitor_team_id"], df["home_team_id"]
-    )
-    return df
-
-
-def compute_averages(df: pd.DataFrame, window: Optional[int] = None) -> pd.Series:
-    """Compute mean stats over an optional rolling window.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame containing one row per game.  Must include the
-        columns used for calculations (pts, reb, ast, stl, blk, turnover, min).
-    window : int, optional
-        Number of most recent games to include.  If None, all rows
-        are used.
-
-    Returns
-    -------
-    pandas.Series
-        Series mapping stat names to their mean values.
+    Returns:
+        tuple: A tuple containing two pandas DataFrames, the head-to-head averages
+               for player 1 and player 2, or (None, None) if data fetching fails
+               or they didn't play against each other in the specified season.
     """
-    if df.empty:
-        return pd.Series(dtype=float)
-    ordered = df.sort_values("game_date", ascending=False)
-    if window:
-        ordered = ordered.head(window)
-    stats_cols = ["pts", "reb", "ast", "stl", "blk", "turnover", "min"]
-    return ordered[stats_cols].mean()
+    stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+
+    try:
+        # Fetch game logs for player 1
+        player1_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player1_id, season_nullable=season).get_data_frames()[0]
+        player1_logs['GAME_DATE'] = pd.to_datetime(player1_logs['GAME_DATE'])
+
+        # Fetch game logs for player 2
+        player2_logs = playergamelogs.PlayerGameLogs(player_id_nullable=player2_id, season_nullable=season).get_data_frames()[0]
+        player2_logs['GAME_DATE'] = pd.to_datetime(player2_logs['GAME_DATE'])
+
+        # Identify games where they played against each other
+        h2h_games = pd.merge(player1_logs, player2_logs, on='GAME_ID', suffixes=('_player1', '_player2'))
+
+        # Extract opponent team abbreviation from the 'MATCHUP' column
+        def extract_opponent_team(matchup):
+            match = re.search(r'@\s*([A-Z]{3})|vs.\s*([A-Z]{3})', matchup)
+            if match:
+                return match.group(1) or match.group(2)
+            return None
+
+        h2h_games['OPP_TEAM_ABBREVIATION_player1_extracted'] = h2h_games['MATCHUP_player1'].apply(extract_opponent_team)
+        h2h_games['OPP_TEAM_ABBREVIATION_player2_extracted'] = h2h_games['MATCHUP_player2'].apply(extract_opponent_team)
 
 
-def head_to_head_averages(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate per‑opponent average stats.
+        # Filter to ensure the matchups were against each other's teams
+        h2h_games_filtered = h2h_games[
+            (h2h_games['TEAM_ABBREVIATION_player1'] == h2h_games['OPP_TEAM_ABBREVIATION_player2_extracted']) &
+            (h2h_games['TEAM_ABBREVIATION_player2'] == h2h_games['OPP_TEAM_ABBREVIATION_player1_extracted'])
+        ].copy() # Use .copy() to avoid SettingWithCopyWarning
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Game log data for the player.
+        if h2h_games_filtered.empty:
+            return None, None
 
-    Returns
-    -------
-    pandas.DataFrame
-        DataFrame indexed by opponent team ID with mean statistics.
-    """
-    if df.empty:
-        return pd.DataFrame()
-    group_cols = ["opponent_team_id"]
-    agg_cols = ["pts", "reb", "ast", "stl", "blk", "turnover", "min"]
-    h2h = df.groupby(group_cols)[agg_cols].mean().reset_index()
-    return h2h.sort_values("pts", ascending=False)
+        # Calculate head-to-head averages for each player
+        player1_h2h_avg = h2h_games_filtered[[f'{col}_player1' for col in stats_columns]].mean()
+        player1_h2h_avg.index = stats_columns # Rename index to match original stats columns
+        player1_h2h_avg = player1_h2h_avg.to_frame(name='Head-to-Head Avg').T # Convert to DataFrame
+
+        player2_h2h_avg = h2h_games_filtered[[f'{col}_player2' for col in stats_columns]].mean()
+        player2_h2h_avg.index = stats_columns # Rename index to match original stats columns
+        player2_h2h_avg = player2_h2h_avg.to_frame(name='Head-to-Head Avg').T # Convert to DataFrame
 
 
-def weighted_prediction(last5: pd.Series, last10: pd.Series, season: pd.Series) -> pd.Series:
-    """Compute a simple weighted projection for the next game.
+        return player1_h2h_avg, player2_h2h_avg
 
-    The weights emphasize recent performance (last 5 games) while
-    incorporating broader context from the last 10 games and the full
-    season.  Adjust weights here to tune the forecast.
-
-    Parameters
-    ----------
-    last5 : pandas.Series
-        Mean statistics from the player’s last 5 games.
-    last10 : pandas.Series
-        Mean statistics from the player’s last 10 games.
-    season : pandas.Series
-        Mean statistics from the current season.
-
-    Returns
-    -------
-    pandas.Series
-        Projected values for the next game.
-    """
-    # Define weights – heavier weight on the most recent games
-    w5, w10, wSeason = 0.5, 0.3, 0.2
-    # Align indices and fill missing values
-    combined = pd.concat([last5, last10, season], axis=1, keys=["l5", "l10", "season"]).fillna(0)
-    projection = w5 * combined["l5"] + w10 * combined["l10"] + wSeason * combined["season"]
-    return projection
+    except Exception as e:
+        st.error(f"An error occurred while fetching head-to-head stats: {e}")
+        return None, None
 
 
-###############################################################################
-# Streamlit UI
-###############################################################################
+# --- Streamlit App Layout and Logic ---
 
-def main() -> None:
-    """Run the Streamlit dashboard."""
-    # Configure the page with a custom NBA themed colour palette.  These
-    # values approximate the official NBA colours (dark navy, royal blue,
-    # and red).  The font is left as sans serif for broad compatibility.
-    # Configure the page.  We deliberately avoid passing a theme
-    # dictionary here since some Streamlit deployments do not yet
-    # support the `theme` parameter on set_page_config.  Instead, we
-    # apply our colour scheme via injected CSS below.
-    st.set_page_config(
-        page_title="NBA Player Dashboard – BALLDONTLIE",
-        page_icon="🏀",
-        layout="wide",
-    )
+st.title("NBA Player Stats Dashboard")
 
-    # Inject custom CSS for finer control over component appearance.
-    st.markdown(
-        """
-        <style>
-        /* Ensure the entire application uses our dark theme */
-        .stApp {
-            background-color: #041E42;
-            color: #FFFFFF;
-        }
-        /* Headings inherit our colour palette */
-        h1, h2, h3, h4, h5, h6 {
-            color: #FFFFFF;
-            font-weight: 700;
-        }
-        /* Paragraphs and labels use a lighter grey */
-        p, label, span, div[data-testid="stMetricValue"] {
-            color: #D0D8E5;
-        }
-        /* Style metric containers with a blue background and rounded corners */
-        div[data-testid="stMetric"] {
-            background-color: #17408B !important;
-            padding: 1rem;
-            border-radius: 0.5rem;
-        }
-        /* Metric labels should be lighter and uppercase */
-        div[data-testid="stMetric"] > label {
-            color: #F5F5F5 !important;
-            font-size: 0.85rem;
-        }
-        /* Metric values in bold red */
-        div[data-testid="stMetricValue"] {
-            color: #C9082A !important;
-            font-size: 1.6rem;
-            font-weight: 700;
-        }
-        /* Style text inputs and select boxes */
-        input[type="text"], input[type="password"], select {
-            background-color: #17408B !important;
-            color: #FFFFFF !important;
-            border: 1px solid #C9082A !important;
-        }
-        /* Style DataFrame headers and rows */
-        .dataframe tbody tr, .dataframe thead tr {
-            background-color: #17408B;
-            color: #FFFFFF;
-        }
-        /* Adjust spinner colour */
-        .stSpinner > div > div {
-            border-top-color: #C9082A !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+# Get list of active players for dropdowns
+@st.cache_data # Cache this data to avoid refetching every time
+def get_active_nba_players():
+    try:
+        return players.get_active_players()
+    except Exception as e:
+        st.error(f"Error fetching active players: {e}")
+        return []
 
-    # Title and description
-    st.title("NBA Player Dashboard – BALLDONTLIE")
-    st.markdown(
-        """
-        Use this dashboard to explore detailed NBA player statistics and
-        generate a projection for their next game. To begin, enter your
-        BALLDONTLIE API key (it will be saved locally) and search for a player.
-        """
-    )
+active_players = get_active_nba_players()
 
-    # API key section in the sidebar
-    with st.sidebar:
-        st.header("API Key")
-        existing_key = load_api_key_from_file()
-        key_input = st.text_input(
-            "Enter your BALLDONTLIE API key",
-            value=existing_key,
-            type="password",
-            help="Your API key will be saved locally so you don't have to re‑enter it each time."
-        )
-        # Save button persists the key to disk
-        if st.button("Save API Key"):
-            save_api_key_to_file(key_input)
-            st.success("API key saved successfully.")
-        # Use the newly entered key or the stored key
-        api_key = (key_input or existing_key).strip()
+# Create a dictionary for player names to IDs
+player_name_to_id = {player['full_name']: player['id'] for player in active_players}
+player_names = sorted(list(player_name_to_id.keys())) # Sort names alphabetically
 
-    # Stop execution if no API key is provided
-    if not api_key:
-        st.info("Please enter and save your API key in the sidebar to begin.")
-        return
 
-    # Validate the API key with a lightweight request to avoid repeated 401s
-    # Validate the API key.  We perform a simple HTTP call to verify
-    # authentication rather than caching via experimental_singleton
-    # because some Streamlit environments may not support it.
-    def _validate_key(key: str) -> bool:
-        try:
-            test_url = f"{API_BASE_URL}/players"
-            response = requests.get(
-                test_url, headers=build_headers(key), params={"per_page": 1}, timeout=10
-            )
-            return response.status_code == 200
-        except Exception:
-            return False
+# Add dropdowns for selecting players
+player1_name_select = st.selectbox("Select Player 1", player_names)
+player2_name_select = st.selectbox("Select Player 2 (for Head-to-Head)", [''] + player_names) # Add empty option for no h2h
 
-    if not _validate_key(api_key):
-        st.error(
-            "Your API key did not authenticate successfully. Please verify that it is a valid "
-            "BALLDONTLIE key with NBA access and try again."
-        )
-        return
 
-    # Player search input
-    query = st.text_input("Search for a player", placeholder="LeBron James")
-    player_options: List[Tuple[str, int]] = []
-    players: List[Dict[str, Any]] = []
-    if query and len(query) >= 3:
-        with st.spinner("Searching players..."):
-            players = search_players(query, api_key=api_key)
-        player_options = [
-            (
-                f"{p['first_name']} {p['last_name']} (ID: {p['id']}, {p.get('team', {}).get('full_name', 'No Team')})",
-                p["id"],
-            )
-            for p in players
-        ]
+# Add selectbox for season
+# Generate a list of seasons from 2000-01 to current/next season
+current_year = pd.Timestamp.now().year
+seasons = [f"{y}-{str(y+1)[-2:]}" for y in range(2000, current_year + 1)]
+selected_season = st.selectbox("Select Season", seasons, index=len(seasons)-1) # Default to the latest season
 
-    # Select a player if options are available
-    selected_player: Optional[int] = None
-    if player_options:
-        label = [opt[0] for opt in player_options]
-        vals = [opt[1] for opt in player_options]
-        sel = st.selectbox(
-            "Select a player", options=list(range(len(label))), format_func=lambda i: label[i]
-        )
-        selected_player = vals[sel]
 
-    # Display stats once a player is chosen
-    if selected_player is not None:
-        # Fetch player object for name display
-        player_obj = next((p for p in players if p["id"] == selected_player), None)
-        full_name = f"{player_obj['first_name']} {player_obj['last_name']}" if player_obj else "Selected Player"
-        st.header(f"Stats for {full_name}")
-
-        # Season selection: from current year down to 1946
-        current_year = datetime.now().year
-        seasons = list(range(current_year, 1945, -1))
-        col1, col2 = st.columns(2)
-        with col1:
-            current_season = st.selectbox("Current season", options=seasons, index=0)
-        with col2:
-            previous_season = st.selectbox(
-                "Previous season", options=seasons, index=1 if len(seasons) > 1 else 0
-            )
-
-        # Fetch stats
-        with st.spinner("Fetching stats..."):
-            recent_stats = fetch_stats(selected_player, api_key, max_records=25)
-            recent_df = stats_to_dataframe(recent_stats)
-            season_stats = fetch_stats(selected_player, api_key, seasons=[current_season])
-            season_df = stats_to_dataframe(season_stats)
-            prev_stats = fetch_stats(selected_player, api_key, seasons=[previous_season])
-            prev_df = stats_to_dataframe(prev_stats)
-
-        # Compute averages
-        last5_avg = compute_averages(recent_df, window=5)
-        last10_avg = compute_averages(recent_df, window=10)
-        last20_avg = compute_averages(recent_df, window=20)
-        season_avg = compute_averages(season_df)
-        prev_season_avg = compute_averages(prev_df)
-        career_avg = compute_averages(pd.concat([season_df, prev_df, recent_df]))
-
-        # Summary metrics
-        st.subheader("Averages Summary")
-        metrics_cols = st.columns(5)
-        for idx, (label, series) in enumerate(
-            [
-                ("Last 5 Games", last5_avg),
-                ("Last 10 Games", last10_avg),
-                ("Last 20 Games", last20_avg),
-                (f"Season {current_season}", season_avg),
-                (f"Season {previous_season}", prev_season_avg),
-            ]
-        ):
-            with metrics_cols[idx]:
-                st.markdown(f"**{label}**")
-                st.metric("Points", f"{series.get('pts', 0):.1f}")
-                st.metric("Rebounds", f"{series.get('reb', 0):.1f}")
-                st.metric("Assists", f"{series.get('ast', 0):.1f}")
-
-        # Career summary metrics
-        st.markdown("**Career Average (computed)**")
-        st.metric("Points", f"{career_avg.get('pts', 0):.1f}")
-        st.metric("Rebounds", f"{career_avg.get('reb', 0):.1f}")
-        st.metric("Assists", f"{career_avg.get('ast', 0):.1f}")
-
-        # Head‑to‑head averages
-        st.subheader("Head‑to‑Head Averages (All Opponents)")
-        h2h_df = head_to_head_averages(recent_df)
-        if not h2h_df.empty:
-            team_map = {
-                row["team_id"]: row["team_name"]
-                for row in recent_df[["team_id", "team_name"]]
-                .dropna()
-                .drop_duplicates()
-                .to_dict("records")
-            }
-
-            def lookup_team_name(opponent_id: Any) -> str:
-                return team_map.get(opponent_id, str(opponent_id))
-
-            h2h_df["Opponent"] = h2h_df["opponent_team_id"].apply(lookup_team_name)
-            h2h_table = h2h_df[["Opponent", "pts", "reb", "ast", "stl", "blk", "turnover", "min"]]
-            h2h_table.rename(
-                columns={
-                    "pts": "Pts",
-                    "reb": "Reb",
-                    "ast": "Ast",
-                    "stl": "Stl",
-                    "blk": "Blk",
-                    "turnover": "TO",
-                    "min": "Min",
-                },
-                inplace=True,
-            )
-            st.dataframe(h2h_table.style.format("{:.1f}"), use_container_width=True)
+# Add a button to trigger data fetching
+if st.button("Get Player Stats"):
+    if not player1_name_select:
+        st.warning("Please select Player 1.")
+    else:
+        player1_id = player_name_to_id.get(player1_name_select)
+        if player1_id is None:
+             st.error(f"Could not find ID for player: {player1_name_select}")
         else:
-            st.info("Not enough data for head‑to‑head averages.")
+            # Call the get_player_stats function for player1
+            player1_stats = get_player_stats(player1_id, season=selected_season)
 
-        # Recent game chart
-        st.subheader("Last 20 Game Logs")
-        if not recent_df.empty:
-            chart_df = recent_df.sort_values("game_date")
-            chart_df["game"] = chart_df["game_date"].dt.strftime("%Y-%m-%d")
-            metrics = ["pts", "reb", "ast"]
-            st.line_chart(chart_df.set_index("game")[metrics])
-        else:
-            st.info("No recent games available for charting.")
+            if player1_stats:
+                st.header(f"{player1_name_select} Statistics ({selected_season} Season)")
 
-        # Projection for next game
-        st.subheader("Projected Next Game")
-        projection = weighted_prediction(last5_avg, last10_avg, season_avg)
-        proj_cols = st.columns(len(projection))
-        for i, (stat, value) in enumerate(projection.items()):
-            with proj_cols[i]:
-                st.metric(stat.upper(), f"{value:.1f}")
+                # Display career averages
+                st.subheader("Career Averages")
+                if player1_stats.get('historical_career_averages') is not None:
+                    st.write("Historical Career (excluding current season):")
+                    st.dataframe(player1_stats['historical_career_averages'])
+
+                if player1_stats.get('overall_career_averages') is not None:
+                    st.write("Overall Career (including current season):")
+                    st.dataframe(player1_stats['overall_career_averages'])
+
+                if player1_stats.get('last_season_averages') is not None:
+                     st.subheader(f"Last Season Averages")
+                     st.dataframe(player1_stats['last_season_averages'])
+                else:
+                     st.subheader("Last Season Averages Not Available")
 
 
-if __name__ == "__main__":
-    main()
+                # Display recent game averages in expanders
+                st.subheader("Recent Game Averages")
+                if player1_stats.get('last_5_games_avg') is not None:
+                    with st.expander("Last 5 Games Average"):
+                        st.dataframe(player1_stats['last_5_games_avg'])
+                else:
+                     st.write("Last 5 Games Averages Not Available for the selected season.")
+
+                if player1_stats.get('last_10_games_avg') is not None:
+                    with st.expander("Last 10 Games Average"):
+                        st.dataframe(player1_stats['last_10_games_avg'])
+                else:
+                     st.write("Last 10 Games Averages Not Available for the selected season.")
+
+                if player1_stats.get('last_20_games_avg') is not None:
+                    with st.expander("Last 20 Games Average"):
+                        st.dataframe(player1_stats['last_20_games_avg'])
+                else:
+                     st.write("Last 20 Games Averages Not Available for the selected season.")
+
+            else:
+                st.error(f"Could not fetch stats for {player1_name_select}.")
+
+        # Handle Head-to-Head stats if player2 is selected
+        if player2_name_select and player1_name_select != player2_name_select:
+            player2_id = player_name_to_id.get(player2_name_select)
+            if player2_id is None:
+                st.error(f"Could not find ID for player: {player2_name_select}")
+            else:
+                st.header(f"Head-to-Head Statistics ({player1_name_select} vs {player2_name_select})")
+
+                # Call the get_head_to_head_stats function
+                player1_h2h, player2_h2h = get_head_to_head_stats(player1_id, player2_id, season=selected_season)
+
+                if player1_h2h is not None and player2_h2h is not None:
+                    st.subheader(f"{player1_name_select} Head-to-Head Averages vs {player2_name_select}")
+                    st.dataframe(player1_h2h)
+
+                    st.subheader(f"{player2_name_select} Head-to-Head Averages vs {player1_name_select}")
+                    st.dataframe(player2_h2h)
+                else:
+                    st.info(f"No head-to-head games found between {player1_name_select} and {player2_name_select} in the {selected_season} season.")
+        elif player2_name_select and player1_name_select == player2_name_select:
+             st.warning("Please select two different players for Head-to-Head comparison.")
+        elif player1_name_select and not player2_name_select:
+            st.info("Select a Player 2 for Head-to-Head statistics.")

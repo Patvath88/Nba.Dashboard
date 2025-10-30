@@ -6,9 +6,9 @@ import re
 import numpy as np
 import time # Import time for delays
 # import plotly.graph_objects as go # Removed Plotly
-import requests # Reintroduce requests for fetching logo image
+# import requests # Removed requests for fetching logo image
 from PIL import Image # Reintroduce Pillow for handling logo image
-from io import BytesIO # Reintroduce BytesIO for handling logo image bytes
+# from io import BytesIO # Removed BytesBytesIO for handling logo image bytes
 # import altair as alt # Removed Altair
 
 
@@ -18,26 +18,26 @@ stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DRE
 # Define prediction targets globally
 prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
 
-# Function to get NBA logo image (Attempting to fetch from a common source)
-@st.cache_data # Cache this data
-def get_nba_logo_image():
-    """
-    Attempts to get the NBA logo image from a common source.
-    """
-    # Example URL for NBA logo (this might need adjustment based on actual sources)
-    # Common sources: nba.com, Wikimedia Commons, etc.
-    logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/NBA_Logo.svg/800px-NBA_Logo.svg.png" # Example URL
+# Function to get NBA logo image (Using local file path now)
+# @st.cache_data # Cache this data
+# def get_nba_logo_image():
+#     """
+#     Attempts to get the NBA logo image from a common source.
+#     Fetching code removed due to reliability issues.
+#     """
+#     # Example URL for NBA logo (this might need adjustment based on actual sources)
+#     # logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/NBA_Logo.svg/800px-NBA_Logo.svg.png" # Example URL
 
-    try:
-        response = requests.get(logo_url)
-        if response.status_code == 200:
-            return Image.open(BytesIO(response.content))
-        else:
-            st.warning(f"Could not fetch NBA logo image from {logo_url}. Status code: {response.status_code}")
-            return None
-    except Exception as e:
-        st.warning(f"Error fetching NBA logo image: {e}")
-        return None
+#     # try:
+#     #     response = requests.get(logo_url)
+#     #     if response.status_code == 200:
+#     #         return Image.open(BytesIO(response.content))
+#     #     else:
+#     #         st.warning(f"Could not fetch NBA logo image from {logo_url}. Status code: {response.status_code}")
+#     #         return None
+#     # except Exception as e:
+#     #     st.warning(f"Error fetching NBA logo image: {e}")
+#     return None # Return None as image fetching is removed
 
 
 # Fetch data for a player (Career Stats and Career Game Logs)
@@ -376,7 +376,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-st.title("NBA Player Stats Dashboard")
+# Layout for Title and Logo
+col_title, col_logo = st.columns([3, 1])
+
+with col_title:
+    st.title("NBA Player Stats Dashboard")
+
+with col_logo:
+    # Display NBA logo from the provided local file path
+    try:
+        local_logo_path = '/content/NBA-Logo-2017.png' # Use the user-provided path
+        logo_image = Image.open(local_logo_path)
+        st.image(logo_image, width=100) # Display logo with a fixed width
+    except FileNotFoundError:
+        st.warning(f"NBA logo image file '{local_logo_path}' not found. Please ensure it's in the correct location.")
+    except Exception as e:
+        st.warning(f"Error displaying local NBA logo: {e}")
+
 
 # Get list of active players for dropdowns
 @st.cache_data # Cache this data to avoid refetching every time
@@ -426,15 +442,6 @@ if player1_name_select:
         if career_df_all_seasons is not None and not career_df_all_seasons.empty:
             st.header(f"{player1_name_select} Stats Dashboard")
 
-            # Display NBA logo
-            nba_logo = get_nba_logo_image()
-            if nba_logo:
-                 st.image(nba_logo, width=100) # Display logo with a fixed width
-
-
-            # Layout with columns for key stats (Image column removed)
-            # col1, col2 = st.columns([1, 2]) # Adjust column widths as needed
-            # Removed col1 for image, only using one column for stats now
 
             # using a single column for stats now
             st.subheader("Career Summary")

@@ -1,6 +1,8 @@
-# app.py — Hot Shot Props | NBA Player Analytics
-# Black/Red UI • Login + per-user favorites/history • Bar charts • ML predictions
-# NOW WITH: robust retries & longer timeouts for stats.nba.com calls
+# app.py — Hot Shot Props | NBA Player Analytics (clean sidebar + fast load)
+# - Sidebar: only Player search + Favorites (with ×). No login, no extra panels.
+# - Robust retries for stats.nba.com calls (timeouts/backoff).
+# - Bar charts (last 10), headshot with team logo, metric cards, ML predictions,
+#   "Last predictions vs results", background global ML trainer (after first load).
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -12,10 +14,10 @@ from io import BytesIO
 from PIL import Image
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import (
-    playercareerstats, playergamelogs, scoreboardv2, commonteamroster
+    playercareerstats, playergamelogs, scoreboardv2
 )
 
-# ---- Optional ML deps ----
+# ------------------ Optional ML deps ------------------
 try:
     import joblib
     from sklearn.linear_model import Ridge
@@ -26,62 +28,42 @@ except Exception:
     Ridge = None
     SKLEARN_OK = False
 
-# -------------------------------------------------
-# Global API controls (NEW)
-# -------------------------------------------------
-NBA_TIMEOUT = 75          # seconds per request (was 30)
-NBA_RETRIES = 4           # how many times to retry on network/timeout
-NBA_BACKOFF_BASE = 1.6    # exponential backoff base
-API_SLEEP = 0.25          # polite spacing between calls
+# ------------------ API hardening ---------------------
+NBA_TIMEOUT = 75
+NBA_RETRIES = 4
+NBA_BACKOFF_BASE = 1.6
+API_SLEEP = 0.25
 
 def get_frames_with_retry(endpoint_cls, label: str, **kwargs):
-    """
-    Call an nba_api endpoint class and return its list of data frames.
-    Retries on exceptions with exponential backoff.
-    """
     last_err = None
     for attempt in range(NBA_RETRIES):
         try:
-            # pass timeout to every endpoint call
             ep = endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
-            frames = ep.get_data_frames()
-            return frames
+            return ep.get_data_frames()
         except Exception as e:
             last_err = e
-            # small backoff then retry
-            sleep_s = NBA_BACKOFF_BASE ** attempt
-            time.sleep(sleep_s)
-    # One clear message for the UI; don't spam
+            time.sleep(NBA_BACKOFF_BASE ** attempt)
     st.error(f"{label}: {last_err}")
     return []
 
 def get_df_with_retry(endpoint_cls, label: str, frame_idx: int = 0, **kwargs) -> pd.DataFrame:
     frames = get_frames_with_retry(endpoint_cls, label, **kwargs)
-    if not frames:
-        return pd.DataFrame()
-    if frame_idx >= len(frames):
+    if not frames or frame_idx >= len(frames):
         return pd.DataFrame()
     df = frames[frame_idx]
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-# ---------------------------------
-# Page config + Theme
-# ---------------------------------
-st.set_page_config(
-    page_title="Hot Shot Props • NBA Player Analytics (Free)",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ------------------ Page + Theme ----------------------
+st.set_page_config(page_title="Hot Shot Props • NBA Player Analytics (Free)",
+                   layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-:root { --bg:#000000; --panel:#0b0b0b; --ink:#f3f4f6; --muted:#c7c7c7; --red:#ef4444; --line:#171717; --ok:#22c55e; --warn:#f59e0b; --dim:#6b7280; }
+:root { --bg:#000; --panel:#0b0b0b; --ink:#f3f4f6; --line:#171717; --red:#ef4444; }
 html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important;}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#0b0b0b 100%)!important;border-right:1px solid #111;}
-.stButton>button{background:var(--red)!important;color:white!important;border:none!important;border-radius:10px!important;padding:.5rem .9rem!important;font-weight:700!important;}
-.stButton>button:hover{filter:brightness(1.08);}
+.stButton>button{background:var(--red)!important;color:#fff!important;border:none!important;border-radius:10px!important;padding:.5rem .9rem!important;font-weight:700!important;}
 h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
-a, .st-emotion-cache-16idsys p a{color:#f87171!important;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.5);}
 .badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#140606;color:#fca5a5;}
 .hr{border:0;border-top:1px solid var(--line);margin:.75rem 0;}
@@ -92,194 +74,112 @@ a, .st-emotion-cache-16idsys p a{color:#f87171!important;}
 [data-testid="stMetric"]{background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);}
 [data-testid="stMetric"] label{color:#fda4a4;}
 [data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#ffe4e6;font-size:1.45rem;}
-.stDataFrame{background:#0b0b0b;border:1px solid #181818;border-radius:12px;padding:4px;}
-.inline-x button{background:#111827!important;border:1px solid #374151!important;color:#e5e7eb!important;padding:.1rem .45rem!important;font-weight:800;border-radius:6px;}
-.hit{color:#86efac;} .miss{color:#fecaca;} .pending{color:#cbd5e1;}
-.login-card{max-width:520px;margin:60px auto 20px;background:#0b0b0b;border:1px solid #171717;border-radius:16px;padding:22px;}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------
-# Constants
-# ---------------------------------
+# ------------------ Constants & storage ---------------
 STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
 
-# Writable roots
 DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
 MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
 os.makedirs(MODEL_DIR, exist_ok=True)
 MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
 FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
 
-# ---------------------------------
-# Auth & per-user storage
-# ---------------------------------
-def _user_store_root(username: str):
-    base = os.path.join(DEFAULT_TMP_DIR, "userdata") if os.access(DEFAULT_TMP_DIR, os.W_OK) else os.path.join(".", "userdata")
-    path = os.path.join(base, username)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def _auth_valid(u, p):
-    users = {}
-    try:
-        conf = st.secrets.get("users")
-        if isinstance(conf, dict):
-            users = conf
-    except Exception:
-        pass
-    if not users:
-        users = {"demo": "demo"}  # fallback demo
-    return (u in users) and (str(p) == str(users[u]))
-
-def login_ui():
-    st.markdown('<div class="login-card">', unsafe_allow_html=True)
-    st.markdown("## 🔐 Sign in")
-    u = st.text_input("Username", value="", placeholder="demo")
-    p = st.text_input("Password", value="", placeholder="demo", type="password")
-    colA, colB = st.columns([0.4,0.6])
-    with colA:
-        if st.button("Sign in"):
-            if _auth_valid(u, p):
-                st.session_state["auth_user"] = u
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-    with colB:
-        st.caption("Tip: set `st.secrets['users']` for real accounts.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-if "auth_user" not in st.session_state:
-    login_ui()
-    st.stop()
-
-AUTH_USER = st.session_state["auth_user"]
-USER_ROOT = _user_store_root(AUTH_USER)
+# “guest” profile
+USER_ROOT = os.path.join(DEFAULT_TMP_DIR, "userdata", "guest")
+os.makedirs(USER_ROOT, exist_ok=True)
 FAV_FILE = os.path.join(USER_ROOT, "favorites.json")
 PRED_HISTORY_FILE = os.path.join(USER_ROOT, "pred_history.json")
 
-# ---------------------------------
-# Helpers
-# ---------------------------------
+# ------------------ Helpers --------------------------
 def safe_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
     return [c for c in cols if c in df.columns]
 
 def extract_opp_from_matchup(matchup: str) -> str | None:
-    if not isinstance(matchup, str):
-        return None
+    if not isinstance(matchup, str): return None
     m = re.search(r'@\s*([A-Z]{3})|vs\.\s*([A-Z]{3})|VS\.\s*([A-Z]{3})', matchup, re.IGNORECASE)
-    if m:
-        return (m.group(1) or m.group(2) or m.group(3)).upper()
-    return None
+    return (m.group(1) or m.group(2) or m.group(3)).upper() if m else None
 
 def cdn_headshot(player_id: int, size: str = "1040x760") -> Image.Image | None:
     url = f"https://cdn.nba.com/headshots/nba/latest/{size}/{player_id}.png"
     try:
         r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            return Image.open(BytesIO(r.content)).convert("RGBA")
-    except Exception:
-        pass
+        if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
+    except Exception: pass
     return None
 
-def cdn_team_logo(team_id: int, size: str = "L") -> Image.Image | None:
-    candidates = [
-        f"https://cdn.nba.com/logos/nba/{team_id}/global/{size}/logo.png",
+def cdn_team_logo(team_id: int) -> Image.Image | None:
+    for url in [
         f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png",
         f"https://cdn.nba.com/logos/nba/{team_id}/global/D/logo.png",
-    ]
-    for url in candidates:
+    ]:
         try:
             r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                return Image.open(BytesIO(r.content)).convert("RGBA")
-        except Exception:
-            continue
+            if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
+        except Exception: continue
     return None
 
-def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image,
-                           padding_ratio: float = 0.035, logo_width_ratio: float = 0.22) -> Image.Image:
-    if headshot is None:
-        return None
+def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image, padding_ratio=0.035, logo_width_ratio=0.22):
+    if headshot is None: return None
     base = headshot.copy()
-    if logo is None:
-        return base
+    if logo is None: return base
     W, H = base.size
     pad = int(W * padding_ratio)
     logo_w = int(W * logo_width_ratio)
     aspect = logo.size[1] / logo.size[0]
     logo_h = int(logo_w * aspect)
     logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
-    x = W - logo_w - pad
-    y = pad
-    base.alpha_composite(logo_resized, (x, y))
+    base.alpha_composite(logo_resized, (W - logo_w - pad, pad))
     return base
 
-# Favorites (per-user)
-def load_favorites() -> list[dict]:
+def load_favorites():
     try:
         if os.path.exists(FAV_FILE):
-            with open(FAV_FILE, "r") as f:
+            with open(FAV_FILE, "r") as f: 
                 data = json.load(f)
                 return data if isinstance(data, list) else []
-    except Exception:
-        pass
+    except Exception: pass
     return []
 
-def save_favorites(favs: list[dict]) -> None:
+def save_favorites(favs): 
     try:
-        with open(FAV_FILE, "w") as f:
-            json.dump(favs, f)
-    except Exception:
-        pass
+        with open(FAV_FILE, "w") as f: json.dump(favs, f)
+    except Exception: pass
 
-# Prediction history (per-user)
 def _load_pred_history():
     try:
         if os.path.exists(PRED_HISTORY_FILE):
-            with open(PRED_HISTORY_FILE, "r") as f:
-                return json.load(f)
-    except Exception:
-        pass
+            with open(PRED_HISTORY_FILE, "r") as f: return json.load(f)
+    except Exception: pass
     return {}
 
 def _save_pred_history(data):
     try:
-        with open(PRED_HISTORY_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+        with open(PRED_HISTORY_FILE, "w") as f: json.dump(data, f)
+    except Exception: pass
 
-def record_prediction(player_id: int, player_name: str, pred_date: str | None, engine: str, preds: dict):
-    if not preds:
-        return
+def record_prediction(player_id, player_name, pred_date, engine, preds):
+    if not preds: return
     db = _load_pred_history()
     key = str(player_id)
     entries = db.get(key, [])
-    if pred_date:
-        entries = [e for e in entries if e.get("pred_date") != pred_date]
-    entry = {
-        "player_id": player_id,
-        "player_name": player_name,
-        "pred_date": pred_date,
-        "engine": engine,
-        "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}
-    }
+    if pred_date: entries = [e for e in entries if e.get("pred_date") != pred_date]
+    entry = {"player_id": player_id, "player_name": player_name, "pred_date": pred_date,
+             "engine": engine, "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}}
     entries.append(entry)
     entries = sorted(entries, key=lambda x: (x.get("pred_date") or ""), reverse=True)[:30]
     db[key] = entries
     _save_pred_history(db)
 
-def get_player_history(player_id: int):
-    db = _load_pred_history()
-    return db.get(str(player_id), [])
+def get_player_history(player_id): 
+    return _load_pred_history().get(str(player_id), [])
 
-# ---------------------------------
-# Cached data fetchers (using retry wrappers)
-# ---------------------------------
+# ------------------ Cached fetchers -------------------
 @st.cache_data(ttl=6*3600)
-def get_active_players():
+def get_active_players_fast():
+    # Only names + ids (fast; no per-team roster calls)
     try:
         return players.get_active_players()
     except Exception as e:
@@ -293,37 +193,6 @@ def get_all_teams():
     except Exception as e:
         st.error(f"Error fetching teams: {e}")
         return []
-
-@st.cache_data(ttl=12*3600)
-def build_team_player_index() -> dict[str, int]:
-    mapping: dict[str, int] = {}
-    all_t = get_all_teams()
-    for t in all_t:
-        tid  = t.get("id")
-        abbr = t.get("abbreviation", "TBD")
-        if not tid:
-            continue
-        try:
-            time.sleep(API_SLEEP)
-            roster = get_df_with_retry(commonteamroster.CommonTeamRoster, f"Roster fetch timeout for {abbr}", team_id=tid)
-            if roster is None or roster.empty:
-                continue
-            for _, row in roster.iterrows():
-                name = str(row.get("PLAYER", "")).strip()
-                pid  = int(row.get("PLAYER_ID")) if pd.notna(row.get("PLAYER_ID")) else None
-                if name and pid:
-                    mapping[f"{abbr} — {name}"] = pid
-        except Exception:
-            continue
-    # add remaining active players (FA)
-    act = get_active_players()
-    present_names = set(label.split("—",1)[-1].strip() for label in mapping.keys())
-    for p in act:
-        name = p.get('full_name')
-        pid  = p.get('id')
-        if name and pid and name not in present_names:
-            mapping[f"FA — {name}"] = pid
-    return mapping
 
 @st.cache_data(ttl=3600)
 def fetch_player(player_id: int):
@@ -355,44 +224,45 @@ def fetch_player(player_id: int):
         return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=600)
-def next_game_for_team(team_id: int, lookahead_days: int = 10):
+def next_game_for_team(team_abbr: str, lookahead_days: int = 10):
+    if not team_abbr:
+        return None
+    # map abbr -> id
+    tmap = {t['abbreviation']: t['id'] for t in get_all_teams()}
+    team_id = tmap.get(team_abbr)
     if team_id is None:
         return None
     today = dt.date.today()
-    team_map = {t['id']: t for t in get_all_teams()}
     for d in range(lookahead_days):
         day = today + dt.timedelta(days=d)
         try:
             time.sleep(API_SLEEP)
             frames = get_frames_with_retry(scoreboardv2.ScoreboardV2, f"Scoreboard timeout ({day})",
                                            game_date=day.strftime("%m/%d/%Y"))
-            # find frame with HOME/VISITOR cols
-            game_header = None
+            gh = None
             for f in frames:
                 if isinstance(f, pd.DataFrame) and {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns):
-                    game_header = f; break
-            if game_header is None or game_header.empty:
+                    gh = f; break
+            if gh is None or gh.empty: 
                 continue
-            for _, row in game_header.iterrows():
+            for _, row in gh.iterrows():
                 home_id = int(row.get('HOME_TEAM_ID', -1))
                 away_id = int(row.get('VISITOR_TEAM_ID', -1))
                 if team_id in (home_id, away_id):
                     opp_id  = away_id if team_id == home_id else home_id
-                    opp_abr = team_map.get(opp_id, {}).get('abbreviation', 'TBD')
+                    # find opp abbr
+                    opp_abbr = next((t['abbreviation'] for t in get_all_teams() if t['id']==opp_id), 'TBD')
                     home_flag = (team_id == home_id)
-                    return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abr, 'home': home_flag}
+                    return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abbr, 'home': home_flag}
         except Exception:
             continue
     return None
 
-# ---------------------------------
-# ML: loaders + training + inference (unchanged)
-# ---------------------------------
+# ------------------ ML utils --------------------------
 @st.cache_data(ttl=3600)
 def load_models():
     models = {}
-    if not SKLEARN_OK:
-        return models
+    if not SKLEARN_OK: return models
     for tgt, path in MODEL_FILES.items():
         try:
             if os.path.exists(path):
@@ -402,8 +272,7 @@ def load_models():
     return models
 
 def build_features_for_training(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
+    if df is None or df.empty: return pd.DataFrame()
     d = df.copy().sort_values('GAME_DATE').reset_index(drop=True)
     d['IS_HOME'] = d['MATCHUP'].astype(str).str.contains(" vs ", case=False, regex=False).astype(int)
     d['DAYS_REST'] = d['GAME_DATE'].diff().dt.days
@@ -421,19 +290,15 @@ def build_features_for_training(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_next: int) -> pd.DataFrame | None:
-    if logs_df is None or logs_df.empty:
-        return None
+    if logs_df is None or logs_df.empty: return None
     df = logs_df.copy()
-    if 'GAME_DATE' not in df.columns:
-        return None
+    if 'GAME_DATE' not in df.columns: return None
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = df.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
     last_date = pd.to_datetime(df['GAME_DATE'].iloc[-1]).date()
     if isinstance(next_game_date, str):
-        try:
-            next_game_date = dt.datetime.strptime(next_game_date, "%Y-%m-%d").date()
-        except Exception:
-            next_game_date = None
+        try: next_game_date = dt.datetime.strptime(next_game_date, "%Y-%m-%d").date()
+        except Exception: next_game_date = None
     days_rest = 3 if next_game_date is None else max(0, min(7, (next_game_date - last_date).days))
     feat = {}
     for k in [5, 10, 20]:
@@ -458,28 +323,23 @@ def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_
     return pd.DataFrame([feat])
 
 def predict_next_ml(logs_df: pd.DataFrame, next_game_date, is_home_next: int, models: dict) -> dict | None:
-    if not models:
-        return None
+    if not models: return None
     feats_df = build_features_for_inference(logs_df, next_game_date, is_home_next)
-    if feats_df is None or feats_df.empty:
-        return None
+    if feats_df is None or feats_df.empty: return None
     preds = {}
     for tgt, model in models.items():
         feat_cols = FEAT_TEMPLATE(tgt)
-        if not all(c in feats_df.columns for c in feat_cols):
-            continue
+        if not all(c in feats_df.columns for c in feat_cols): continue
         try:
             val = float(model.predict(feats_df[feat_cols])[0])
             preds[tgt] = round(val, 2)
-        except Exception:
-            continue
+        except Exception: continue
     return preds if preds else None
 
-def train_models_core(active_players_list=None):
-    if not SKLEARN_OK:
-        return False
+def train_models_core():
+    if not SKLEARN_OK: return False
     os.makedirs(MODEL_DIR, exist_ok=True)
-    act = active_players_list if active_players_list is not None else players.get_active_players()
+    act = get_active_players_fast()
     rows = []
     for p in act:
         pid = p.get('id')
@@ -509,25 +369,20 @@ def train_models_core(active_players_list=None):
             rows.append(feats)
         except Exception:
             continue
-    if not rows:
-        return False
+    if not rows: return False
     data = pd.concat(rows, ignore_index=True)
     for target in PREDICT_COLS:
         feat_cols = FEAT_TEMPLATE(target)
-        if not all(c in data.columns for c in feat_cols):
-            continue
+        if not all(c in data.columns for c in feat_cols): continue
         X = data[feat_cols]; y = data[target]
-        if len(X) < 40:
-            continue
+        if len(X) < 40: continue
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
         model = Ridge(alpha=1.0, random_state=42).fit(X_train, y_train)
         joblib.dump(model, MODEL_FILES[target])
     return True
 
 def ensure_background_training():
-    if not SKLEARN_OK:
-        return
-    if st.session_state.get("_bg_training_running"):
+    if not SKLEARN_OK or st.session_state.get("_bg_training_running"):
         return
     st.session_state["_bg_training_running"] = True
     st.session_state["_bg_training_started_at"] = dt.datetime.now().strftime("%H:%M:%S")
@@ -540,94 +395,45 @@ def ensure_background_training():
 
 def train_player_models_in_memory(logs_df: pd.DataFrame):
     models = {}
-    if not SKLEARN_OK or logs_df is None or logs_df.empty:
-        return models
+    if not SKLEARN_OK or logs_df is None or logs_df.empty: return models
     feats = build_features_for_training(logs_df)
-    if feats.empty or len(feats) < 25:
-        return models
+    if feats.empty or len(feats) < 25: return models
     for target in PREDICT_COLS:
         feat_cols = FEAT_TEMPLATE(target)
-        if not all(c in feats.columns for c in feat_cols):
-            continue
+        if not all(c in feats.columns for c in feat_cols): continue
         X = feats[feat_cols]; y = feats[target]
-        if len(X) < 25:
-            continue
+        if len(X) < 25: continue
         model = Ridge(alpha=1.0, random_state=42).fit(X, y)
         models[target] = model
     return models
 
-# ---------------------------------
-# Fallback predictions
-# ---------------------------------
-def recent_averages(logs: pd.DataFrame) -> dict:
-    out = {}
-    if logs is None or logs.empty:
-        return out
-    df = logs.copy()
-    cols = safe_cols(df, STATS_COLS)
-    if len(df) >= 5 and cols:
-        sub = df.head(5)
-        out['Last 5 Avg'] = sub[cols].mean().to_frame(name='Last 5 Avg').T
-    return out
-
-def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
-    if logs is None or logs.empty:
-        return None
-    df = logs.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
-    cols = safe_cols(df, STATS_COLS)
-    if not cols:
-        return None
-    season_avg = pd.Series(dtype=float)
-    if 'SEASON_YEAR' in df.columns:
-        cur = df[df['SEASON_YEAR'] == season_label]
-        if not cur.empty:
-            season_avg = cur[cols].mean()
-    if season_avg.empty:
-        season_avg = df[cols].mean()
-    feats = {f'{c}_r5': df[c].rolling(5,  min_periods=1).mean().iloc[-1] for c in cols}
-    feats.update({f'{c}_r10': df[c].rolling(10, min_periods=1).mean().iloc[-1] for c in cols})
-    feats.update({f'{c}_r20': df[c].rolling(20, min_periods=1).mean().iloc[-1] for c in cols})
-    preds = {}
-    for c in PREDICT_COLS:
-        r5, r10, r20 = feats.get(f'{c}_r5', np.nan), feats.get(f'{c}_r10', np.nan), feats.get(f'{c}_r20', np.nan)
-        s = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
-        v5, v10, v20 = (r5 if pd.notna(r5) else s), (r10 if pd.notna(r10) else s), (r20 if pd.notna(r20) else s)
-        preds[c] = round(float(0.4*v5 + 0.3*v10 + 0.2*v20 + 0.1*s), 2)
-    return preds
-
-# ---------------------------------
-# Sidebar — Search + Favorites
-# ---------------------------------
+# ------------------ Sidebar (clean) -------------------
 with st.sidebar:
-    st.header(f"Welcome, {AUTH_USER}")
-    if st.button("Sign out"):
-        st.session_state.pop("auth_user", None)
-        st.rerun()
-
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.subheader("Select Player")
-    label_to_pid = build_team_player_index()
-    options = sorted(label_to_pid.keys())
+    active = get_active_players_fast()
+    # build sorted list of names
+    name_to_id = {p['full_name']: p['id'] for p in active}
+    player_names = sorted(name_to_id.keys())
 
+    # retain selection if already chosen
     default_index = None
     if 'selected_player_id' in st.session_state and st.session_state['selected_player_id'] is not None:
         try:
-            default_index = next(i for i, lbl in enumerate(options) if label_to_pid[lbl] == st.session_state['selected_player_id'])
-        except StopIteration:
+            pid = st.session_state['selected_player_id']
+            pname = next(n for n, i in name_to_id.items() if i == pid)
+            default_index = player_names.index(pname)
+        except Exception:
             default_index = None
 
-    selection = st.selectbox(
-        "Search by team or player",
-        options,
-        index=default_index if default_index is not None else None,
-        placeholder="e.g., LAL — LeBron James • BOS — Jayson Tatum • Nikola Jokic",
-    )
+    selection = st.selectbox("Search player", player_names,
+                             index=default_index if default_index is not None else None,
+                             placeholder="Type a player's name…")
 
     player_id = None
     player_name = None
     if selection:
-        player_id = label_to_pid[selection]
-        player_name = selection.split("—", 1)[-1].strip() if "—" in selection else selection.strip()
+        player_id = name_to_id[selection]
+        player_name = selection
         st.session_state['selected_player_id'] = player_id
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
@@ -645,22 +451,20 @@ with st.sidebar:
     if st.session_state.favorites:
         for idx, fav in enumerate(st.session_state.favorites):
             nm = fav.get("name", "(unknown)"); pid = fav.get("id")
-            colN, colX = st.columns([0.8, 0.2], vertical_alignment="center")
+            colN, colX = st.columns([0.8, 0.2])
             with colN:
-                if st.container().button(nm, key=f"fav_open_{idx}_{pid}", help="Open player", use_container_width=True):
+                if st.button(nm, key=f"fav_open_{idx}_{pid}", use_container_width=True):
                     st.session_state['selected_player_id'] = pid
                     st.rerun()
             with colX:
-                if st.container().button("×", key=f"fav_del_{idx}_{pid}", help="Remove", type="secondary"):
+                if st.button("×", key=f"fav_del_{idx}_{pid}"):
                     st.session_state.favorites.pop(idx)
                     save_favorites(st.session_state.favorites)
                     st.rerun()
     else:
         st.caption("No favorites yet.")
 
-# ---------------------------------
-# Header card
-# ---------------------------------
+# ------------------ Header card -----------------------
 st.markdown(f"""
 <div class="card" style="margin-bottom: 12px;">
   <div style="display:flex; align-items:center; justify-content: space-between;">
@@ -668,41 +472,29 @@ st.markdown(f"""
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
       <div class="badge">ML: {"Enabled" if SKLEARN_OK else "Disabled"} • Models dir: {MODEL_DIR}</div>
     </div>
-    <div style="text-align:right; font-size:.9rem; color:#fda4a4;">Black/Red UI • Per-user data • Clean UX</div>
+    <div style="text-align:right; font-size:.9rem; color:#fda4a4;">Black/Red UI • Clean sidebar • Fast load</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ---------------------------------
-# Main content
-# ---------------------------------
+# ------------------ Main content ----------------------
 if not player_id:
     st.info("Pick a player from the sidebar to load their dashboard.")
     st.stop()
 
-# Fetch player; if it fails, do NOT start background training
 career_df, logs_df = fetch_player(player_id)
 if career_df.empty:
     st.warning("No career data available for this player.")
     st.stop()
 
-# Start background training only after a successful load
+# Start background global ML after first successful load
 if SKLEARN_OK:
-    if not st.session_state.get("_bg_training_running"):
-        ensure_background_training()
+    ensure_background_training()
     if st.session_state.get("_bg_training_running"):
         st.caption(f"🟥 Training global ML in background… (started {st.session_state.get('_bg_training_started_at','now')})")
 
-# Resolve player/team info
-if not player_name:
-    for p in get_active_players():
-        if p['id'] == player_id:
-            player_name = p['full_name']; break
-
-all_t = get_all_teams()
-team_by_abbr = {t['abbreviation']: t for t in all_t}
+# Resolve team + season
 team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in career_df.columns else "TBD"
-team_id = team_by_abbr.get(team_abbr, {}).get('id')
 latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
 
 # Last + next game
@@ -716,7 +508,7 @@ if logs_df is not None and not logs_df.empty:
     lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
     last_game_info = f"{lg_date} vs {lg_opp}"
 
-ng = next_game_for_team(team_id) if team_id is not None else None
+ng = next_game_for_team(team_abbr) if team_abbr else None
 if ng:
     icon = "🏠" if ng.get('home') else "✈️"
     next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}"
@@ -732,11 +524,17 @@ with c2: st.metric("Team", team_abbr)
 with c3: st.metric("Most Recent Game", last_game_info)
 with c4: st.metric("Next Game", next_game_info)
 
-# Headshot + Team logo + Bar charts (last 10 games)
+# Headshot + logo + bar charts
 col_img, col_trend = st.columns([0.30, 0.70])
 with col_img:
     head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
-    logo = cdn_team_logo(team_id) if team_id else None
+    logo = None
+    # try to map team_abbr to id for logo (best-effort)
+    try:
+        tid = next((t['id'] for t in get_all_teams() if t['abbreviation']==team_abbr), None)
+        if tid: logo = cdn_team_logo(tid)
+    except Exception:
+        pass
     if head:
         composed = overlay_logo_top_right(head, logo, padding_ratio=0.035, logo_width_ratio=0.22)
         st.image(composed, use_container_width=True, caption=f"{player_name} — media day headshot")
@@ -772,19 +570,17 @@ with col_trend:
     else:
         st.info("No recent games to chart.")
 
-# Metric rows
+# Metric row helper
 def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "—"):
     st.markdown(f"#### {title}")
-    if data is None:
-        data = {}
+    if data is None: data = {}
     if isinstance(data, pd.DataFrame):
         row = data.iloc[0].to_dict() if not data.empty else {}
     elif isinstance(data, pd.Series):
         row = data.to_dict()
     else:
         row = dict(data)
-    def fmt(v):
-        return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+    def fmt(v): return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
     cols = st.columns(5)
     with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
     with cols[1]: st.metric("REB", fmt(row.get('REB')))
@@ -792,7 +588,7 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
     with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
 
-# Row 1: Current Season Averages
+# Row 1: Season averages (per game)
 season_row = None
 if not career_df.empty:
     cur = career_df.iloc[-1]
@@ -801,34 +597,66 @@ if not career_df.empty:
         season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
 metric_row("Current Season Averages", season_row)
 
-# Row 2: Last Game
+# Row 2: Last game
 metric_row("Last Game Stats", last_game_stats)
 
-# Row 3: Last 5 Averages
+# Row 3: Last 5 averages
+def recent_averages(logs: pd.DataFrame) -> dict:
+    out = {}
+    if logs is None or logs.empty: return out
+    df = logs.copy()
+    cols = safe_cols(df, STATS_COLS)
+    if len(df) >= 5 and cols:
+        sub = df.head(5)
+        out['Last 5 Avg'] = sub[cols].mean().to_frame(name='Last 5 Avg').T
+    return out
+
 ra = recent_averages(logs_df)
 last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
 metric_row("Last 5 Games Averages", last5)
 
-# Row 4: Prediction (ML -> Player ML -> Fallback)
+# Row 4: Predictions (Global ML -> Player ML -> Fallback)
+@st.cache_data(ttl=3600)
+def load_models_cached():
+    return load_models()
+
 engine_mode = "fallback"
-ml_models = load_models() if SKLEARN_OK else {}
-ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
+ml_models = load_models_cached() if SKLEARN_OK else {}
+ng_date_for_feat = ng_date_for_feat if 'ng_date_for_feat' in locals() else None
+
+def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
+    if logs is None or logs.empty: return None
+    df = logs.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
+    cols = safe_cols(df, STATS_COLS)
+    if not cols: return None
+    season_avg = pd.Series(dtype=float)
+    if 'SEASON_YEAR' in df.columns:
+        cur = df[df['SEASON_YEAR'] == season_label]
+        if not cur.empty: season_avg = cur[cols].mean()
+    if season_avg.empty: season_avg = df[cols].mean()
+    feats = {f'{c}_r5': df[c].rolling(5,  min_periods=1).mean().iloc[-1] for c in cols}
+    feats.update({f'{c}_r10': df[c].rolling(10, min_periods=1).mean().iloc[-1] for c in cols})
+    feats.update({f'{c}_r20': df[c].rolling(20, min_periods=1).mean().iloc[-1] for c in cols})
+    preds = {}
+    for c in PREDICT_COLS:
+        r5, r10, r20 = feats.get(f'{c}_r5', np.nan), feats.get(f'{c}_r10', np.nan), feats.get(f'{c}_r20', np.nan)
+        s = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
+        v5, v10, v20 = (r5 if pd.notna(r5) else s), (r10 if pd.notna(r10) else s), (r20 if pd.notna(r20) else s)
+        preds[c] = round(float(0.4*v5 + 0.3*v10 + 0.2*v20 + 0.1*s), 2)
+    return preds
+
+ml_preds  = predict_next_ml(logs_df, ng.get('date') if ng else None, 1 if (ng and ng.get('home')) else 0, ml_models) if ml_models else None
 
 if ml_preds:
-    engine_mode = "global_ml"
-    metric_row("Predicted Next Game (ML)", ml_preds)
+    engine_mode = "global_ml"; metric_row("Predicted Next Game (ML)", ml_preds)
 else:
     player_models = train_player_models_in_memory(logs_df) if SKLEARN_OK else {}
-    player_ml_preds = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, player_models) if player_models else None
+    player_ml_preds = predict_next_ml(logs_df, ng.get('date') if ng else None, 1 if (ng and ng.get('home')) else 0, player_models) if player_models else None
     if player_ml_preds:
-        engine_mode = "player_ml"
-        ml_preds = player_ml_preds
-        metric_row("Predicted Next Game (ML)", ml_preds)
+        engine_mode = "player_ml"; ml_preds = player_ml_preds; metric_row("Predicted Next Game (ML)", ml_preds)
     else:
         preds = predict_next_fallback(logs_df, latest_season)
-        engine_mode = "fallback"
-        ml_preds = preds
-        metric_row("Predicted Next Game (Model)", preds)
+        engine_mode = "fallback"; ml_preds = preds; metric_row("Predicted Next Game (Model)", preds)
 
 label = {
     "global_ml": '<span class="tag ok">Using Global ML</span>',
@@ -838,20 +666,17 @@ label = {
 }[engine_mode]
 st.markdown(label, unsafe_allow_html=True)
 
-# Save prediction to per-user history (only if next game date known)
+# Save prediction (if next game has a date)
 pred_date_str = ng['date'] if (ng and isinstance(ng.get('date'), str)) else None
 if ml_preds:
     record_prediction(player_id, player_name, pred_date_str, engine_mode, ml_preds)
 
-# Last Predictions vs Results
+# -------- Last Predictions vs Results --------
 st.markdown("### Last Predictions vs Results")
 def find_actual_row_by_date(logs: pd.DataFrame, iso_date: str):
-    if logs is None or logs.empty or not iso_date:
-        return None
-    try:
-        d = dt.datetime.strptime(iso_date, "%Y-%m-%d").date()
-    except Exception:
-        return None
+    if logs is None or logs.empty or not iso_date: return None
+    try: d = dt.datetime.strptime(iso_date, "%Y-%m-%d").date()
+    except Exception: return None
     cand = logs.copy()
     cand['GD'] = pd.to_datetime(cand['GAME_DATE']).dt.date
     matches = cand[cand['GD'] == d]
@@ -879,7 +704,7 @@ else:
                 pred_val = preds.get(k, None)
                 if actual_row is None:
                     st.metric(f"{k} • Pending", value=str(pred_val) if pred_val is not None else "—", delta="Game not played")
-                    st.caption(f'<span class="pending">Awaiting result</span>', unsafe_allow_html=True)
+                    st.caption('<span class="pending">Awaiting result</span>', unsafe_allow_html=True)
                 else:
                     act = actual_row.get(k, None)
                     hit = (act is not None and pred_val is not None and float(act) >= float(pred_val))

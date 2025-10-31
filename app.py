@@ -1,13 +1,14 @@
-# app.py — Hot Shot Props | NBA Player Analytics (Free, Premium One-Page Dashboard)
+# app.py — Hot Shot Props | NBA Player Analytics (Free, One-Page)
 # - Uses nba_api (no paid key)
 # - Auto-refresh every 60s (no toggles)
 # - Single-page layout w/ header, headshot, metric rows, trend charts
 # - NBA.com-inspired dark theme
 # - Robust caching and small delays to be gentle on nba_api
+# - FIX: use scoreboardv2 (not scoreboardv3)
 
 import streamlit as st
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playercareerstats, playergamelogs, scoreboardv3
+from nba_api.stats.endpoints import playercareerstats, playergamelogs, scoreboardv2
 import pandas as pd
 import numpy as np
 import re, time, datetime as dt
@@ -136,34 +137,34 @@ def fetch_player(player_id: int):
 @st.cache_data(ttl=600)
 def next_game_for_team(team_id: int, lookahead_days: int = 10):
     """
-    Scans the next N days via ScoreboardV3 to find the next game for the team.
+    Scans the next N days via ScoreboardV2 to find the next game for the team.
     Returns dict like {'date': 'YYYY-MM-DD', 'opp_abbr': 'XXX', 'home': True/False} or None.
     """
+    if team_id is None:
+        return None
     today = dt.date.today()
+    team_map = {t['id']: t for t in get_all_teams()}  # id -> team dict (includes abbreviation)
     for d in range(lookahead_days):
         day = today + dt.timedelta(days=d)
         try:
             time.sleep(API_SLEEP)
-            sb = scoreboardv3.ScoreboardV3(game_date=day.strftime("%Y-%m-%d"))
+            # ScoreboardV2 expects 'MM/DD/YYYY'
+            sb = scoreboardv2.ScoreboardV2(game_date=day.strftime("%m/%d/%Y"))
             frames = sb.get_data_frames()
-            # Find frame with games: typically 'GameHeader'
             game_header = None
             for f in frames:
-                if 'HOME_TEAM_ID' in f.columns and 'VISITOR_TEAM_ID' in f.columns:
+                if {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(set(f.columns)):
                     game_header = f
                     break
             if game_header is None or game_header.empty:
                 continue
 
-            # Team id mapping appears as integers
             for _, row in game_header.iterrows():
                 home_id = int(row.get('HOME_TEAM_ID', -1))
                 away_id = int(row.get('VISITOR_TEAM_ID', -1))
                 if team_id in (home_id, away_id):
                     opp_id = away_id if team_id == home_id else home_id
-                    # We don't get abbr directly; try to map from teams static
-                    tdict = {t['id']: t for t in get_all_teams()}
-                    opp_abbr = tdict.get(opp_id, {}).get('abbreviation', 'TBD')
+                    opp_abbr = team_map.get(opp_id, {}).get('abbreviation', 'TBD')
                     return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abbr, 'home': (team_id == home_id)}
         except Exception:
             continue
@@ -177,12 +178,9 @@ def recent_averages(logs: pd.DataFrame) -> dict:
     if logs is None or logs.empty: return out
     df = logs.copy()
     cols = safe_cols(df, STATS_COLS)
-    def block(n,k):
-        if len(df) >= n:
-            sub = df.head(n)
-            if cols:
-                out[k] = sub[cols].mean().to_frame(name=k).T
-    block(5,'Last 5 Avg')
+    if len(df) >= 5 and cols:
+        sub = df.head(5)
+        out['Last 5 Avg'] = sub[cols].mean().to_frame(name='Last 5 Avg').T
     return out
 
 def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
@@ -257,7 +255,6 @@ if career_df.empty:
 # Determine current team & latest season
 team_abbr = "TBD"
 if 'TEAM_ABBREVIATION' in career_df.columns and not career_df.empty:
-    # last row usually latest season
     team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] or team_abbr
 
 latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
@@ -271,7 +268,7 @@ if logs_df is not None and not logs_df.empty:
     lg_opp = extract_opp_from_matchup(last_game_row.get('MATCHUP', '')) or "TBD"
     last_game_info = f"{lg_date} vs {lg_opp}"
 
-# Next game (scan schedule)
+# Next game (scan schedule using ScoreboardV2)
 team_id_map = {t['abbreviation']: t['id'] for t in all_t}
 team_id = team_id_map.get(team_abbr, None)
 ng = next_game_for_team(team_id) if team_id is not None else None
@@ -327,7 +324,6 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     if data is None:
         data = {}
     if isinstance(data, pd.DataFrame):
-        # use first row if present
         row = data.iloc[0].to_dict() if not data.empty else {}
     elif isinstance(data, pd.Series):
         row = data.to_dict()
@@ -344,13 +340,12 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
     with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
 
-# Row 1: Current season averages
+# Row 1: Current season averages (per-game)
 season_row = None
 if not career_df.empty:
     cur = career_df.iloc[-1]  # latest season row
     gp = cur.get('GP', 0)
     if gp and gp > 0:
-        # convert totals to per game
         season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
 metric_row("Current Season Averages", season_row)
 

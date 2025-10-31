@@ -1,11 +1,11 @@
-# app.py — Hot Shot Props | NBA Player Analytics
+# app.py — Hot Shot Props | NBA Player Analytics (with ML Loader)
 # - One-page UX, NBA.com-style theme
 # - Single combined search: "TEAM_ABBR — Player Name"
 # - Headshots, trend charts, 4 metric rows
 # - Favorites + Twilio SMS (manual + daily while app is open)
 # - Next Game shows 🏠/✈️ Home/Away icon
 # - Robust "Last Game Stats"
-# - FIXED: f-string typo in predict_next (r20 key)
+# - ML INTEGRATED: loads models/model_{PTS,REB,AST,FG3M}.pkl if present; else fallback
 
 import streamlit as st
 from nba_api.stats.static import players, teams
@@ -28,6 +28,12 @@ try:
 except Exception:
     TwilioClient = None
 
+# ML model loading
+try:
+    import joblib
+except Exception:
+    joblib = None
+
 # ---------------------------------
 # Page config + constants
 # ---------------------------------
@@ -41,6 +47,9 @@ STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB',
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
 API_SLEEP    = 0.25
 FAV_FILE     = "favorites.json"
+MODEL_DIR    = "models"
+MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
+FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
 
 # ---------------------------------
 # Styling
@@ -216,7 +225,114 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
     return None
 
 # ---------------------------------
-# Computations
+# ML: loaders + feature builder + predictor
+# ---------------------------------
+@st.cache_data(ttl=3600)
+def load_models():
+    """Load model pkl files if available. Returns dict target->model."""
+    models = {}
+    if joblib is None:
+        return models
+    for tgt, path in MODEL_FILES.items():
+        try:
+            if os.path.exists(path):
+                models[tgt] = joblib.load(path)
+        except Exception:
+            continue
+    return models
+
+def _matchup_is_home(matchup: str) -> int:
+    # "TEAM vs OPP" => home (1), "TEAM @ OPP" => away (0)
+    if not isinstance(matchup, str):
+        return 0
+    return 1 if (" vs " in matchup) or (" VS " in matchup) else 0
+
+def build_features_for_inference(logs_df: pd.DataFrame, next_game_date: dt.date | None, is_home_next: int) -> pd.DataFrame | None:
+    """
+    Build a single-row feature frame for *next* game, matching training:
+    - rolling means r5/r10/r20 of target stat, shifted(1) so they use only past games
+    - season_mean up to previous game
+    - IS_HOME (for the next game)
+    - DAYS_REST between last game date and next_game_date (fallback 3 if unknown)
+    """
+    if logs_df is None or logs_df.empty:
+        return None
+
+    # Ensure ascending by GAME_DATE
+    df = logs_df.copy()
+    if 'GAME_DATE' not in df.columns:
+        return None
+    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+    df = df.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
+
+    # Compute DAYS_REST for last row -> next game
+    last_date = pd.to_datetime(df['GAME_DATE'].iloc[-1]).date()
+    if isinstance(next_game_date, str):
+        try:
+            next_game_date = dt.datetime.strptime(next_game_date, "%Y-%m-%d").date()
+        except Exception:
+            next_game_date = None
+    if next_game_date is None:
+        days_rest = 3  # reasonable default
+    else:
+        days_rest = max(0, min(7, (next_game_date - last_date).days))
+
+    # Rolling means and season means (shifted by 1 to avoid leakage)
+    feat = {}
+    for k in [5, 10, 20]:
+        for c in STATS_COLS:
+            series = df[c].rolling(k, min_periods=1).mean().shift(1)
+            feat[f'{c}_r{k}'] = float(series.iloc[-1]) if pd.notna(series.iloc[-1]) else float(df[c].iloc[:-1].mean() if len(df) > 1 else df[c].iloc[-1])
+
+    if 'SEASON_YEAR' in df.columns:
+        # expanding().mean() per season, shifted(1)
+        for c in STATS_COLS:
+            smean = df.groupby('SEASON_YEAR')[c].expanding().mean().shift(1).reset_index(level=0, drop=True)
+            val = smean.iloc[-1] if pd.notna(smean.iloc[-1]) else df[c].expanding().mean().shift(1).iloc[-1]
+            if pd.isna(val):
+                val = df[c].iloc[:-1].mean() if len(df) > 1 else df[c].iloc[-1]
+            feat[f'{c}_season_mean'] = float(val)
+    else:
+        for c in STATS_COLS:
+            smean = df[c].expanding().mean().shift(1)
+            val = smean.iloc[-1] if pd.notna(smean.iloc[-1]) else df[c].iloc[:-1].mean() if len(df) > 1 else df[c].iloc[-1]
+            feat[f'{c}_season_mean'] = float(val)
+
+    # Non-stat features
+    feat['IS_HOME']  = int(is_home_next)
+    feat['DAYS_REST'] = int(days_rest)
+
+    # Return as single-row DataFrame
+    return pd.DataFrame([feat])
+
+def predict_next_ml(logs_df: pd.DataFrame, next_game_date: dt.date | None, is_home_next: int, models: dict[str, object]) -> dict | None:
+    """
+    Use ML models if available to predict next game for each target.
+    Requires the same feature names used in training.
+    """
+    if not models:
+        return None
+    feats_df = build_features_for_inference(logs_df, next_game_date, is_home_next)
+    if feats_df is None or feats_df.empty:
+        return None
+
+    preds = {}
+    for tgt, model in models.items():
+        feat_cols = FEAT_TEMPLATE(tgt)
+        # Ensure all features present
+        missing = [c for c in feat_cols if c not in feats_df.columns]
+        if missing:
+            # cannot predict this target; skip
+            continue
+        try:
+            val = float(model.predict(feats_df[feat_cols])[0])
+            preds[tgt] = round(val, 2)
+        except Exception:
+            continue
+    return preds if preds else None
+
+# ---------------------------------
+# Fallback (non-ML) prediction
 # ---------------------------------
 def recent_averages(logs: pd.DataFrame) -> dict:
     out = {}
@@ -229,7 +345,7 @@ def recent_averages(logs: pd.DataFrame) -> dict:
         out['Last 5 Avg'] = sub[cols].mean().to_frame(name='Last 5 Avg').T
     return out
 
-def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
+def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
     """Simple weighted-averages model as a fallback."""
     if logs is None or logs.empty:
         return None
@@ -257,7 +373,7 @@ def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
     for c in PREDICT_COLS:
         r5  = feats.get(f'{c}_r5',  np.nan)
         r10 = feats.get(f'{c}_r10', np.nan)
-        r20 = feats.get(f'{c}_r20', np.nan)   # <-- FIXED (was f'{c)_r20')
+        r20 = feats.get(f'{c}_r20', np.nan)
         s   = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
         v5, v10, v20 = (r5 if pd.notna(r5) else s), (r10 if pd.notna(r10) else s), (r20 if pd.notna(r20) else s)
         preds[c] = round(float(0.4*v5 + 0.3*v10 + 0.2*v20 + 0.1*s), 2)
@@ -353,9 +469,9 @@ st.markdown("""
   <div style="display:flex; align-items:center; justify-content: space-between;">
     <div>
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
-      <div class="badge">One-page • Favorites + SMS • No auto-refresh</div>
+      <div class="badge">One-page • Favorites + SMS • ML predictions (if available)</div>
     </div>
-    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted predictions • Clean UX</div>
+    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted fallback • Clean UX</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -400,8 +516,12 @@ else:
     if ng:
         icon = "🏠" if ng.get('home') else "✈️"
         next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}"
+        is_home_next = 1 if ng.get('home') else 0
+        ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date()
     else:
         next_game_info = "TBD"
+        is_home_next = 0
+        ng_date_for_feat = None
 
     # Header strip metrics
     c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
@@ -478,15 +598,20 @@ else:
     last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
     metric_row("Last 5 Games Averages", last5)
 
-    # Row 4: Predicted next game (fallback model)
-    preds = predict_next(logs_df, latest_season)
-    metric_row("Predicted Next Game (Model)", preds)
+    # Row 4: Predicted next game (ML or fallback)
+    ml_models = load_models()
+    ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
+    if ml_preds:
+        metric_row("Predicted Next Game (ML)", ml_preds)
+    else:
+        preds = predict_next_fallback(logs_df, latest_season)
+        metric_row("Predicted Next Game (Model)", preds)
 
 # ---------------------------------
 # SMS actions (manual & daily while open)
 # ---------------------------------
 def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
-    """Build one SMS line per favorite with prediction + next game."""
+    """Build one SMS line per favorite with prediction + next game (ML if available)."""
     if not fav_names:
         return []
     all_teams = get_all_teams()
@@ -497,6 +622,7 @@ def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
         nm = label.split("—",1)[-1].strip()
         name_to_id[nm] = pid
 
+    models = load_models()
     lines = []
     for name in fav_names:
         pid = name_to_id.get(name)
@@ -507,10 +633,14 @@ def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
             continue
         team_abbr = cdf['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in cdf.columns else "TBD"
         latest_season = str(cdf['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in cdf.columns else "N/A"
-        preds = predict_next(ldf, latest_season) or {}
         tid = abbr_to_id.get(team_abbr)
         ng  = next_game_for_team(tid) if tid else None
-        icon = "🏠" if ng and ng.get('home') else "✈️"
+        is_home_next = 1 if (ng and ng.get('home')) else 0
+        ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date() if ng else None
+
+        preds_ml = predict_next_ml(ldf, ng_date_for_feat, is_home_next, models) if models else None
+        preds = preds_ml if preds_ml else (predict_next_fallback(ldf, latest_season) or {})
+        icon  = "🏠" if ng and ng.get('home') else "✈️"
         next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}" if ng else "TBD"
         lines.append(format_prediction_sms(name, team_abbr, next_game_info, preds))
     return lines
@@ -583,4 +713,3 @@ st.markdown("""
   <div style="font-size:.85rem; color:#9aa3b2;">Hot Shot Props © — Built with nba_api & Streamlit</div>
 </div>
 """, unsafe_allow_html=True)
-

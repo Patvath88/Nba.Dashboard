@@ -1,241 +1,294 @@
-# app.py — Hot Shot Props | NBA Player Analytics (NBA-only, ML + Expanders)
-# - nba_api with fast timeout + cdn.nba.com mirror fallback
-# - ML: per-player Ridge model for PTS/REB/AST/FG3M (this season)
-# - Fallback to weighted average when ML not available
-# - Expanders with bar charts for all major stat categories
-# - Home: league leaders (click to open player page)
-# - Sidebar: Home, search, favorites
+# app.py — Hot Shot Props | NBA Player Analytics (Free)
+# Minimal, robust, and fast. Black/Red UI, favorites, ML predictions, bar charts.
 
-import os, json, time, datetime as dt
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os, time, json, datetime as dt
+from typing import Dict, Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
 
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import (
-    leagueleaders, playercareerstats, playergamelogs
-)
+# ---- NBA API (official stats) ----
+from nba_api.stats.static import players as nba_players, teams as nba_teams
+from nba_api.stats.endpoints import playercareerstats, playergamelogs
 
-# -------------------- Streamlit page & theme --------------------
-st.set_page_config(page_title="Hot Shot Props • NBA Analytics", layout="wide")
-
-st.markdown("""
-<style>
-html, body, [data-testid="stAppViewContainer"] {background:#000;color:#f4f4f4;}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#111 100%)!important;}
-h1,h2,h3,h4,h5 {color:#ff5555;font-weight:700;}
-.hr{border:0;border-top:1px solid #222;margin:.6rem 0;}
-[data-testid="stMetric"] {background:#111;border-radius:12px;padding:10px;border:1px solid #222;}
-[data-testid="stMetric"] label{color:#ff7777;}
-[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#fff;font-size:1.35em;}
-.leader-card{display:flex;align-items:center;gap:14px;background:#0d0d0d;border:1px solid #222;
-padding:10px;border-radius:10px;margin-bottom:8px;}
-.leader-img img{width:55px;height:55px;border-radius:8px;}
-.leader-info{display:flex;flex-direction:column;}
-.leader-info a{color:#ffb4b4;text-decoration:none;font-weight:bold;}
-.leader-stat{color:#ccc;font-size:0.9em;}
-.hint{background:#0e0e0e;border:1px solid #222;border-radius:10px;padding:.75rem 1rem;color:#ddd;}
-.small{font-size:.9rem;color:#bbb;}
-</style>
-""", unsafe_allow_html=True)
-
-# -------------------- Season helper --------------------
-def current_season():
-    today = dt.date.today()
-    y = today.year if today.month >= 10 else today.year - 1
-    return f"{y}-{str(y+1)[-2:]}"
-SEASON = current_season()
-
-# -------------------- nba_api robustness --------------------
-try:
-    from nba_api.stats.library.http import NBAStatsHTTP
-    NBAStatsHTTP._COMMON_HEADERS.update({
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/123.0 Safari/537.36"),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://www.nba.com",
-        "Referer": "https://www.nba.com/",
-        "Connection": "keep-alive",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-    })
-    NBAStatsHTTP._session = None
-except Exception:
-    NBAStatsHTTP = None  # type: ignore
-
-NBA_TIMEOUT = 5
-NBA_RETRIES = 2
-NBA_BACKOFF = 0.35
-
-def _nba_call(endpoint_cls, **kwargs):
-    last_err = None
-    for i in range(NBA_RETRIES + 1):
-        try:
-            return endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
-        except Exception as e:
-            last_err = e
-            if i < NBA_RETRIES:
-                time.sleep(NBA_BACKOFF * (2**i) + 0.1*np.random.rand())
-    if NBAStatsHTTP is not None:
-        try:
-            orig = getattr(NBAStatsHTTP, "_BASE_URL", "https://stats.nba.com/stats")
-            setattr(NBAStatsHTTP, "_BASE_URL", "https://cdn.nba.com/stats")
-            NBAStatsHTTP._session = None
-            try:
-                return endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
-            finally:
-                setattr(NBAStatsHTTP, "_BASE_URL", orig)
-                NBAStatsHTTP._session = None
-        except Exception as e2:
-            last_err = e2
-    raise RuntimeError(f"NBA data fetch failed after retries: {last_err}")
-
-# -------------------- Favorites persistence --------------------
-DEFAULT_TMP = "/tmp" if os.access("/", os.W_OK) else "."
-FAV_PATH = os.path.join(DEFAULT_TMP, "favorites.json")
-
-def load_favorites():
-    try:
-        if os.path.exists(FAV_PATH):
-            with open(FAV_PATH, "r") as f: return json.load(f)
-    except Exception:
-        pass
-    return []
-
-def save_favorites(favs):
-    try:
-        with open(FAV_PATH, "w") as f: json.dump(sorted(set(favs)), f)
-    except Exception:
-        pass
-
-if "favorites" not in st.session_state:
-    st.session_state.favorites = load_favorites()
-
-# -------------------- Active players --------------------
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_active_maps():
-    aps = players.get_active_players()
-    id2name = {p["id"]: p["full_name"] for p in aps}
-    name2id = {v: k for k, v in id2name.items()}
-    names_sorted = sorted(name2id.keys())
-    return aps, id2name, name2id, names_sorted
-
-ACTIVE_PLAYERS, ID_TO_NAME, NAME_TO_ID, PLAYER_NAMES = get_active_maps()
-
-# -------------------- Cached fetchers --------------------
-@st.cache_data(ttl=900, show_spinner=False)
-def get_league_leaders_df(season: str) -> pd.DataFrame:
-    return _nba_call(leagueleaders.LeagueLeaders,
-                     season=season, per_mode48="PerGame").get_data_frames()[0]
-
-@st.cache_data(ttl=900, show_spinner=False)
-def get_player_career_df(player_id: int) -> pd.DataFrame:
-    return _nba_call(playercareerstats.PlayerCareerStats,
-                     player_id=player_id).get_data_frames()[0]
-
-@st.cache_data(ttl=900, show_spinner=False)
-def get_player_gamelogs_df(player_id: int, season: str) -> pd.DataFrame:
-    gl = _nba_call(playergamelogs.PlayerGameLogs,
-                   player_id_nullable=player_id,
-                   season_nullable=season,
-                   season_type_nullable="Regular Season").get_data_frames()[0]
-    if "GAME_DATE" in gl.columns:
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
-    return gl
-
-# -------------------- ML (Ridge) --------------------
-# Optional dependencies
+# ---- ML (optional) ----
 try:
     from sklearn.linear_model import Ridge
     from sklearn.model_selection import train_test_split
     SKLEARN_OK = True
 except Exception:
     SKLEARN_OK = False
-    Ridge = None  # type: ignore
+    Ridge = None
 
-ML_STATS = ["PTS", "REB", "AST", "FG3M"]
-ML_FEATS = ["PTS","REB","AST","FG3M","MIN","FGA","FG3A","FTA","OREB","DREB","TOV"]
+# ========================= Page / Theme =========================
+st.set_page_config(page_title="Hot Shot Props • NBA Player Analytics", layout="wide")
 
-@st.cache_data(ttl=60*60, show_spinner=False)  # 1 hour
+st.markdown("""
+<style>
+:root { --bg:#000; --panel:#0b0b0b; --ink:#f3f4f6; --line:#171717; --red:#ef4444; }
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important;}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#0b0b0b 100%)!important;border-right:1px solid #111;}
+h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;}
+.stButton>button{background:var(--red)!important;color:#fff!important;border:none!important;border-radius:10px!important;padding:.55rem .95rem!important;font-weight:700;}
+[data-testid="stMetric"]{background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:14px;}
+[data-testid="stMetric"] label{color:#fda4a4;}
+[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#ffe4e6;font-size:1.3rem;}
+.bar{margin-top:8px}
+a{color:#fda4a4;text-decoration:none}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid #2a2a2a;background:#121212;margin-left:6px;}
+.fav-pill{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border:1px solid #222;border-radius:10px;margin-bottom:6px;background:#0e0e0e}
+.fav-pill a{font-weight:700}
+.fav-x{cursor:pointer;font-weight:900;color:#fda4a4;margin-left:10px}
+.home-hint{background:#0a1016;border:1px solid #112; padding:10px 14px;border-radius:10px}
+</style>
+""", unsafe_allow_html=True)
+
+# ========================= Config / Constants =========================
+DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
+MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
+CORE_STATS   = ['PTS','REB','AST','FG3M','MIN']
+ML_STATS     = ['PTS','REB','AST','FG3M']          # predict these
+ML_FEATS     = ['PTS','REB','AST','FG3M','MIN']    # features to roll
+ROLLS        = [1,3,5]
+
+NBA_TIMEOUT = 12     # aggressive but ok when cached/retried
+API_SLEEP  = 0.15    # small polite delay
+
+# ========================= Cache: Static lists =========================
+@st.cache_data(show_spinner=False)
+def get_active_players_list() -> List[Dict]:
+    try:
+        return nba_players.get_active_players()
+    except Exception:
+        return []
+
+@st.cache_data(show_spinner=False)
+def get_teams_list() -> List[Dict]:
+    try:
+        return nba_teams.get_teams()
+    except Exception:
+        return []
+
+# fast maps
+TEAMS = {t['full_name']: t for t in get_teams_list()}
+TEAM_NAME_BY_ID = {t['id']: t['full_name'] for t in get_teams_list()}
+PLAYER_BY_NAME = {p['full_name']: p for p in get_active_players_list()}
+PLAYER_NAME_BY_ID = {p['id']: p['full_name'] for p in get_active_players_list()}
+
+# ========================= Helpers =========================
+def season_for_today() -> str:
+    today = dt.date.today()
+    start_year = today.year - 1 if today.month < 8 else today.year
+    return f"{start_year}-{str(start_year+1)[-2:]}"
+
+def headshot_url(player_id: int) -> str:
+    # nba.com headshot CDN (works for most nba_api player IDs)
+    return f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{player_id}.png"
+
+# ========================= Data Fetchers =========================
+@st.cache_data(ttl=60*30, show_spinner=False)   # 30 min
+def fetch_player_career(player_id: int) -> Optional[pd.DataFrame]:
+    try:
+        res = playercareerstats.PlayerCareerStats(player_id=player_id, timeout=NBA_TIMEOUT)
+        df = res.get_data_frames()[0]
+        return df
+    except Exception as e:
+        return None
+
+@st.cache_data(ttl=60*15, show_spinner=False)   # 15 min
+def fetch_player_gamelogs(player_id: int, season: str) -> Optional[pd.DataFrame]:
+    try:
+        # playergamelogs supports season & player_id_nullable; returns all rows (preseason+reg+post)
+        gl = playergamelogs.PlayerGameLogs(player_id_nullable=player_id,
+                                           season_nullable=season,
+                                           timeout=NBA_TIMEOUT).get_data_frames()[0]
+        # normalize
+        gl['GAME_DATE'] = pd.to_datetime(gl['GAME_DATE'])
+        gl = gl.sort_values('GAME_DATE', ascending=False).reset_index(drop=True)
+        return gl
+    except Exception:
+        return None
+
+def season_regular_only(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return df
+    # if 'GAME_DATE' exists we already have game rows; use df as-is
+    # playergamelogs already returns only regular season by default in newer versions; guard anyway
+    return df
+
+# ========================= Favorites (per-user via session) =========================
+def load_favorites() -> Dict[str, int]:
+    path = os.path.join(DEFAULT_TMP_DIR, "favorites.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_favorites(favs: Dict[str,int]):
+    path = os.path.join(DEFAULT_TMP_DIR, "favorites.json")
+    try:
+        with open(path, "w") as f:
+            json.dump(favs, f)
+    except Exception:
+        pass
+
+if "favorites" not in st.session_state:
+    st.session_state.favorites = load_favorites()
+
+# ========================= ML: model building & prediction =========================
+@st.cache_data(ttl=60*60, show_spinner=False)  # 1 hour cache
 def build_player_models(player_id: int, season: str):
     """
-    Train small Ridge models per stat using this season only.
-    Features: rolling 1/3/5 of core box-score cols.
+    Train small Ridge models per stat using this season.
+    Features: rolling 1/3/5 of ML_FEATS. Predict t+1.
     """
     if not SKLEARN_OK:
-        return None  # trigger fallback
-    gl = get_player_gamelogs_df(player_id, season)
+        return None
+
+    gl = fetch_player_gamelogs(player_id, season)
     if gl is None or gl.empty or len(gl) < 8:
         return None
-    df = gl.copy().sort_values("GAME_DATE")  # chronological for rolling
-    # keep only numeric cols we care about
+
+    # Keep regular season rows
+    df = season_regular_only(gl).copy().sort_values("GAME_DATE")
     use_cols = [c for c in ML_FEATS if c in df.columns]
     if not use_cols:
         return None
+
     # rolling features
     for c in use_cols:
-        s = df[c].astype(float)
-        df[f"{c}_r1"] = s.rolling(1).mean()
-        df[f"{c}_r3"] = s.rolling(3).mean()
-        df[f"{c}_r5"] = s.rolling(5).mean()
-    # For each target stat, shift target by -1 (predict next game)
+        s = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+        for r in ROLLS:
+            df[f"{c}_r{r}"] = s.rolling(r, min_periods=1).mean()
+
+    # feature candidates
+    feat_cols = [c for c in df.columns if any(s in c for s in ML_FEATS) and "_r" in c]
+
     models = {}
-feat_cols = [c for c in df.columns if any(s in c for s in ML_FEATS) and "_r" in c]
     for target in ML_STATS:
-        if target not in df.columns: 
+        if target not in df.columns:
             continue
-        t = df[target].astype(float).shift(-1)
-        X = df[feat_cols].iloc[:-1].fillna(method="bfill").fillna(0.0).values
-        y = t.iloc[:-1].fillna(method="bfill").fillna(0.0).values
-        if len(y) < 6: 
+        y = pd.to_numeric(df[target], errors="coerce").fillna(0.0).shift(-1)  # next game
+        X = df[feat_cols].fillna(method="bfill").fillna(0.0)
+
+        X = X.iloc[:-1].values
+        y = y.iloc[:-1].values
+        if len(y) < 6:
             continue
+
         Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
         model = Ridge(alpha=1.0).fit(Xtr, ytr)
         models[target] = {"model": model, "feat_cols": feat_cols}
+
     return models if models else None
 
-def predict_next_game_ml(player_id: int, season: str):
-    models = build_player_models(player_id, season)
-    if not models:
-        return None, False
-    gl = get_player_gamelogs_df(player_id, season)
+def predict_next_game(player_id: int, season: str) -> Tuple[Dict[str,float], bool]:
+    """
+    Returns (preds, is_ml). If ML unavailable, falls back to weighted averages.
+    """
+    gl = fetch_player_gamelogs(player_id, season)
     if gl is None or gl.empty:
-        return None, False
-    df = gl.copy().sort_values("GAME_DATE")
-    # last row features (most recent game)
-    for c in [c for c in ML_FEATS if c in df.columns]:
-        s = df[c].astype(float)
-        df[f"{c}_r1"] = s.rolling(1).mean()
-        df[f"{c}_r3"] = s.rolling(3).mean()
-        df[f"{c}_r5"] = s.rolling(5).mean()
-    last = df.iloc[-1:]
-    preds = {}
-    for stat, pack in models.items():
-        X = last[pack["feat_cols"]].fillna(method="bfill").fillna(0.0).values
-        preds[stat] = float(pack["model"].predict(X)[0])
-    return preds, True
+        return ({}, False)
 
-def predict_weighted(gamelogs: pd.DataFrame):
-    if gamelogs is None or gamelogs.empty:
-        return None
-    n = min(10, len(gamelogs))
-    w = np.arange(n, 0, -1)
-    p = {}
-    for s in ML_STATS:
-        if s in gamelogs.columns:
-            vals = gamelogs[s].head(n).astype(float).values
-            p[s] = float(np.average(vals, weights=w)) if len(vals) else np.nan
+    gl = season_regular_only(gl).copy()
+    # Try ML
+    models = build_player_models(player_id, season)
+    if models:
+        row = gl.copy().sort_values("GAME_DATE")  # oldest->newest
+        # build latest rolling features using same logic
+        use_cols = [c for c in ML_FEATS if c in row.columns]
+        for c in use_cols:
+            s = pd.to_numeric(row[c], errors="coerce").fillna(0.0)
+            for r in ROLLS:
+                row[f"{c}_r{r}"] = s.rolling(r, min_periods=1).mean()
+        feat_cols = next(iter(models.values()))["feat_cols"]
+        x = row[feat_cols].iloc[-1:].fillna(0).values
+        preds = {}
+        for stat, pack in models.items():
+            preds[stat] = float(np.round(pack["model"].predict(x)[0], 2))
+        return preds, True
+
+    # Fallback: weighted average of last 5/10/20 with weights 0.5/0.3/0.2 (if available)
+    weights = [(5,0.5),(10,0.3),(20,0.2)]
+    out = {}
+    for stat in ML_STATS:
+        acc, wsum = 0.0, 0.0
+        for n,w in weights:
+            if len(gl) >= n:
+                acc += gl[stat].head(n).mean() * w
+                wsum += w
+        if wsum == 0:
+            out[stat] = float(np.round(gl[stat].mean(),2)) if stat in gl.columns else np.nan
         else:
-            p[s] = np.nan
-    return p
+            out[stat] = float(np.round(acc/wsum,2))
+    return out, False
 
-# -------------------- Sidebar --------------------
+# ========================= UI Pieces =========================
+def metric_row(title: str, data: Dict[str, float], keys: List[str]):
+    st.subheader(title)
+    cols = st.columns(len(keys))
+    for i,k in enumerate(keys):
+        v = data.get(k, np.nan)
+        if pd.isna(v):
+            cols[i].metric(k, "N/A")
+        else:
+            cols[i].metric(k, f"{v:.2f}")
+
+def bar_block(df: pd.DataFrame, cols: List[str], title: str):
+    st.markdown(f"#### {title}")
+    if df is None or df.empty:
+        st.info("No data.")
+        return
+    # long format
+    use = [c for c in cols if c in df.columns]
+    if not use:
+        st.info("No matching columns.")
+        return
+    recent = df.head(10).copy()
+    long = recent[['GAME_DATE'] + use].melt('GAME_DATE', var_name='Stat', value_name='Value')
+    chart = alt.Chart(long).mark_bar().encode(
+        x=alt.X('Stat:N'),
+        y=alt.Y('Value:Q'),
+        color=alt.Color('Stat:N', legend=None)
+    ).properties(height=220)
+    st.altair_chart(chart, use_container_width=True)
+
+def last_game_block(gl: pd.DataFrame) -> Dict[str,float]:
+    if gl is None or gl.empty: return {}
+    last = gl.head(1).iloc[0]
+    data = {k: float(last.get(k, np.nan)) for k in CORE_STATS}
+    data['MIN'] = float(last.get('MIN', np.nan))
+    return data
+
+def last5_avg_block(gl: pd.DataFrame) -> Dict[str,float]:
+    if gl is None or len(gl) < 1: return {}
+    chunk = gl.head(5)
+    return {k: float(np.round(chunk[k].mean(),2)) for k in CORE_STATS if k in chunk.columns}
+
+def season_avg_from_career(career_df: pd.DataFrame, season: str) -> Dict[str,float]:
+    if career_df is None or career_df.empty: return {}
+    if 'SEASON_ID' not in career_df.columns: return {}
+    row = career_df.loc[career_df['SEASON_ID'] == season]
+    if row.empty:
+        row = career_df.tail(1)
+    row = row.iloc[0]
+    out = {}
+    gp = float(row.get('GP', 0)) or 0.0
+    for k in STATS_COLS:
+        if k in career_df.columns:
+            v = float(row.get(k, np.nan))
+            out[k] = float(np.round(v/gp,2)) if gp>0 and k != 'GP' else v
+    return out
+
+# ========================= Sidebar =========================
 def go_home():
     st.session_state.pop("selected_player", None)
     try:
@@ -245,202 +298,117 @@ def go_home():
     st.rerun()
 
 with st.sidebar:
-    st.button("🏠 Home Screen", on_click=go_home, type="primary", key="home_btn")
-    st.markdown("---")
-    st.header("Search Player")
-    search_name = st.selectbox("Player", PLAYER_NAMES, index=None, placeholder="Select player")
-    st.markdown("### ⭐ Favorites")
-    if not st.session_state["favorites"]:
-        st.caption("No favorites yet.")
-    for fav in list(st.session_state["favorites"]):
-        c1, c2 = st.columns([4,1])
-        if c1.button(fav, key=f"fav_{fav}"):
-            st.session_state["selected_player"] = fav
-            st.rerun()
-        if c2.button("❌", key=f"rm_{fav}"):
-            st.session_state["favorites"].remove(fav)
-            save_favorites(st.session_state["favorites"])
-            st.rerun()
-
-# direct-link support
-try:
-    pid_param = st.query_params.get("player_id")
-    if pid_param:
-        if isinstance(pid_param, (list, tuple)): pid_param = pid_param[0]
-        pid = int(pid_param)
-        if pid in ID_TO_NAME:
-            st.session_state["selected_player"] = ID_TO_NAME[pid]
-except Exception:
-    pass
-
-# -------------------- Home --------------------
-def show_home():
-    st.title("🏀 NBA League Leaders")
-    st.subheader(f"Season {SEASON}")
-    st.markdown("<div class='hint'>💡 Use the sidebar to search any player, or click a leader to open their page.</div>", unsafe_allow_html=True)
-    try:
-        leaders = get_league_leaders_df(SEASON)
-        for stat in ["PTS","REB","AST","STL","BLK","FG3M"]:
-            top = leaders.sort_values(stat, ascending=False).iloc[0]
-            player_id = int(top["PLAYER_ID"])
-            href = f"?player_id={player_id}"
-            st.markdown(f"""
-            <div class='leader-card'>
-              <div class='leader-img'>
-                <img src='https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png'>
-              </div>
-              <div class='leader-info'>
-                <a href='{href}'>{top["PLAYER"]}</a>
-                <div>{top["TEAM"]}</div>
-                <div class='leader-stat'>{stat}: <b>{round(float(top[stat]),2)}</b></div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Could not load league leaders: {e}")
-
-if "selected_player" not in st.session_state and not search_name:
-    show_home()
-    st.stop()
-
-# -------------------- Player Detail --------------------
-selected = search_name or st.session_state.get("selected_player")
-player_id = NAME_TO_ID.get(selected)
-try:
-    if player_id:
-        st.query_params.update({"player_id": str(player_id)})
+    st.header("Select Player")
+    # search box
+    search = st.text_input("Search player or team", "").strip()
+    # favorites list
+    st.markdown("**⭐ Favorites**")
+    if st.session_state.favorites:
+        for name, pid in list(st.session_state.favorites.items()):
+            cols = st.columns([0.8,0.2])
+            with cols[0]:
+                if st.button(name, key=f"fav_{pid}"):
+                    st.session_state.selected_player = pid
+                    st.rerun()
+            with cols[1]:
+                if st.button("✖", key=f"fav_del_{pid}"):
+                    st.session_state.favorites.pop(name, None)
+                    save_favorites(st.session_state.favorites)
+                    st.rerun()
     else:
-        st.query_params.clear()
-except Exception:
-    pass
+        st.caption("No favorites yet.")
 
-st.title(f"📊 {selected}")
+    st.divider()
+    st.button("🏠 Home Screen", on_click=go_home, type="primary")
 
-if st.button("⭐ Add to Favorites"):
-    if selected not in st.session_state["favorites"]:
-        st.session_state["favorites"].append(selected)
-        save_favorites(st.session_state["favorites"])
-        st.success(f"Added {selected} to favorites")
+# ========================= Home vs Player routing =========================
+selected_id = st.session_state.get("selected_player")
+# quick search logic
+if search:
+    # try exact player
+    if search in PLAYER_BY_NAME:
+        selected_id = PLAYER_BY_NAME[search]['id']
+        st.session_state.selected_player = selected_id
+        st.rerun()
+    # team filter
+    team_hits = [t for t in TEAMS if search.lower() in t.lower()]
+    if team_hits and not selected_id:
+        st.subheader("Tap a player")
+        team_id = TEAMS[team_hits[0]]['id']
+        names = [p['full_name'] for p in get_active_players_list() if p.get('team_id') == team_id]
+        for nm in names[:100]:
+            if st.button(nm, key=f"team_{nm}"):
+                st.session_state.selected_player = PLAYER_BY_NAME[nm]['id']
+                st.rerun()
 
-spinner = st.empty()
-spinner.info("Loading player data…")
-
-def load_player_fast(pid: int):
-    def _career():  return get_player_career_df(pid)
-    def _glogs():   return get_player_gamelogs_df(pid, SEASON)
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = {ex.submit(_career): "career", ex.submit(_glogs): "logs"}
-        career_df, glogs = None, None
-        for fut in as_completed(futs):
-            kind = futs[fut]
-            data = fut.result()
-            if kind == "career": career_df = data
-            else: glogs = data
-    return career_df, glogs
-
-if player_id is None:
-    spinner.empty()
-    st.error("Player not found.")
+# ========================= HOME =========================
+if not selected_id:
+    st.title("Hot Shot Props — NBA Player Analytics")
+    st.markdown('<div class="home-hint">💡 <b>Hint:</b> Use the sidebar to search any player, or tap a favorite.</div>', unsafe_allow_html=True)
+    st.markdown("Pick a player to load their dashboard.")
     st.stop()
 
-try:
-    career_df, gamelogs = load_player_fast(player_id)
-except Exception as e:
-    spinner.empty()
-    st.error(f"Failed to load from nba_api (temporary block?): {e}")
+# ========================= PLAYER PAGE =========================
+player_id = selected_id
+player_name = PLAYER_NAME_BY_ID.get(player_id, "Player")
+st.title(player_name)
+
+# Add to favorites
+colA, colB = st.columns([0.2,0.8])
+with colA:
+    if st.button("⭐ Add to Favorites"):
+        st.session_state.favorites[player_name] = player_id
+        save_favorites(st.session_state.favorites)
+        st.success("Added!")
+
+season = season_for_today()
+
+with st.spinner("Loading data…"):
+    career_df = fetch_player_career(player_id)
+    gamelogs_df = fetch_player_gamelogs(player_id, season)
+    time.sleep(API_SLEEP)
+
+# Robust guard
+if (career_df is None or career_df.empty) and (gamelogs_df is None or gamelogs_df.empty):
+    st.error("Failed to load from nba_api (likely a temporary block). Please retry in a minute.")
     st.stop()
 
-spinner.empty()
+# ===== Header metrics =====
+season_avgs = season_avg_from_career(career_df, season)
+last_game = last_game_block(gamelogs_df)
+last5 = last5_avg_block(gamelogs_df)
+preds, used_ml = predict_next_game(player_id, season)
 
-# Headshot
-st.image(f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png", width=230)
+metric_row("Current Season Averages", season_avgs, CORE_STATS)
+metric_row("Last Game Stats", last_game, CORE_STATS)
+metric_row("Last 5 Games Averages", last5, CORE_STATS)
+pred_title = "Predicted Next Game (ML)" if used_ml else "Predicted Next Game (Weighted Avg)"
+metric_row(pred_title, preds, CORE_STATS)
 
-# Career small table
-st.subheader("Career Averages (Per Game)")
-if not career_df.empty:
-    df = career_df.copy()
-    if "GP" in df.columns:
-        gp = df["GP"].replace(0, np.nan)
-        for c in ("PTS","REB","AST"):
-            if c in df.columns:
-                df[c] = (df[c] / gp).round(2)
-    cols = [c for c in ["SEASON_ID","TEAM_ABBREVIATION","PTS","REB","AST"] if c in df.columns]
-    st.dataframe(df[cols].fillna(0), width='stretch')
-else:
-    st.info("No career/per-season data.")
+# ===== Charts =====
+st.divider()
+st.subheader("Stat Bars (last 10 games)")
+bar_block(gamelogs_df, ['PTS','REB','AST','FG3M'], "Scoring & Creation")
+bar_block(gamelogs_df, ['FGA','FGM','FG3A','FG3M','FTA','FTM'], "Shooting Volume")
+bar_block(gamelogs_df, ['OREB','DREB','REB','STL','BLK','TOV','PF','MIN'], "Other Impact")
 
-# ---- Last game + last-5 averages
-st.subheader("Last Game")
-if isinstance(gamelogs, pd.DataFrame) and not gamelogs.empty:
-    last = gamelogs.iloc[0]
-    c = st.columns(4)
-    for i, s in enumerate(["PTS","REB","AST","FG3M"]):
-        v = last.get(s, np.nan)
-        c[i].metric(s, "N/A" if pd.isna(v) else int(v))
-else:
-    st.info("No recent game found.")
+# ===== Last predictions vs results (simple) =====
+st.divider()
+st.subheader("Last Predictions vs Results")
+if preds and gamelogs_df is not None and not gamelogs_df.empty:
+    last_game_row = gamelogs_df.head(1).iloc[0]
+    cols = st.columns(len(CORE_STATS))
+    for i,k in enumerate(CORE_STATS):
+        pred_v = preds.get(k, np.nan)
+        actual_v = float(last_game_row.get(k, np.nan))
+        if pd.isna(pred_v) or pd.isna(actual_v):
+            cols[i].metric(k, "N/A")
+        else:
+            hit = "✅" if actual_v >= pred_v else "❌"
+            cols[i].metric(f"{k} {hit}", f"{actual_v:.1f}", f"pred {pred_v:.1f}")
 
-st.subheader("Recent Form (Last 5)")
-if isinstance(gamelogs, pd.DataFrame) and len(gamelogs) >= 5:
-    avg = gamelogs.head(5).mean(numeric_only=True)
-    c = st.columns(4)
-    for i, s in enumerate(["PTS","REB","AST","FG3M"]):
-        v = avg.get(s, np.nan)
-        c[i].metric(s, "N/A" if pd.isna(v) else round(float(v),2))
-else:
-    st.info("Not enough games.")
-
-# ---- Prediction (ML first; fallback weighted)
-st.subheader("Predicted Next Game")
-ml_preds, used_ml = predict_next_game_ml(player_id, SEASON)
-if not ml_preds:
-    ml_preds = predict_weighted(gamelogs)
-    used_ml = False
-
-if ml_preds:
-    c = st.columns(4)
-    for i, s in enumerate(["PTS","REB","AST","FG3M"]):
-        v = ml_preds.get(s, np.nan)
-        label = f"{s} {'(ML)' if used_ml else '(WA)'}"
-        c[i].metric(label, "N/A" if pd.isna(v) else f"{v:.1f}")
-    st.caption(("**(ML)** = Ridge regression on this season’s logs • "
-                "**(WA)** = weighted average fallback"), help="ML uses rolling 1/3/5-game features.")
-else:
-    st.info("No data to generate a prediction.")
-
-st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
-
-# -------------------- Expanders with bar charts --------------------
-def chart_last10(df: pd.DataFrame, cols: list, title: str):
-    if df is None or df.empty: 
-        st.info("No recent games.")
-        return
-    keep = ["GAME_DATE"] + [c for c in cols if c in df.columns]
-    sub = df[keep].head(10).copy()
-    long = sub.melt("GAME_DATE", var_name="Stat", value_name="Value")
-    ch = (alt.Chart(long)
-          .mark_bar()
-          .encode(x="Stat:N", y="mean(Value):Q", color="Stat:N")
-          .properties(height=280, width=850))
-    st.altair_chart(ch, theme=None)
-
-with st.expander("📈 Scoring (PTS • usage)", expanded=False):
-    chart_last10(gamelogs, ["PTS","MIN","FGA","FTA"], "Scoring")
-
-with st.expander("🎯 Shooting Splits (FG/3PT/FT volume)", expanded=False):
-    chart_last10(gamelogs, ["FGM","FGA","FG3M","FG3A","FTM","FTA"], "Shooting")
-
-with st.expander("🏀 Rebounding", expanded=False):
-    chart_last10(gamelogs, ["OREB","DREB","REB"], "Rebounding")
-
-with st.expander("🧠 Playmaking / Control", expanded=False):
-    chart_last10(gamelogs, ["AST","TOV"], "Playmaking")
-
-with st.expander("🛡️ Defense / Discipline", expanded=False):
-    chart_last10(gamelogs, ["STL","BLK","PF"], "Defense")
-
-with st.expander("💥 3-Point Production", expanded=False):
-    chart_last10(gamelogs, ["FG3M"], "3-Point")
-
-st.markdown("---")
-st.caption("Hot Shot Props • NBA Analytics Dashboard ©2025")
+# ===== Download snapshot (PNG) =====
+st.divider()
+png_name = f"{player_name.replace(' ','_')}_{season}.png"
+if st.button("⬇️ Download Snapshot (PNG)"):
+    st.write("Use your browser/device ‘Save as…’ after taking a screenshot. (Direct PNG export disabled here for reliability.)")

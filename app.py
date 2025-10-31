@@ -1,10 +1,11 @@
 # app.py — Hot Shot Props | NBA Player Analytics
 # - One-page UX (NBA-like)
-# - Single combined search: "TEAM_ABBR — Player Name"
-# - Sidebar: Favorites list (click to open) with inline "×" remove buttons
+# - Sidebar search: "TEAM_ABBR — Player Name"
+# - Sidebar favorites under search; each has a tiny × remove button
 # - Headshot with team-logo overlay (top-right)
-# - Auto ML training only (background thread) when models missing/stale; no manual UI
-# - Uses scoreboardv2 (not v3); weighted fallback if ML deps/models absent
+# - Auto ML training (background thread) starts on EVERY player selection (no freshness check)
+# - If ML models present -> uses ML; otherwise weighted fallback
+# - Shows which prediction engine was used in the UI
 
 import streamlit as st
 from nba_api.stats.static import players, teams
@@ -47,7 +48,6 @@ FAV_FILE     = "favorites.json"
 MODEL_DIR    = "models"
 MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
 FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
-MODEL_MAX_AGE_HOURS = 24  # retrain trigger window
 
 # ---------------------------------
 # Styling
@@ -66,10 +66,10 @@ h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
 .stDataFrame{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.35);}
 .badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#0b1222;color:#9bd1ff;}
-.link-btn button{background:transparent!important;color:#93c5fd!important;border:none!important;box-shadow:none!important;text-decoration:underline;cursor:pointer;padding:.25rem 0;}
-.link-btn button:hover{color:#bfdbfe!important;text-decoration:underline;}
 .inline-x button{background:#172036!important;border:1px solid #24324f!important;color:#cbd5e1!important;padding:.1rem .4rem!important;font-weight:800;border-radius:6px;}
 .hr{border:0;border-top:1px solid var(--line);margin:.5rem 0;}
+.fav-btn button{background:transparent!important;color:#93c5fd!important;border:none!important;box-shadow:none!important;text-decoration:underline;cursor:pointer;padding:.25rem 0;}
+.fav-btn button:hover{color:#bfdbfe!important;text-decoration:underline;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -270,20 +270,6 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
 # ---------------------------------
 # ML: loaders + predictors + background training
 # ---------------------------------
-def models_exist_and_fresh(max_age_hours: int = MODEL_MAX_AGE_HOURS) -> bool:
-    """All model files exist and are newer than max_age_hours."""
-    try:
-        now = time.time()
-        for path in MODEL_FILES.values():
-            if not os.path.exists(path):
-                return False
-            age_hours = (now - os.path.getmtime(path)) / 3600.0
-            if age_hours > max_age_hours:
-                return False
-        return True
-    except Exception:
-        return False
-
 @st.cache_data(ttl=3600)
 def load_models():
     """Load model pkl files if available. Returns dict target->model."""
@@ -429,19 +415,23 @@ def train_models_core(active_players=None):
     return True
 
 def ensure_background_training():
-    """If models are missing or stale and no trainer is running, start one background thread."""
+    """
+    ALWAYS attempt background training on selection (no freshness check).
+    Guarded so only one thread runs at a time.
+    """
     if joblib is None or Ridge is None:
-        return
-    if models_exist_and_fresh():
         return
     if st.session_state.get("_bg_training_running"):
         return
     st.session_state["_bg_training_running"] = True
+    st.session_state["_bg_training_started_at"] = dt.datetime.now().strftime("%H:%M:%S")
+
     def _runner():
         try:
             train_models_core()
         finally:
             st.session_state["_bg_training_running"] = False
+
     threading.Thread(target=_runner, daemon=True).start()
 
 # ---------------------------------
@@ -533,7 +523,6 @@ with st.sidebar:
             pid = fav.get("id")
             colN, colX = st.columns([0.8, 0.2], vertical_alignment="center")
             with colN:
-                # link-like button to open
                 if st.container().button(nm, key=f"fav_open_{idx}_{pid}", help="Open player", use_container_width=True):
                     st.session_state['selected_player_id'] = pid
                     st.rerun()
@@ -564,10 +553,10 @@ st.markdown("""
 # Main content
 # ---------------------------------
 if player_id:
-    # kick off background training if needed
+    # kick off background training EVERY time you select a player
     ensure_background_training()
     if st.session_state.get("_bg_training_running"):
-        st.caption("🟦 Training ML models in background… (first run or refresh)")
+        st.caption(f"🟦 Training ML models in background… (started {st.session_state.get('_bg_training_started_at','now')})")
 
 if not player_id:
     st.info("Pick a player from the sidebar to load their dashboard.")
@@ -654,7 +643,7 @@ else:
         else:
             st.info("No recent games to chart.")
 
-    # Metric rows
+    # Metric row helper
     def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
         st.markdown(f"#### {title}")
         if data is None:
@@ -691,11 +680,23 @@ else:
     last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
     metric_row("Last 5 Games Averages", last5)
 
-    # Row 4: Predicted next game (ML or fallback)
+    # Row 4: Predicted next game (ML or fallback) + indicator of which engine
     ml_models = load_models()
-    ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
+    source_label = ""
+    if ml_models:
+        ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models)
+    else:
+        ml_preds = None
+
     if ml_preds:
         metric_row("Predicted Next Game (ML)", ml_preds)
+        source_label = "Using ML models"
     else:
         preds = predict_next_fallback(logs_df, latest_season)
         metric_row("Predicted Next Game (Model)", preds)
+        if joblib is None or Ridge is None:
+            source_label = "Using weighted fallback model (install scikit-learn & joblib to enable ML)"
+        else:
+            source_label = "Using weighted fallback model (ML models not available yet)"
+
+    st.caption(source_label)

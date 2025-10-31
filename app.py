@@ -1,12 +1,12 @@
-# app.py — Hot Shot Props | NBA Player Analytics (with In-App ML Training + Favorites Panel)
-# - One-page UX, NBA.com-style theme
+# app.py — Hot Shot Props | NBA Player Analytics
+# - One-page UX (NBA-like)
 # - Single combined search: "TEAM_ABBR — Player Name"
-# - Headshots, trend charts, 4 metric rows
-# - Favorites panel in main area; click a favorite name to load that player
-# - Integrated ML training: trains Ridge regressors for PTS/REB/AST/FG3M; saves to models/*.pkl
-# - ML loader uses models if present; otherwise weighted-average fallback
-# - No auto-refresh, no texting/SMS features
-# - Uses scoreboardv2 (compatible) and fixes previous f-string typo
+# - Headshot with team-logo overlay (top-right)
+# - Favorites panel with clickable player "links"
+# - Auto ML training: spawns ONE background thread on player selection if
+#   models are missing or older than 24h; saves to ./models/
+# - Manual trainer panel (optional)
+# - Uses scoreboardv2 (not v3)
 
 import streamlit as st
 from nba_api.stats.static import players, teams
@@ -18,22 +18,20 @@ from nba_api.stats.endpoints import (
 )
 import pandas as pd
 import numpy as np
-import re, time, datetime as dt, json, os
+import re, time, datetime as dt, json, os, threading
 import altair as alt
 import requests
 from io import BytesIO
+from PIL import Image
 
-# Optional ML libs (required for training/ML inference)
+# ---- ML deps ----
 try:
     import joblib
-except Exception:
-    joblib = None
-
-try:
     from sklearn.linear_model import Ridge
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_absolute_error
 except Exception:
+    joblib = None
     Ridge = None
 
 # ---------------------------------
@@ -52,6 +50,7 @@ FAV_FILE     = "favorites.json"
 MODEL_DIR    = "models"
 MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
 FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
+MODEL_MAX_AGE_HOURS = 24  # retrain trigger window
 
 # ---------------------------------
 # Styling
@@ -90,16 +89,62 @@ def extract_opp_from_matchup(matchup: str) -> str | None:
         return (m.group(1) or m.group(2) or m.group(3)).upper()
     return None
 
-def cdn_headshot(player_id: int, size: str = "1040x760") -> BytesIO | None:
+def cdn_headshot(player_id: int, size: str = "1040x760") -> Image.Image | None:
     """NBA media day headshot from official CDN."""
     url = f"https://cdn.nba.com/headshots/nba/latest/{size}/{player_id}.png"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            return BytesIO(r.content)
+            return Image.open(BytesIO(r.content)).convert("RGBA")
     except Exception:
         pass
     return None
+
+def cdn_team_logo(team_id: int, size: str = "L") -> Image.Image | None:
+    """
+    Fetch team logo PNG from NBA CDN.
+    Common pattern: https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png
+    Sizes: S/M/L (commonly exist); fallback attempts included.
+    """
+    candidates = [
+        f"https://cdn.nba.com/logos/nba/{team_id}/global/{size}/logo.png",
+        f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png",
+        f"https://cdn.nba.com/logos/nba/{team_id}/global/D/logo.png",
+    ]
+    for url in candidates:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                img = Image.open(BytesIO(r.content)).convert("RGBA")
+                return img
+        except Exception:
+            continue
+    return None
+
+def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image, padding_ratio: float = 0.04, logo_width_ratio: float = 0.22) -> Image.Image:
+    """
+    Paste team logo onto the headshot's top-right corner with padding.
+    - padding_ratio: fraction of headshot width for margin
+    - logo_width_ratio: fraction of headshot width for logo width
+    """
+    if headshot is None:
+        return None
+    base = headshot.copy()
+    if logo is None:
+        return base
+
+    W, H = base.size
+    pad = int(W * padding_ratio)
+    logo_w = int(W * logo_width_ratio)
+    aspect = logo.size[1] / logo.size[0]
+    logo_h = int(logo_w * aspect)
+    logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
+
+    # position (top-right)
+    x = W - logo_w - pad
+    y = pad
+    base.alpha_composite(logo_resized, (x, y))
+    return base
 
 # --- Favorites persistence (store name + id) ---
 def load_favorites() -> list[dict]:
@@ -108,7 +153,6 @@ def load_favorites() -> list[dict]:
             with open(FAV_FILE, "r") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    # normalize shape
                     out = []
                     for x in data:
                         if isinstance(x, dict) and "name" in x and "id" in x:
@@ -239,6 +283,20 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
 # ---------------------------------
 # ML: loaders + feature builders + predictors + training
 # ---------------------------------
+def models_exist_and_fresh(max_age_hours: int = MODEL_MAX_AGE_HOURS) -> bool:
+    """All model files exist and are newer than max_age_hours."""
+    try:
+        now = time.time()
+        for path in MODEL_FILES.values():
+            if not os.path.exists(path):
+                return False
+            age_hours = (now - os.path.getmtime(path)) / 3600.0
+            if age_hours > max_age_hours:
+                return False
+        return True
+    except Exception:
+        return False
+
 @st.cache_data(ttl=3600)
 def load_models():
     """Load model pkl files if available. Returns dict target->model."""
@@ -254,22 +312,18 @@ def load_models():
     return models
 
 def build_features_for_training(df: pd.DataFrame) -> pd.DataFrame:
-    """Match training scheme: create rolling r5/r10/r20, season_mean (shifted), IS_HOME from MATCHUP, DAYS_REST."""
+    """Create rolling r5/r10/r20, season_mean (shifted), IS_HOME, DAYS_REST."""
     if df is None or df.empty:
         return pd.DataFrame()
     d = df.copy().sort_values('GAME_DATE').reset_index(drop=True)
-    # IS_HOME from MATCHUP (" vs " => home)
     d['IS_HOME'] = d['MATCHUP'].astype(str).str.contains(" vs ", case=False, regex=False).astype(int)
-    # DAYS_REST between games (for targets at row t, features must be up to t-1)
     d['DAYS_REST'] = d['GAME_DATE'].diff().dt.days
     d['DAYS_REST'] = d['DAYS_REST'].fillna(3).clip(0, 7)
 
-    # Rolling means (shifted by 1 to avoid leakage)
     for k in [5, 10, 20]:
         for c in STATS_COLS:
             d[f'{c}_r{k}'] = d[c].rolling(k, min_periods=1).mean().shift(1)
 
-    # Season means up to previous game
     if 'SEASON_YEAR' in d.columns:
         for c in STATS_COLS:
             d[f'{c}_season_mean'] = d.groupby('SEASON_YEAR')[c].expanding().mean().shift(1).reset_index(level=0, drop=True)
@@ -277,12 +331,11 @@ def build_features_for_training(df: pd.DataFrame) -> pd.DataFrame:
         for c in STATS_COLS:
             d[f'{c}_season_mean'] = d[c].expanding().mean().shift(1)
 
-    # Drop rows that still have NaN after shift
     d = d.dropna().reset_index(drop=True)
     return d
 
 def build_features_for_inference(logs_df: pd.DataFrame, next_game_date: dt.date | None, is_home_next: int) -> pd.DataFrame | None:
-    """Single-row features for NEXT game: same as training but computed up to last played game."""
+    """Single-row features for NEXT game (same schema as training)."""
     if logs_df is None or logs_df.empty:
         return None
     df = logs_df.copy()
@@ -341,24 +394,20 @@ def predict_next_ml(logs_df: pd.DataFrame, next_game_date: dt.date | None, is_ho
             continue
     return preds if preds else None
 
-def train_models_ui(active_players_limit: int | None = None):
-    """Train Ridge models for PTS/REB/AST/FG3M across active players, with progress UI, and save to models/."""
+def train_models_core(active_players=None):
+    """
+    Core trainer with no Streamlit UI calls (safe for background thread).
+    Trains Ridge for PTS/REB/AST/FG3M on provided players (active by default).
+    """
     if joblib is None or Ridge is None:
-        st.error("Training requires: pip install scikit-learn joblib")
-        return
+        return False
 
     os.makedirs(MODEL_DIR, exist_ok=True)
-    act = players.get_active_players()
-    if active_players_limit:
-        act = act[:active_players_limit]
-
-    prog = st.progress(0.0, text="Fetching player logs…")
+    act = active_players if active_players is not None else players.get_active_players()
     rows = []
-    total = len(act)
-    for i, p in enumerate(act, start=1):
-        pid = p.get('id'); name = p.get('full_name')
+    for p in act:
+        pid = p.get('id')
         try:
-            # collect logs
             cstats = playercareerstats.PlayerCareerStats(player_id=pid).get_data_frames()[0]
             seasons = cstats['SEASON_ID'].tolist() if not cstats.empty else []
             logs_list = []
@@ -371,58 +420,60 @@ def train_models_ui(active_players_limit: int | None = None):
                 except Exception:
                     pass
             if not logs_list:
-                prog.progress(i/total, text=f"No logs for {name}"); continue
+                continue
             logs = pd.concat(logs_list, ignore_index=True)
             if 'GAME_DATE' not in logs.columns:
-                prog.progress(i/total, text=f"Missing GAME_DATE for {name}"); continue
+                continue
             logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
             logs = logs.sort_values('GAME_DATE').reset_index(drop=True)
 
             feats = build_features_for_training(logs)
             if feats.empty:
-                prog.progress(i/total, text=f"No features for {name}"); continue
-            feats['PLAYER_ID'] = pid
-            feats['PLAYER_NAME'] = name
+                continue
             rows.append(feats)
         except Exception:
-            prog.progress(i/total, text=f"Error {name}"); continue
-        prog.progress(i/total, text=f"Processed {name}")
-
-    if not rows:
-        st.error("No training data assembled.")
-        return
-
-    data = pd.concat(rows, ignore_index=True)
-
-    # Train one model per target
-    results = []
-    train_status = st.empty()
-    for idx, target in enumerate(PREDICT_COLS, start=1):
-        feat_cols = FEAT_TEMPLATE(target)
-        missing_any = [c for c in feat_cols if c not in data.columns]
-        if missing_any:
-            st.warning(f"Skipping {target}: missing features {missing_any}")
             continue
 
+    if not rows:
+        return False
+
+    data = pd.concat(rows, ignore_index=True)
+    for target in PREDICT_COLS:
+        feat_cols = FEAT_TEMPLATE(target)
+        if not all(c in data.columns for c in feat_cols):
+            continue
         X = data[feat_cols]
         y = data[target]
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
         model = Ridge(alpha=1.0, random_state=42)
         model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        mae = mean_absolute_error(y_test, preds)
-        results.append((target, mae))
-
+        # Save
         joblib.dump(model, MODEL_FILES[target])
-        train_status.markdown(f"**Saved model for {target}** — MAE: `{mae:.3f}` → `{MODEL_FILES[target]}`")
 
-    if results:
-        st.success("Training complete.")
-        res_df = pd.DataFrame(results, columns=["Target", "MAE"])
-        st.dataframe(res_df, use_container_width=True)
-    else:
-        st.warning("No models trained.")
+    return True
+
+# Background training thread management
+def ensure_background_training():
+    """
+    If models are missing or stale and no trainer is running, start one background thread.
+    """
+    if joblib is None or Ridge is None:
+        return
+    if models_exist_and_fresh():
+        return
+    if st.session_state.get("_bg_training_running"):
+        return
+    # mark running and start
+    st.session_state["_bg_training_running"] = True
+
+    def _runner():
+        try:
+            train_models_core()
+        finally:
+            st.session_state["_bg_training_running"] = False
+
+    th = threading.Thread(target=_runner, daemon=True)
+    th.start()
 
 # ---------------------------------
 # Fallback (non-ML) prediction
@@ -465,7 +516,7 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
     for c in PREDICT_COLS:
         r5  = feats.get(f'{c}_r5',  np.nan)
         r10 = feats.get(f'{c}_r10', np.nan)
-        r20 = feats.get(f'{c}_r20', np.nan)   # (fixed f-string bug)
+        r20 = feats.get(f'{c}_r20', np.nan)
         s   = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
         v5, v10, v20 = (r5 if pd.notna(r5) else s), (r10 if pd.notna(r10) else s), (r20 if pd.notna(r20) else s)
         preds[c] = round(float(0.4*v5 + 0.3*v10 + 0.2*v20 + 0.1*s), 2)
@@ -479,7 +530,7 @@ with st.sidebar:
     label_to_pid = build_team_player_index()
     options = sorted(label_to_pid.keys())
 
-    # If a favorite click set a session player id, use it to preselect label
+    # default selection from favorite click
     default_index = None
     if 'selected_player_id' in st.session_state and st.session_state['selected_player_id'] is not None:
         try:
@@ -499,26 +550,22 @@ with st.sidebar:
     if selection:
         player_id = label_to_pid[selection]
         player_name = selection.split("—", 1)[-1].strip() if "—" in selection else selection.strip()
-        st.session_state['selected_player_id'] = player_id  # keep in sync
+        st.session_state['selected_player_id'] = player_id
 
-# ---------------------------------
 # Header card
-# ---------------------------------
 st.markdown("""
 <div class="card" style="margin-bottom: 12px;">
   <div style="display:flex; align-items:center; justify-content: space-between;">
     <div>
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
-      <div class="badge">One-page • Favorites • ML predictions (if available)</div>
+      <div class="badge">One-page • Favorites • ML predictions (auto-trains in background if needed)</div>
     </div>
     <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted fallback • Clean UX</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ---------------------------------
-# Layout columns: main left content + right favorites/training panel
-# ---------------------------------
+# Layout: left content + right favorites/training
 left, right = st.columns([0.72, 0.28])
 
 with right:
@@ -527,23 +574,19 @@ with right:
     if "favorites" not in st.session_state:
         st.session_state.favorites = load_favorites()
 
-    # Add current player to favorites
     if player_name and player_id and st.button(f"➕ Add {player_name}", use_container_width=True):
         if not any(f.get("id")==player_id for f in st.session_state.favorites):
             st.session_state.favorites.append({"name": player_name, "id": player_id})
             save_favorites(st.session_state.favorites)
             st.success(f"Added {player_name} to favorites.")
 
-    # List favorites as clickable "links"
     if st.session_state.favorites:
         for fav in st.session_state.favorites:
             nm = fav.get("name","(unknown)")
             pid = fav.get("id")
-            # Render as link-like button; clicking sets selected player and reruns
-            if st.container().button(nm, key=f"fav_{nm}_{pid}", use_container_width=True, help="Open player page", type="secondary"):
+            if st.container().button(nm, key=f"fav_{nm}_{pid}", use_container_width=True, help="Open player page"):
                 st.session_state['selected_player_id'] = pid
                 st.rerun()
-        # Remove favorites
         with st.expander("Manage favorites"):
             to_remove = st.multiselect("Select to remove", [f["name"] for f in st.session_state.favorites])
             if to_remove and st.button("Remove selected"):
@@ -555,26 +598,36 @@ with right:
 
     st.markdown("---")
 
-    # ===== Model Training Panel =====
-    st.subheader("🧠 Train ML Models")
-    st.caption("Trains Ridge regressors for PTS/REB/AST/3PM on active players and saves to ./models/")
+    # ===== Manual Model Training Panel (optional) =====
+    st.subheader("🧠 Train ML Models (manual)")
+    st.caption("Trains Ridge models for PTS/REB/AST/3PM on active players and saves to ./models/")
     colA, colB = st.columns(2)
     with colA:
-        use_all = st.checkbox("Train on ALL active players", value=False)
+        use_all = st.checkbox("Train on ALL active players", value=True)
     with colB:
         limit = st.number_input("Or limit players", min_value=50, max_value=500, value=200, step=10, help="Ignored if 'ALL' is checked")
 
-    if st.button("Train Models", use_container_width=True):
+    if st.button("Train Models Now", use_container_width=True):
         if joblib is None or Ridge is None:
             st.error("Install ML deps first: pip install scikit-learn joblib")
         else:
-            st.info("Training… this may take a while depending on the limit.")
-            train_models_ui(None if use_all else int(limit))
+            with st.spinner("Training models..."):
+                # manual (blocking) training with simple progress prints via UI is omitted for brevity
+                success = train_models_core(None if use_all else players.get_active_players()[:int(limit)])
+            if success:
+                st.success("Models trained and saved.")
+                # clear cache so app reloads new models immediately
+                load_models.clear()
+            else:
+                st.warning("Training did not produce models.")
 
 with left:
-    # ---------------------------------
-    # Main content
-    # ---------------------------------
+    # If a player was chosen: Start background training if needed
+    if player_id:
+        ensure_background_training()
+        if st.session_state.get("_bg_training_running"):
+            st.caption("🟦 Training ML models in background… (first run or refresh)")
+
     if not player_id:
         st.info("Pick a player from the sidebar to load their dashboard.")
     else:
@@ -584,12 +637,18 @@ with left:
             st.warning("No career data available for this player.")
             st.stop()
 
+        # Player name fix
         if not player_name:
             for p in get_active_players():
                 if p['id'] == player_id:
                     player_name = p['full_name']; break
 
+        all_t = get_all_teams()
+        team_by_id = {t['id']: t for t in all_t}
+        team_by_abbr = {t['abbreviation']: t for t in all_t}
+
         team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in career_df.columns else "TBD"
+        team_id = team_by_abbr.get(team_abbr, {}).get('id')
         latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
 
         # Last game
@@ -605,10 +664,7 @@ with left:
             lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
             last_game_info = f"{lg_date} vs {lg_opp}"
 
-        # Next game (with 🏠/✈️)
-        all_t = get_all_teams()
-        team_id_map = {t['abbreviation']: t['id'] for t in all_t}
-        team_id = team_id_map.get(team_abbr, None)
+        # Next game
         ng = next_game_for_team(team_id) if team_id is not None else None
         if ng:
             icon = "🏠" if ng.get('home') else "✈️"
@@ -620,19 +676,21 @@ with left:
             is_home_next = 0
             ng_date_for_feat = None
 
-        # Header strip metrics (on left column)
+        # Header strip metrics
         c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
         with c1: st.metric("Player", player_name)
         with c2: st.metric("Team", team_abbr)
         with c3: st.metric("Most Recent Game", last_game_info)
         with c4: st.metric("Next Game", next_game_info)
 
-        # Headshot + trend charts
+        # Headshot + logo overlay + trend charts
         col_img, col_trend = st.columns([0.32, 0.68])
         with col_img:
-            img_bytes = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
-            if img_bytes:
-                st.image(img_bytes, use_container_width=True, caption=f"{player_name} — media day headshot")
+            head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
+            logo = cdn_team_logo(team_id) if team_id else None
+            if head:
+                composed = overlay_logo_top_right(head, logo, padding_ratio=0.035, logo_width_ratio=0.22)
+                st.image(composed, use_container_width=True, caption=f"{player_name} — media day headshot")
             else:
                 st.info("Headshot not available.")
 

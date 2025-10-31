@@ -1,8 +1,8 @@
-# app.py — Hot Shot Props | NBA Player Analytics (clean sidebar + fast load)
-# - Sidebar: only Player search + Favorites (with ×). No login, no extra panels.
-# - Robust retries for stats.nba.com calls (timeouts/backoff).
-# - Bar charts (last 10), headshot with team logo, metric cards, ML predictions,
-#   "Last predictions vs results", background global ML trainer (after first load).
+# app.py — Hot Shot Props | NBA Player Analytics (mobile + sharing)
+# Clean sidebar (search + favorites), fast loading with cache & concurrency,
+# ML predictions (global background + player ad-hoc), headshot+logo overlay,
+# metric rows, last-10 bar charts, "Last predictions vs results",
+# mobile-first UI, hide multipage nav, and "Share this page" (PNG download/email/SMS).
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -11,7 +11,13 @@ import streamlit as st
 import altair as alt
 import requests
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import smtplib, ssl
+from email.message import EmailMessage
+import streamlit.components.v1 as components
+
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import (
     playercareerstats, playergamelogs, scoreboardv2
@@ -28,11 +34,225 @@ except Exception:
     Ridge = None
     SKLEARN_OK = False
 
-# ------------------ API hardening ---------------------
-NBA_TIMEOUT = 75
-NBA_RETRIES = 4
+# ------------------ Page & global CSS -----------------
+st.set_page_config(page_title="Hot Shot Props • NBA Player Analytics (Free)",
+                   layout="wide", initial_sidebar_state="expanded")
+
+# Hide Streamlit multipage sidebar nav if a pages/ dir exists
+st.markdown("""
+<style>
+[data-testid="stSidebarNav"],
+[data-testid="stSidebarNavItems"],
+[data-testid="stSidebarNavSeparator"],
+[data-testid="stSidebarHeader"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# Mobile viewport & iOS notch support
+components.html("""
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+""", height=0)
+
+# Global theme + mobile tweaks
+st.m a r k d o w n("""
+<style>
+:root { --bg:#000; --panel:#0b0b0b; --ink:#f3f4f6; --line:#171717; --red:#ef4444; }
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important;}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#0b0b0b 100%)!important;border-right:1px solid #111;}
+.stButton>button{background:var(--red)!important;color:#fff!important;border:none!important;border-radius:10px!important;padding:.55rem .95rem!important;font-weight:700!important;}
+h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.5);}
+.badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#140606;color:#fca5a5;}
+.hr{border:0;border-top:1px solid var(--line);margin:.75rem 0;}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--line);margin-left:6px;}
+.tag.ok{color:#bbf7d0;border-color:#064e3b;background:#052e16;}
+.tag.warn{color:#fde68a;border-color:#7c2d12;background:#3b0a0a;}
+.tag.dim{color:#e5e7eb;border-color:#374151;background:#111827;}
+[data-testid="stMetric"]{background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);}
+[data-testid="stMetric"] label{color:#fda4a4;}
+[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#ffe4e6;font-size:1.45rem;}
+/* Mobile */
+@media (max-width: 780px){
+  .block-container { padding: 0.6rem 0.6rem !important; }
+  section.main > div { padding-top: 0 !important; }
+  [data-testid="column"] { width: 100% !important; display: block !important; }
+  [data-testid="stMetric"]{ margin-bottom: 10px !important; }
+  .stButton>button{ width: 100% !important; padding: 14px !important; font-size: 1.05rem !important; }
+  .stTextInput>div>div>input, .stSelectbox>div>div>div { font-size: 1.05rem !important; }
+  .st-emotion-cache-1wmy9hl, .st-emotion-cache-1r6slb0 { height: 260px !important; }
+}
+[data-testid="stSidebar"] .stButton>button, [data-testid="stSidebar"] .stSelectbox { font-size: 1.02rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ------------------ API robustness (fast defaults) ----
+NBA_TIMEOUT = 15       # shorter, snappier UI
+NBA_RETRIES = 2
 NBA_BACKOFF_BASE = 1.6
-API_SLEEP = 0.25
+API_SLEEP = 0.15
+
+# Fast mode: UI only fetches this many latest seasons per player.
+FAST_MODE = True
+UI_SEASON_LIMIT = 2
+
+# ------------------ Constants & storage ---------------
+STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
+PREDICT_COLS = ['PTS','AST','REB','FG3M']
+
+DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
+MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
+os.makedirs(MODEL_DIR, exist_ok=True)
+MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
+FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
+
+# Single “guest” profile (no login)
+USER_ROOT = os.path.join(DEFAULT_TMP_DIR, "userdata", "guest")
+os.makedirs(USER_ROOT, exist_ok=True)
+FAV_FILE = os.path.join(USER_ROOT, "favorites.json")
+PRED_HISTORY_FILE = os.path.join(USER_ROOT, "pred_history.json")
+
+# Disk cache for per-player logs
+CACHE_ROOT = os.path.join(USER_ROOT, "cache")
+os.makedirs(CACHE_ROOT, exist_ok=True)
+CACHE_TTL_HOURS = 6
+
+def _cache_path_for_player(player_id: int) -> str:
+    return os.path.join(CACHE_ROOT, f"player_{player_id}_logs.parquet")
+
+def _cache_path_csv(player_id: int) -> str:
+    return os.path.join(CACHE_ROOT, f"player_{player_id}_logs.csv")
+
+def read_logs_cache(player_id: int) -> Optional[pd.DataFrame]:
+    p_parq = _cache_path_for_player(player_id)
+    p_csv  = _cache_path_csv(player_id)
+    path = p_parq if os.path.exists(p_parq) else (p_csv if os.path.exists(p_csv) else None)
+    if not path: return None
+    try:
+        mtime = dt.datetime.fromtimestamp(os.path.getmtime(path))
+        if (dt.datetime.now() - mtime).total_seconds() > CACHE_TTL_HOURS * 3600:
+            return None
+        if path.endswith(".parquet"):
+            return pd.read_parquet(path)
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+def write_logs_cache(player_id: int, df: pd.DataFrame) -> None:
+    try:
+        if df is not None and not df.empty:
+            try:
+                df.to_parquet(_cache_path_for_player(player_id), index=False)
+            except Exception:
+                df.to_csv(_cache_path_csv(player_id), index=False)
+    except Exception:
+        pass
+
+# ------------------ Helpers --------------------------
+def safe_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
+    return [c for c in cols if c in df.columns]
+
+def extract_opp_from_matchup(matchup: str) -> Optional[str]:
+    if not isinstance(matchup, str): return None
+    m = re.search(r'@\s*([A-Z]{3})|vs\.\s*([A-Z]{3})|VS\.\s*([A-Z]{3})', matchup, re.IGNORECASE)
+    return (m.group(1) or m.group(2) or m.group(3)).upper() if m else None
+
+def cdn_headshot(player_id: int, size: str = "1040x760") -> Optional[Image.Image]:
+    url = f"https://cdn.nba.com/headshots/nba/latest/{size}/{player_id}.png"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
+    except Exception: pass
+    return None
+
+def cdn_team_logo(team_id: int) -> Optional[Image.Image]:
+    for url in [
+        f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png",
+        f"https://cdn.nba.com/logos/nba/{team_id}/global/D/logo.png",
+    ]:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
+        except Exception:
+            continue
+    return None
+
+def overlay_logo_top_right(headshot: Image.Image, logo: Optional[Image.Image],
+                           padding_ratio=0.035, logo_width_ratio=0.22) -> Image.Image:
+    base = headshot.copy()
+    if not logo: return base
+    W, H = base.size
+    pad = int(W * padding_ratio)
+    logo_w = int(W * logo_width_ratio)
+    aspect = logo.size[1] / logo.size[0]
+    logo_h = int(logo_w * aspect)
+    logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
+    base.alpha_composite(logo_resized, (W - logo_w - pad, pad))
+    return base
+
+def load_favorites() -> list:
+    try:
+        if os.path.exists(FAV_FILE):
+            with open(FAV_FILE, "r") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+def save_favorites(favs: list) -> None:
+    try:
+        with open(FAV_FILE, "w") as f: json.dump(favs, f)
+    except Exception:
+        pass
+
+def _load_pred_history() -> dict:
+    try:
+        if os.path.exists(PRED_HISTORY_FILE):
+            with open(PRED_HISTORY_FILE, "r") as f: return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_pred_history(data: dict) -> None:
+    try:
+        with open(PRED_HISTORY_FILE, "w") as f: json.dump(data, f)
+    except Exception:
+        pass
+
+def record_prediction(player_id: int, player_name: str, pred_date: Optional[str],
+                      engine: str, preds: dict) -> None:
+    if not preds: return
+    db = _load_pred_history()
+    key = str(player_id)
+    entries = db.get(key, [])
+    if pred_date: entries = [e for e in entries if e.get("pred_date") != pred_date]
+    entry = {"player_id": player_id, "player_name": player_name, "pred_date": pred_date,
+             "engine": engine, "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}}
+    entries.append(entry)
+    entries = sorted(entries, key=lambda x: (x.get("pred_date") or ""), reverse=True)[:30]
+    db[key] = entries
+    _save_pred_history(db)
+
+def get_player_history(player_id: int) -> list:
+    return _load_pred_history().get(str(player_id), [])
+
+# ------------------ Cached fetchers -------------------
+@st.cache_data(ttl=6*3600)
+def get_active_players_fast():
+    try:
+        return players.get_active_players()
+    except Exception as e:
+        st.error(f"Error fetching active players: {e}")
+        return []
+
+@st.cache_data(ttl=12*3600)
+def get_all_teams():
+    try:
+        return teams.get_teams()
+    except Exception as e:
+        st.error(f"Error fetching teams: {e}")
+        return []
 
 def get_frames_with_retry(endpoint_cls, label: str, **kwargs):
     last_err = None
@@ -53,204 +273,93 @@ def get_df_with_retry(endpoint_cls, label: str, frame_idx: int = 0, **kwargs) ->
     df = frames[frame_idx]
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-# ------------------ Page + Theme ----------------------
-st.set_page_config(page_title="Hot Shot Props • NBA Player Analytics (Free)",
-                   layout="wide", initial_sidebar_state="expanded")
-
-st.markdown("""
-<style>
-:root { --bg:#000; --panel:#0b0b0b; --ink:#f3f4f6; --line:#171717; --red:#ef4444; }
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important;}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#0b0b0b 100%)!important;border-right:1px solid #111;}
-.stButton>button{background:var(--red)!important;color:#fff!important;border:none!important;border-radius:10px!important;padding:.5rem .9rem!important;font-weight:700!important;}
-h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.5);}
-.badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#140606;color:#fca5a5;}
-.hr{border:0;border-top:1px solid var(--line);margin:.75rem 0;}
-.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--line);margin-left:6px;}
-.tag.ok{color:#bbf7d0;border-color:#064e3b;background:#052e16;}
-.tag.warn{color:#fde68a;border-color:#7c2d12;background:#3b0a0a;}
-.tag.dim{color:#e5e7eb;border-color:#374151;background:#111827;}
-[data-testid="stMetric"]{background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);}
-[data-testid="stMetric"] label{color:#fda4a4;}
-[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#ffe4e6;font-size:1.45rem;}
-</style>
-""", unsafe_allow_html=True)
-
-# ------------------ Constants & storage ---------------
-STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
-PREDICT_COLS = ['PTS','AST','REB','FG3M']
-
-DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
-MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
-os.makedirs(MODEL_DIR, exist_ok=True)
-MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
-FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
-
-# “guest” profile
-USER_ROOT = os.path.join(DEFAULT_TMP_DIR, "userdata", "guest")
-os.makedirs(USER_ROOT, exist_ok=True)
-FAV_FILE = os.path.join(USER_ROOT, "favorites.json")
-PRED_HISTORY_FILE = os.path.join(USER_ROOT, "pred_history.json")
-
-# ------------------ Helpers --------------------------
-def safe_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
-    return [c for c in cols if c in df.columns]
-
-def extract_opp_from_matchup(matchup: str) -> str | None:
-    if not isinstance(matchup, str): return None
-    m = re.search(r'@\s*([A-Z]{3})|vs\.\s*([A-Z]{3})|VS\.\s*([A-Z]{3})', matchup, re.IGNORECASE)
-    return (m.group(1) or m.group(2) or m.group(3)).upper() if m else None
-
-def cdn_headshot(player_id: int, size: str = "1040x760") -> Image.Image | None:
-    url = f"https://cdn.nba.com/headshots/nba/latest/{size}/{player_id}.png"
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
-    except Exception: pass
-    return None
-
-def cdn_team_logo(team_id: int) -> Image.Image | None:
-    for url in [
-        f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png",
-        f"https://cdn.nba.com/logos/nba/{team_id}/global/D/logo.png",
-    ]:
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200: return Image.open(BytesIO(r.content)).convert("RGBA")
-        except Exception: continue
-    return None
-
-def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image, padding_ratio=0.035, logo_width_ratio=0.22):
-    if headshot is None: return None
-    base = headshot.copy()
-    if logo is None: return base
-    W, H = base.size
-    pad = int(W * padding_ratio)
-    logo_w = int(W * logo_width_ratio)
-    aspect = logo.size[1] / logo.size[0]
-    logo_h = int(logo_w * aspect)
-    logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
-    base.alpha_composite(logo_resized, (W - logo_w - pad, pad))
-    return base
-
-def load_favorites():
-    try:
-        if os.path.exists(FAV_FILE):
-            with open(FAV_FILE, "r") as f: 
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-    except Exception: pass
-    return []
-
-def save_favorites(favs): 
-    try:
-        with open(FAV_FILE, "w") as f: json.dump(favs, f)
-    except Exception: pass
-
-def _load_pred_history():
-    try:
-        if os.path.exists(PRED_HISTORY_FILE):
-            with open(PRED_HISTORY_FILE, "r") as f: return json.load(f)
-    except Exception: pass
-    return {}
-
-def _save_pred_history(data):
-    try:
-        with open(PRED_HISTORY_FILE, "w") as f: json.dump(data, f)
-    except Exception: pass
-
-def record_prediction(player_id, player_name, pred_date, engine, preds):
-    if not preds: return
-    db = _load_pred_history()
-    key = str(player_id)
-    entries = db.get(key, [])
-    if pred_date: entries = [e for e in entries if e.get("pred_date") != pred_date]
-    entry = {"player_id": player_id, "player_name": player_name, "pred_date": pred_date,
-             "engine": engine, "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}}
-    entries.append(entry)
-    entries = sorted(entries, key=lambda x: (x.get("pred_date") or ""), reverse=True)[:30]
-    db[key] = entries
-    _save_pred_history(db)
-
-def get_player_history(player_id): 
-    return _load_pred_history().get(str(player_id), [])
-
-# ------------------ Cached fetchers -------------------
-@st.cache_data(ttl=6*3600)
-def get_active_players_fast():
-    # Only names + ids (fast; no per-team roster calls)
-    try:
-        return players.get_active_players()
-    except Exception as e:
-        st.error(f"Error fetching active players: {e}")
-        return []
-
-@st.cache_data(ttl=12*3600)
-def get_all_teams():
-    try:
-        return teams.get_teams()
-    except Exception as e:
-        st.error(f"Error fetching teams: {e}")
-        return []
-
 @st.cache_data(ttl=3600)
-def fetch_player(player_id: int):
+def fetch_player(player_id: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fast path:
+      - Try disk cache for logs first.
+      - Fetch career summary once.
+      - In FAST_MODE, restrict to last N seasons for UI.
+      - Fetch season logs in parallel with short timeouts.
+      - Save combined logs to disk cache and return.
+    """
+    cached_logs = read_logs_cache(player_id)
     try:
         time.sleep(API_SLEEP)
-        career_stats = get_df_with_retry(playercareerstats.PlayerCareerStats, "Career stats timeout", player_id=player_id)
-        seasons = career_stats['SEASON_ID'].tolist() if not career_stats.empty else []
-        logs_list = []
-        for s in seasons:
-            try:
-                time.sleep(API_SLEEP)
-                df = get_df_with_retry(
-                    playergamelogs.PlayerGameLogs,
-                    f"Game logs timeout ({s})",
-                    player_id_nullable=player_id,
-                    season_nullable=s
-                )
-                if df is not None and not df.empty:
-                    logs_list.append(df)
-            except Exception:
-                pass
-        logs = pd.concat(logs_list, ignore_index=True) if logs_list else pd.DataFrame()
+        career_stats = get_df_with_retry(playercareerstats.PlayerCareerStats,
+                                         "Career stats timeout", player_id=player_id)
+    except Exception as e:
+        st.error(f"Career stats failed: {e}")
+        career_stats = pd.DataFrame()
+
+    if cached_logs is not None and not career_stats.empty:
+        logs = cached_logs.copy()
         if 'GAME_DATE' in logs.columns:
             logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
             logs = logs.sort_values('GAME_DATE', ascending=False).reset_index(drop=True)
         return career_stats, logs
-    except Exception as e:
-        st.error(f"Failed to fetch player data: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+
+    seasons = career_stats['SEASON_ID'].tolist() if not career_stats.empty else []
+    if not seasons:
+        return career_stats, pd.DataFrame()
+
+    if FAST_MODE:
+        seasons = seasons[-UI_SEASON_LIMIT:]
+
+    def fetch_one(season_id: str) -> pd.DataFrame:
+        try:
+            time.sleep(API_SLEEP)
+            df = get_df_with_retry(
+                playergamelogs.PlayerGameLogs,
+                f"Game logs timeout ({season_id})",
+                player_id_nullable=player_id,
+                season_nullable=season_id
+            )
+            return df if df is not None and not df.empty else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    logs_list = []
+    with ThreadPoolExecutor(max_workers=min(4, len(seasons))) as ex:
+        futures = {ex.submit(fetch_one, s): s for s in seasons}
+        for fut in as_completed(futures):
+            df = fut.result()
+            if df is not None and not df.empty:
+                logs_list.append(df)
+
+    logs = pd.concat(logs_list, ignore_index=True) if logs_list else pd.DataFrame()
+    if 'GAME_DATE' in logs.columns:
+        logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
+        logs = logs.sort_values('GAME_DATE', ascending=False).reset_index(drop=True)
+
+    write_logs_cache(player_id, logs)
+    return career_stats, logs
 
 @st.cache_data(ttl=600)
 def next_game_for_team(team_abbr: str, lookahead_days: int = 10):
     if not team_abbr:
         return None
-    # map abbr -> id
     tmap = {t['abbreviation']: t['id'] for t in get_all_teams()}
     team_id = tmap.get(team_abbr)
-    if team_id is None:
-        return None
+    if team_id is None: return None
     today = dt.date.today()
     for d in range(lookahead_days):
         day = today + dt.timedelta(days=d)
         try:
             time.sleep(API_SLEEP)
-            frames = get_frames_with_retry(scoreboardv2.ScoreboardV2, f"Scoreboard timeout ({day})",
+            frames = get_frames_with_retry(scoreboardv2.ScoreboardV2,
+                                           f"Scoreboard timeout ({day})",
                                            game_date=day.strftime("%m/%d/%Y"))
             gh = None
             for f in frames:
                 if isinstance(f, pd.DataFrame) and {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns):
                     gh = f; break
-            if gh is None or gh.empty: 
-                continue
+            if gh is None or gh.empty: continue
             for _, row in gh.iterrows():
                 home_id = int(row.get('HOME_TEAM_ID', -1))
                 away_id = int(row.get('VISITOR_TEAM_ID', -1))
                 if team_id in (home_id, away_id):
                     opp_id  = away_id if team_id == home_id else home_id
-                    # find opp abbr
                     opp_abbr = next((t['abbreviation'] for t in get_all_teams() if t['id']==opp_id), 'TBD')
                     home_flag = (team_id == home_id)
                     return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abbr, 'home': home_flag}
@@ -289,7 +398,7 @@ def build_features_for_training(df: pd.DataFrame) -> pd.DataFrame:
     d = d.dropna().reset_index(drop=True)
     return d
 
-def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_next: int) -> pd.DataFrame | None:
+def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_next: int) -> Optional[pd.DataFrame]:
     if logs_df is None or logs_df.empty: return None
     df = logs_df.copy()
     if 'GAME_DATE' not in df.columns: return None
@@ -322,7 +431,7 @@ def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_
     feat['DAYS_REST'] = int(days_rest)
     return pd.DataFrame([feat])
 
-def predict_next_ml(logs_df: pd.DataFrame, next_game_date, is_home_next: int, models: dict) -> dict | None:
+def predict_next_ml(logs_df: pd.DataFrame, next_game_date, is_home_next: int, models: dict) -> Optional[dict]:
     if not models: return None
     feats_df = build_features_for_inference(logs_df, next_game_date, is_home_next)
     if feats_df is None or feats_df.empty: return None
@@ -333,10 +442,11 @@ def predict_next_ml(logs_df: pd.DataFrame, next_game_date, is_home_next: int, mo
         try:
             val = float(model.predict(feats_df[feat_cols])[0])
             preds[tgt] = round(val, 2)
-        except Exception: continue
+        except Exception:
+            continue
     return preds if preds else None
 
-def train_models_core():
+def train_models_core() -> bool:
     if not SKLEARN_OK: return False
     os.makedirs(MODEL_DIR, exist_ok=True)
     act = get_active_players_fast()
@@ -393,7 +503,7 @@ def ensure_background_training():
             st.session_state["_bg_training_running"] = False
     threading.Thread(target=_runner, daemon=True).start()
 
-def train_player_models_in_memory(logs_df: pd.DataFrame):
+def train_player_models_in_memory(logs_df: pd.DataFrame) -> dict:
     models = {}
     if not SKLEARN_OK or logs_df is None or logs_df.empty: return models
     feats = build_features_for_training(logs_df)
@@ -411,11 +521,9 @@ def train_player_models_in_memory(logs_df: pd.DataFrame):
 with st.sidebar:
     st.subheader("Select Player")
     active = get_active_players_fast()
-    # build sorted list of names
     name_to_id = {p['full_name']: p['id'] for p in active}
     player_names = sorted(name_to_id.keys())
 
-    # retain selection if already chosen
     default_index = None
     if 'selected_player_id' in st.session_state and st.session_state['selected_player_id'] is not None:
         try:
@@ -449,7 +557,7 @@ with st.sidebar:
             st.success(f"Added {player_name} to favorites.")
 
     if st.session_state.favorites:
-        for idx, fav in enumerate(st.session_state.favorites):
+        for idx, fav in enumerate(list(st.session_state.favorites)):
             nm = fav.get("name", "(unknown)"); pid = fav.get("id")
             colN, colX = st.columns([0.8, 0.2])
             with colN:
@@ -513,9 +621,8 @@ if ng:
     icon = "🏠" if ng.get('home') else "✈️"
     next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}"
     is_home_next = 1 if ng.get('home') else 0
-    ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date()
 else:
-    next_game_info = "TBD"; is_home_next = 0; ng_date_for_feat = None
+    next_game_info = "TBD"; is_home_next = 0
 
 # Header metrics
 c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
@@ -529,7 +636,6 @@ col_img, col_trend = st.columns([0.30, 0.70])
 with col_img:
     head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
     logo = None
-    # try to map team_abbr to id for logo (best-effort)
     try:
         tid = next((t['id'] for t in get_all_teams() if t['abbreviation']==team_abbr), None)
         if tid: logo = cdn_team_logo(tid)
@@ -610,7 +716,6 @@ def recent_averages(logs: pd.DataFrame) -> dict:
         sub = df.head(5)
         out['Last 5 Avg'] = sub[cols].mean().to_frame(name='Last 5 Avg').T
     return out
-
 ra = recent_averages(logs_df)
 last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
 metric_row("Last 5 Games Averages", last5)
@@ -622,9 +727,8 @@ def load_models_cached():
 
 engine_mode = "fallback"
 ml_models = load_models_cached() if SKLEARN_OK else {}
-ng_date_for_feat = ng_date_for_feat if 'ng_date_for_feat' in locals() else None
 
-def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
+def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> Optional[dict]:
     if logs is None or logs.empty: return None
     df = logs.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
     cols = safe_cols(df, STATS_COLS)
@@ -634,9 +738,11 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
         cur = df[df['SEASON_YEAR'] == season_label]
         if not cur.empty: season_avg = cur[cols].mean()
     if season_avg.empty: season_avg = df[cols].mean()
-    feats = {f'{c}_r5': df[c].rolling(5,  min_periods=1).mean().iloc[-1] for c in cols}
-    feats.update({f'{c}_r10': df[c].rolling(10, min_periods=1).mean().iloc[-1] for c in cols})
-    feats.update({f'{c}_r20': df[c].rolling(20, min_periods=1).mean().iloc[-1] for c in cols})
+    feats = {}
+    for k in [5,10,20]:
+        for c in cols:
+            s = df[c].rolling(k, min_periods=1).mean().shift(1)
+            feats[f'{c}_r{k}'] = s.iloc[-1] if pd.notna(s.iloc[-1]) else season_avg.get(c, 0.0)
     preds = {}
     for c in PREDICT_COLS:
         r5, r10, r20 = feats.get(f'{c}_r5', np.nan), feats.get(f'{c}_r10', np.nan), feats.get(f'{c}_r20', np.nan)
@@ -666,7 +772,7 @@ label = {
 }[engine_mode]
 st.markdown(label, unsafe_allow_html=True)
 
-# Save prediction (if next game has a date)
+# Save prediction (if date known)
 pred_date_str = ng['date'] if (ng and isinstance(ng.get('date'), str)) else None
 if ml_preds:
     record_prediction(player_id, player_name, pred_date_str, engine_mode, ml_preds)
@@ -690,18 +796,16 @@ else:
     for entry in sorted(history, key=lambda x: (x.get("pred_date") or ""), reverse=True):
         if shown >= 3: break
         pdate = entry.get("pred_date")
-        preds = entry.get("preds", {})
+        preds_h = entry.get("preds", {})
         engine = entry.get("engine", "unknown")
         actual_row = find_actual_row_by_date(logs_df, pdate) if pdate else None
-
         hdr = f"**Predicted for {pdate}**" if pdate else "**Prediction (no date recorded)**"
         eng = {"global_ml":"Global ML","player_ml":"Player ML","fallback":"Fallback","blended_ml":"Blended ML"}.get(engine,"Model")
         st.markdown(f"{hdr} — _{eng}_")
-
         cols = st.columns(4)
         for i, k in enumerate(['PTS','REB','AST','FG3M']):
             with cols[i]:
-                pred_val = preds.get(k, None)
+                pred_val = preds_h.get(k, None)
                 if actual_row is None:
                     st.metric(f"{k} • Pending", value=str(pred_val) if pred_val is not None else "—", delta="Game not played")
                     st.caption('<span class="pending">Awaiting result</span>', unsafe_allow_html=True)
@@ -713,3 +817,178 @@ else:
                     st.metric(f"{k} • {status}", value=f"{act:.2f}" if isinstance(act,(int,float)) else "—", delta=delta)
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         shown += 1
+
+# ------------------ Share this page -------------------
+def compose_share_card(player_name: str, team_abbr: str,
+                       headshot_img: Optional[Image.Image],
+                       team_logo_img: Optional[Image.Image],
+                       season_row: dict|None,
+                       last_game_row: dict|None,
+                       last5_row: dict|None,
+                       pred_row: dict|None) -> bytes:
+    W, H = 1200, 1400
+    bg = Image.new("RGBA", (W, H), (10,10,10,255))
+    draw = ImageDraw.Draw(bg)
+    try:
+        font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 48)
+        font_h2    = ImageFont.truetype("DejaVuSans-Bold.ttf", 34)
+        font_body  = ImageFont.truetype("DejaVuSans.ttf", 28)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 24)
+    except Exception:
+        font_title = font_h2 = font_body = font_small = None
+    title = f"Hot Shot Props — {player_name} ({team_abbr})"
+    draw.text((36, 30), title, fill=(255,180,180,255), font=font_title)
+
+    x_img, y_img = 36, 90
+    if headshot_img:
+        h = headshot_img.copy().convert("RGBA"); h.thumbnail((520, 380), Image.LANCZOS)
+        bg.alpha_composite(h, (x_img, y_img))
+        if team_logo_img:
+            logo = team_logo_img.copy().convert("RGBA")
+            lw = int(h.width * 0.22); lh = int(logo.height * (lw / logo.width))
+            logo = logo.resize((lw, lh), Image.LANCZOS)
+            bg.alpha_composite(logo, (x_img + h.width - lw - 12, y_img + 12))
+
+    def block(label, row, x, y):
+        draw.rounded_rectangle((x, y, x+520, y+160), radius=16, outline=(35,35,35,255), width=2, fill=(18,18,18,255))
+        draw.text((x+16,y+12), label, fill=(250,164,164,255), font=font_h2)
+        labels = [("PTS","PTS"),("REB","REB"),("AST","AST"),("3PM","FG3M"),("MIN","MIN")]
+        x0 = x+16; step = 100
+        for i,(lab,key) in enumerate(labels):
+            val = row.get(key,"—") if isinstance(row, dict) else "—"
+            val = f"{val:.2f}" if isinstance(val,(int,float,np.floating)) and pd.notna(val) else ("N/A" if val is None else str(val))
+            draw.text((x0 + i*step, y+64), lab, fill=(230,230,230,255), font=font_small)
+            draw.text((x0 + i*step, y+96), val, fill=(255,228,230,255), font=font_body)
+
+    y0 = 90
+    block("Current Season Averages", season_row or {},  644, y0)
+    block("Last Game Stats",        last_game_row or {}, 36,  y0+400)
+    block("Last 5 Games Averages",  last5_row or {},      644, y0+400)
+    block("Predicted Next Game",    pred_row or {},       36,  y0+800)
+    draw.text((36, H-60), "Generated with Hot Shot Props • nba_api • Streamlit", fill=(210,210,210,255), font=font_small)
+    buf = BytesIO(); bg.convert("RGB").save(buf, format="PNG", quality=95); buf.seek(0)
+    return buf.getvalue()
+
+def send_email_png(to_email: str, subject: str, body: str, png_bytes: bytes) -> Tuple[bool,str]:
+    """
+    Configure in .streamlit/secrets.toml:
+    [email]
+    host="smtp.gmail.com"
+    port=587
+    user="you@example.com"
+    password="app_password"
+    from="Hot Shot Props <you@example.com>"
+    """
+    try:
+        cfg = st.secrets.get("email", {})
+        host = cfg.get("host"); port = int(cfg.get("port", 587))
+        user = cfg.get("user"); pwd = cfg.get("password")
+        from_addr = cfg.get("from", user)
+        if not all([host, port, user, pwd, from_addr]):
+            return False, "Email secrets not configured."
+        msg = EmailMessage()
+        msg["Subject"] = subject; msg["From"] = from_addr; msg["To"] = to_email
+        msg.set_content(body)
+        msg.add_attachment(png_bytes, maintype="image", subtype="png", filename="hotshotprops.png")
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(host, port) as s:
+            s.starttls(context=ctx); s.login(user, pwd); s.send_message(msg)
+        return True, "Email sent."
+    except Exception as e:
+        return False, str(e)
+
+def send_sms_png(to_phone_e164: str, msg_text: str, png_bytes: bytes) -> Tuple[bool,str]:
+    """
+    Twilio MMS. Requires secrets:
+    [twilio]
+    sid="ACxxxx"
+    token="auth"
+    from="+15551234567"
+    public_media_base_url="https://yourcdn.example.com/hsp-shares"  # where images are hosted
+    """
+    try:
+        from twilio.rest import Client  # type: ignore
+    except Exception:
+        return False, "Twilio not installed. pip install twilio"
+
+    try:
+        cfg = st.secrets.get("twilio", {})
+        sid = cfg.get("sid"); token = cfg.get("token"); from_num = cfg.get("from")
+        media_base = st.secrets.get("public_media_base_url", cfg.get("public_media_base_url"))
+        if not all([sid, token, from_num]):
+            return False, "Twilio secrets not configured."
+        if not media_base:
+            return False, "Set secrets['public_media_base_url'] with a public HTTPS path for images."
+
+        outdir = os.path.join(USER_ROOT, "shares"); os.makedirs(outdir, exist_ok=True)
+        fname = f"share_{int(time.time())}.png"
+        fpath = os.path.join(outdir, fname)
+        with open(fpath, "wb") as f: f.write(png_bytes)
+        link = media_base.rstrip("/") + f"/{fname}"
+
+        client = Client(sid, token)
+        message = client.messages.create(
+            body=msg_text,
+            from_=from_num,
+            to=to_phone_e164,
+            media_url=[link]
+        )
+        return True, f"SMS queued (SID {message.sid})."
+    except Exception as e:
+        return False, str(e)
+
+st.markdown("## Share this page")
+def _row_or_none(obj):
+    if obj is None: return {}
+    if isinstance(obj, pd.DataFrame) and not obj.empty: return obj.iloc[0].to_dict()
+    if isinstance(obj, dict): return obj
+    if isinstance(obj, pd.Series): return obj.to_dict()
+    return {}
+
+season_row_dict = _row_or_none(season_row)
+last_game_row_dict = _row_or_none(last_game_stats)
+last5_row_dict = _row_or_none(last5)
+pred_row_dict = _row_or_none(ml_preds)
+
+png_bytes = compose_share_card(
+    player_name=player_name,
+    team_abbr=team_abbr,
+    headshot_img=head if 'head' in locals() else None,
+    team_logo_img=logo if 'logo' in locals() else None,
+    season_row=season_row_dict,
+    last_game_row=last_game_row_dict,
+    last5_row=last5_row_dict,
+    pred_row=pred_row_dict
+)
+
+col_dl, col_email, col_sms = st.columns([0.34, 0.33, 0.33])
+with col_dl:
+    st.download_button(
+        "⬇️ Download snapshot (PNG)",
+        data=png_bytes,
+        file_name=f"{player_name.replace(' ', '_')}_hotshotprops.png",
+        mime="image/png",
+        use_container_width=True
+    )
+with col_email:
+    with st.form("share_email_form", clear_on_submit=False):
+        to_email = st.text_input("Email address", placeholder="you@example.com")
+        note = st.text_input("Note (optional)", value=f"{player_name} snapshot from Hot Shot Props")
+        send = st.form_submit_button("📧 Send Email", use_container_width=True)
+        if send:
+            ok, msg = send_email_png(
+                to_email.strip(),
+                subject=f"{player_name} — Hot Shot Props snapshot",
+                body=note or "",
+                png_bytes=png_bytes
+            )
+            st.success(msg) if ok else st.error(msg)
+with col_sms:
+    with st.form("share_sms_form", clear_on_submit=False):
+        to_phone = st.text_input("Phone (E.164)", placeholder="+15551234567")
+        note2 = st.text_input("Message", value=f"{player_name} snapshot from Hot Shot Props")
+        send2 = st.form_submit_button("📱 Text (MMS)", use_container_width=True)
+        if send2:
+            ok, msg = send_sms_png(to_phone.strip(), note2 or "", png_bytes)
+            st.success(msg) if ok else st.error(msg)
+

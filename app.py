@@ -186,7 +186,7 @@ def build_player_models(player_id: int, season: str):
         df[f"{c}_r5"] = s.rolling(5).mean()
     # For each target stat, shift target by -1 (predict next game)
     models = {}
-    feat_cols = [c for c in df.columns if any(s in c for s in [*_ for _ in ML_FEATS]) and ("_r" in c)]
+feat_cols = [c for c in df.columns if any(s in c for s in ML_FEATS) and "_r" in c]
     for target in ML_STATS:
         if target not in df.columns: 
             continue

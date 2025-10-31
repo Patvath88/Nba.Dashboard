@@ -263,4 +263,5 @@ def get_frames_with_retry(endpoint_cls, label: str, **kwargs):
         except Exception as e:
             last_err = e
             time.sleep(NBA_BACKOFF_BASE ** attempt)
-    st.error(f"{label}:
+    st.error(f"{label}: {last_err}")
+

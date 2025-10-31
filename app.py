@@ -1,9 +1,10 @@
-# app.py — Hot Shot Props | NBA Player Analytics (NBA-only, fast, reliable)
-# - Pure nba_api (no fallbacks)
-# - Parallel fetch + caching + hardened headers & timeouts
-# - Home: league leaders with deep-links (?player_id=...)
-# - Sidebar: Home button, search, favorites
-# - Player page: last game, last 5 avg, weighted prediction, bar chart
+# app.py — Hot Shot Props | NBA Player Analytics (NBA-only, reliable + fast)
+# - Pure nba_api (no balldontlie)
+# - Mirror fallback to cdn.nba.com if stats.nba.com times out
+# - Short timeouts, tiny retries, caching, and parallel fetch
+# - Home: league leaders (click name → opens player page)
+# - Sidebar: Home button, player search, favorites (with remove)
+# - Player page: last game, last-5 avg, weighted prediction, bar chart
 
 import os
 import json
@@ -51,8 +52,8 @@ def current_season():
     return f"{y}-{str(y+1)[-2:]}"
 SEASON = current_season()
 
-# ───────────────── nba_api hardening (headers/timeouts) ─────────────
-# Setting browser-like headers reduces blocks from stats.nba.com
+# ───────────────── nba_api hardening (headers/host/timeout) ─────────────
+# Set browser-like headers to reduce blocks from stats.nba.com
 try:
     from nba_api.stats.library.http import NBAStatsHTTP
     NBAStatsHTTP._COMMON_HEADERS.update({
@@ -69,15 +70,20 @@ try:
     })
     NBAStatsHTTP._session = None  # force rebuild with new headers
 except Exception:
-    pass
+    NBAStatsHTTP = None  # type: ignore
 
-NBA_TIMEOUT = 10
+NBA_TIMEOUT = 5          # keep very short so we can failover fast
 NBA_RETRIES = 2
-NBA_BACKOFF = 0.45
+NBA_BACKOFF = 0.35
 
 def _nba_call(endpoint_cls, **kwargs):
-    """Call an nba_api endpoint with short timeout + tiny retries."""
+    """
+    Reliable nba_api call:
+      1) try normal (stats.nba.com)
+      2) on exception, temporarily route base URL to cdn.nba.com and retry
+    """
     last_err = None
+    # Try primary host with small retries
     for i in range(NBA_RETRIES + 1):
         try:
             return endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
@@ -85,7 +91,21 @@ def _nba_call(endpoint_cls, **kwargs):
             last_err = e
             if i < NBA_RETRIES:
                 time.sleep(NBA_BACKOFF * (2**i) + 0.1*np.random.rand())
-    raise last_err
+    # Fallback: swap base URL to CDN mirror and try again once
+    if NBAStatsHTTP is not None:
+        try:
+            orig = getattr(NBAStatsHTTP, "_BASE_URL", "https://stats.nba.com/stats")
+            setattr(NBAStatsHTTP, "_BASE_URL", "https://cdn.nba.com/stats")
+            NBAStatsHTTP._session = None
+            try:
+                return endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
+            finally:
+                # restore
+                setattr(NBAStatsHTTP, "_BASE_URL", orig)
+                NBAStatsHTTP._session = None
+        except Exception as e2:
+            last_err = e2
+    raise RuntimeError(f"NBA data fetch failed after retries: {last_err}")
 
 # ───────────────── Favorites persistence ────────────────
 DEFAULT_TMP = "/tmp" if os.access("/", os.W_OK) else "."
@@ -160,7 +180,8 @@ with st.sidebar:
     st.markdown("### ⭐ Favorites")
     if not st.session_state["favorites"]:
         st.caption("No favorites yet.")
-    for fav in st.session_state["favorites"]:
+    # favorites list
+    for fav in list(st.session_state["favorites"]):
         c1, c2 = st.columns([4,1])
         if c1.button(fav, key=f"fav_{fav}"):
             st.session_state["selected_player"] = fav
@@ -272,7 +293,6 @@ st.image(f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png", w
 st.subheader("Career Averages (Per Game)")
 if not career_df.empty:
     df = career_df.copy()
-    # per-season per-game from totals / GP
     if "GP" in df.columns:
         gp = df["GP"].replace(0, np.nan)
         for c in ("PTS", "REB", "AST"):

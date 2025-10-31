@@ -9,6 +9,7 @@
 #       3) Weighted fallback
 # - Background global training thread (one at a time)
 # - Cloud-safe model directory handling
+# - NEW: "Last Predictions vs Results" metric cards, persisting history
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -48,12 +49,15 @@ PREDICT_COLS = ['PTS','AST','REB','FG3M']
 API_SLEEP    = 0.25
 FAV_FILE     = "favorites.json"
 
-# Writable models dir: use /tmp on hosted runtimes, ./models locally
+# Writable dirs: /tmp on hosted runtimes, ./ locally
 DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
 MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
 os.makedirs(MODEL_DIR, exist_ok=True)
 MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
 FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
+
+# NEW: prediction history storage
+PRED_HISTORY_FILE = os.path.join(DEFAULT_TMP_DIR, "pred_history.json")
 
 # ---------------------------------
 # Styling
@@ -80,6 +84,7 @@ h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
 .tag.ok{color:#bbf7d0;border-color:#14532d;background:#052e16;}
 .tag.warn{color:#fde68a;border-color:#7c2d12;background:#3b0a0a;}
 .tag.dim{color:#cbd5e1;border-color:#334155;background:#0b1222;}
+.hit{color:#86efac;} .miss{color:#fecaca;} .pending{color:#cbd5e1;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -164,6 +169,52 @@ def save_favorites(favs: list[dict]) -> None:
             json.dump(favs, f)
     except Exception:
         pass
+
+# NEW: prediction history persistence
+def _load_pred_history():
+    try:
+        if os.path.exists(PRED_HISTORY_FILE):
+            with open(PRED_HISTORY_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_pred_history(data):
+    try:
+        with open(PRED_HISTORY_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def record_prediction(player_id: int, player_name: str, pred_date: str | None, engine: str, preds: dict):
+    """
+    Store latest prediction for this player. Replaces any existing entry for the same date.
+    """
+    if not preds:
+        return
+    db = _load_pred_history()
+    key = str(player_id)
+    entries = db.get(key, [])
+    # remove any existing for same date
+    if pred_date:
+        entries = [e for e in entries if e.get("pred_date") != pred_date]
+    entry = {
+        "player_id": player_id,
+        "player_name": player_name,
+        "pred_date": pred_date,   # YYYY-MM-DD or None
+        "engine": engine,         # 'global_ml' | 'player_ml' | 'fallback' | 'blended_ml'
+        "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}
+    }
+    entries.append(entry)
+    # keep only last 30
+    entries = sorted(entries, key=lambda x: (x.get("pred_date") or ""), reverse=True)[:30]
+    db[key] = entries
+    _save_pred_history(db)
+
+def get_player_history(player_id: int):
+    db = _load_pred_history()
+    return db.get(str(player_id), [])
 
 # ---------------------------------
 # Cached data fetchers
@@ -444,7 +495,6 @@ def train_player_models_in_memory(logs_df: pd.DataFrame):
         X = feats[feat_cols]; y = feats[target]
         if len(X) < 25:
             continue
-        # no test split to keep it fast & simple per-player
         model = Ridge(alpha=1.0, random_state=42).fit(X, y)
         models[target] = model
     return models
@@ -666,7 +716,7 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     else:
         row = dict(data)
     def fmt(v):
-        return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+        return f"{float(v):2.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
     cols = st.columns(5)
     with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
     with cols[1]: st.metric("REB", fmt(row.get('REB')))
@@ -691,26 +741,93 @@ ra = recent_averages(logs_df)
 last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
 metric_row("Last 5 Games Averages", last5)
 
-# Row 4: Predicted next game — try Global ML, then Player ML, then Fallback
-engine_tag = ""
+# Row 4: Predicted next game — Global ML -> Player ML -> Fallback, and RECORD the prediction
+engine_mode = "fallback"
 ml_models = load_models() if SKLEARN_OK else {}
 ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
 
 if ml_preds:
+    engine_mode = "global_ml"
     metric_row("Predicted Next Game (ML)", ml_preds)
-    engine_tag = '<span class="tag ok">Using Global ML</span>'
 else:
     player_models = train_player_models_in_memory(logs_df) if SKLEARN_OK else {}
     player_ml_preds = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, player_models) if player_models else None
     if player_ml_preds:
-        metric_row("Predicted Next Game (ML)", player_ml_preds)
-        engine_tag = '<span class="tag ok">Using Player ML (ad-hoc)</span>'
+        engine_mode = "player_ml"
+        ml_preds = player_ml_preds
+        metric_row("Predicted Next Game (ML)", ml_preds)
     else:
         preds = predict_next_fallback(logs_df, latest_season)
+        engine_mode = "fallback"
+        ml_preds = preds
         metric_row("Predicted Next Game (Model)", preds)
-        if not SKLEARN_OK:
-            engine_tag = '<span class="tag warn">Fallback — install scikit-learn & joblib</span>'
-        else:
-            engine_tag = '<span class="tag dim">Fallback — insufficient data yet</span>'
 
-st.markdown(engine_tag, unsafe_allow_html=True)
+label = {
+    "global_ml": '<span class="tag ok">Using Global ML</span>',
+    "player_ml": '<span class="tag ok">Using Player ML (ad-hoc)</span>',
+    "fallback":  '<span class="tag dim">Using weighted fallback model</span>' if SKLEARN_OK else
+                 '<span class="tag warn">Fallback — install scikit-learn & joblib</span>',
+}[engine_mode]
+st.markdown(label, unsafe_allow_html=True)
+
+# --- SAVE the prediction (only if we know the next game date) ---
+pred_date_str = None
+if ng and isinstance(ng.get('date'), str):
+    pred_date_str = ng['date']
+if ml_preds:
+    record_prediction(player_id, player_name, pred_date_str, engine_mode, ml_preds)
+
+# ---------------------------------
+# NEW: Last Predictions vs Results (metric cards)
+# ---------------------------------
+st.markdown("### Last Predictions vs Results")
+
+def find_actual_row_by_date(logs: pd.DataFrame, iso_date: str):
+    if logs is None or logs.empty or not iso_date:
+        return None
+    try:
+        d = dt.datetime.strptime(iso_date, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    cand = logs.copy()
+    cand['GD'] = pd.to_datetime(cand['GAME_DATE']).dt.date
+    matches = cand[cand['GD'] == d]
+    return matches.iloc[0] if not matches.empty else None
+
+history = get_player_history(player_id)
+if not history:
+    st.caption("No stored predictions yet. A prediction is saved when a next game date is known.")
+else:
+    # Show up to last 3 entries, newest first
+    shown = 0
+    for entry in sorted(history, key=lambda x: (x.get("pred_date") or ""), reverse=True):
+        if shown >= 3:
+            break
+        pdate = entry.get("pred_date")
+        preds = entry.get("preds", {})
+        engine = entry.get("engine", "unknown")
+        actual_row = find_actual_row_by_date(logs_df, pdate) if pdate else None
+
+        # Header line for this prediction
+        hdr = f"**Predicted for {pdate}**" if pdate else "**Prediction (no date recorded)**"
+        eng = {"global_ml":"Global ML","player_ml":"Player ML","fallback":"Fallback","blended_ml":"Blended ML"}.get(engine,"Model")
+        st.markdown(f"{hdr} — _{eng}_")
+
+        # Build metric cards per stat
+        cols = st.columns(4)
+        stat_keys = ['PTS','REB','AST','FG3M']
+        for i, k in enumerate(stat_keys):
+            with cols[i]:
+                pred_val = preds.get(k, None)
+                if actual_row is None:
+                    # Pending
+                    st.metric(f"{k} • Pending", value=str(pred_val) if pred_val is not None else "—", delta="Game not played")
+                    st.caption(f'<span class="pending">Awaiting result</span>', unsafe_allow_html=True)
+                else:
+                    act = actual_row.get(k, None)
+                    hit = (act is not None and pred_val is not None and float(act) >= float(pred_val))
+                    status = "✅ Hit" if hit else "❌ Miss"
+                    delta = f"Pred {pred_val:.2f} → Act {act:.2f}" if (isinstance(pred_val,(int,float)) and isinstance(act,(int,float))) else "—"
+                    st.metric(f"{k} • {status}", value=f"{act:.2f}" if isinstance(act,(int,float)) else "—", delta=delta)
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+        shown += 1

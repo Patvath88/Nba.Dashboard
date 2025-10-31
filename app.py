@@ -172,9 +172,9 @@ def calculate_recent_game_averages(career_game_logs_df):
     if len(career_game_logs_df) >= 5:
         recent_averages['last_5_games_avg'] = career_game_logs_df.head(5)[valid_game_stats_columns].mean().to_frame(name='Last 5 Games Avg').T
     if len(career_game_logs_df) >= 10:
-        recent_averages['last_10_games_avg'] = career_game_logs_df.head(10)[valid_game_stats_columns].mean().to_frame(name='Last 10 Games Avg').T
+        recent_averages['last_10_games_avg'] = career_game_logs_df.head(10)[valid_game_logs_df.columns].mean().to_frame(name='Last 10 Games Avg').T
     if len(career_game_logs_df) >= 20:
-        recent_averages['last_20_games_avg'] = career_game_logs_df.head(20)[valid_game_stats_columns].mean().to_frame(name='Last 20 Games Avg').T
+        recent_averages['last_20_games_avg'] = career_game_logs_df.head(20)[valid_game_logs_df.columns].mean().to_frame(name='Last 20 Games Avg').T
 
     # Get individual last 5 games
     if len(career_game_logs_df) >= 5:
@@ -399,6 +399,24 @@ st.markdown("""
     .stButton > button:hover {
         background-color: #42a5f5;
     }
+    /* Style for metrics cards */
+    [data-testid="stMetric"] {
+        background-color: #1a237e; /* Deep blue background for cards */
+        padding: 15px;
+        border-radius: 10px;
+        color: white; /* White text for cards */
+        border: 1px solid #2962ff; /* Border color */
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.5); /* Subtle shadow */
+    }
+    [data-testid="stMetric"] label {
+        color: #e0e0e0; /* Light gray label */
+        font-weight: bold;
+    }
+    [data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #42a5f5; /* Lighter blue value */
+        font-size: 1.8em; /* Larger value font size */
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -461,7 +479,6 @@ if player1_name_select: # Only proceed if a player is selected
             st.header(f"{player1_name_select} Stats Dashboard") # Player name as header in main area
 
 
-            # using a single column for stats now
             st.subheader("Career Summary")
             # Calculate overall career averages from career_df_all_seasons
             overall_total_games = career_df_all_seasons['GP'].sum()
@@ -476,29 +493,34 @@ if player1_name_select: # Only proceed if a player is selected
                  # overall_career_averages_df = overall_career_averages.to_frame(name='Overall Career Avg').T # Convert to DataFrame for display
 
 
-                 # Define max values for stat bars (can be based on league averages, player's best season, etc.)
-                 # Let's use a simple heuristic: max of player's career high for key stats + a buffer
-                 # Ensure career_game_logs_df is not None and has the column before calculating max
-                 max_pts = career_game_logs_df['PTS'].max() if career_game_logs_df is not None and 'PTS' in career_game_logs_df.columns and not career_game_logs_df['PTS'].empty else 30.0
-                 max_reb = career_game_logs_df['REB'].max() if career_game_logs_df is not None and 'REB' in career_game_logs_df.columns and not career_game_logs_df['REB'].empty else 15.0
-                 max_ast = career_game_logs_df['AST'].max() if career_game_logs_df is not None and 'AST' in career_game_logs_df.columns and not career_game_logs_df['AST'].empty else 10.0
-                 max_min = career_game_logs_df['MIN'].max() if career_game_logs_df is not None and 'MIN' in career_game_logs_df.columns and not career_game_logs_df['MIN'].empty else 40.0
-
-                 # Ensure max values are reasonable if career highs are very low
-                 max_pts = max(max_pts, 20.0) # Minimum threshold
-                 max_reb = max(max_reb, 10.0)
-                 max_ast = max(max_ast, 7.0)
-                 max_min = max(max_min, 30.0)
-
-                 # Dictionary of max values for charting (still useful for scaling progress bars)
-                 max_values_dict = {'PTS': max_pts, 'REB': max_reb, 'AST': max_ast, 'MIN': max_min}
-
-                 # Display stat bars for key career averages using st.progress
+                 # Display key career averages using st.metric
                  st.write("Overall Career Averages:")
-                 create_stat_bar("Points", overall_career_averages.get('PTS'), max_values_dict.get('PTS')) # Use create_stat_bar
-                 create_stat_bar("Rebounds", overall_career_averages.get('REB'), max_values_dict.get('REB')) # Use create_stat_bar
-                 create_stat_bar("Assists", overall_career_averages.get('AST'), max_values_dict.get('AST')) # Use create_stat_bar
-                 create_stat_bar("Minutes", overall_career_averages.get('MIN'), max_values_dict.get('MIN')) # Use create_stat_bar
+                 # Use columns to display metrics side-by-side
+                 col1, col2, col3, col4 = st.columns(4) # Adjust number of columns as needed
+
+                 with col1:
+                     if 'PTS' in overall_career_averages.index:
+                          st.metric(label="Points", value=f"{overall_career_averages['PTS']:.2f}") # Use st.metric
+                     else:
+                          st.metric(label="Points", value="N/A") # Handle missing data
+
+                 with col2:
+                     if 'REB' in overall_career_averages.index:
+                          st.metric(label="Rebounds", value=f"{overall_career_averages['REB']:.2f}") # Use st.metric
+                     else:
+                          st.metric(label="Rebounds", value="N/A") # Handle missing data
+
+                 with col3:
+                     if 'AST' in overall_career_averages.index:
+                          st.metric(label="Assists", value=f"{overall_career_averages['AST']:.2f}") # Use st.metric
+                     else:
+                          st.metric(label="Assists", value="N/A") # Handle missing data
+
+                 with col4:
+                     if 'MIN' in overall_career_averages.index:
+                          st.metric(label="Minutes", value=f"{overall_career_averages['MIN']:.2f}") # Use st.metric
+                     else:
+                          st.metric(label="Minutes", value="N/A") # Handle missing data
 
 
             else:

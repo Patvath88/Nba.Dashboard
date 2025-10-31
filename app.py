@@ -7,6 +7,7 @@
 # - ML priority: Global ML -> Player ML (ad-hoc) -> Fallback
 # - Background global training thread
 # - "Last Predictions vs Results" cards
+# - NEW: Bar charts for stats (last 10 games); removed line charts
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -94,7 +95,7 @@ def _user_store_root(username: str):
     return path
 
 def _auth_valid(u, p):
-    # Prefer secrets: st.secrets["users"] = {"pat":"strongpass","analyst":"s3cret"}
+    # Prefer secrets: st.secrets["users"] = {"you":"yourpassword","analyst":"s3cret"}
     users = {}
     try:
         conf = st.secrets.get("users")
@@ -103,8 +104,7 @@ def _auth_valid(u, p):
     except Exception:
         pass
     if not users:
-        # Fallback demo (change in production)
-        users = {"demo": "demo"}
+        users = {"demo": "demo"}  # fallback demo
     return (u in users) and (str(p) == str(users[u]))
 
 def login_ui():
@@ -113,7 +113,6 @@ def login_ui():
     u = st.text_input("Username", value="", placeholder="demo")
     p = st.text_input("Password", value="", placeholder="demo", type="password")
     colA, colB = st.columns([0.4,0.6])
-    ok = False
     with colA:
         if st.button("Sign in"):
             if _auth_valid(u, p):
@@ -697,8 +696,11 @@ with c2: st.metric("Team", team_abbr)
 with c3: st.metric("Most Recent Game", last_game_info)
 with c4: st.metric("Next Game", next_game_info)
 
-# Headshot + logo overlay + trend charts
-col_img, col_trend = st.columns([0.32, 0.68])
+# -------------------------------------------------
+# Headshot + team logo overlay + NEW BAR CHARTS
+# -------------------------------------------------
+col_img, col_trend = st.columns([0.30, 0.70])
+
 with col_img:
     head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
     logo = cdn_team_logo(team_id) if team_id else None
@@ -709,22 +711,39 @@ with col_img:
         st.info("Headshot not available.")
 
 with col_trend:
+    st.markdown("#### Last 10 Games — Bar Charts")
     if logs_df is not None and not logs_df.empty:
         N = min(10, len(logs_df))
-        view = logs_df.head(N).copy().iloc[::-1]
-        trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
-        if trend_cols:
-            trend_df = view[['GAME_DATE'] + trend_cols].copy()
-            trend_df['GAME_DATE'] = pd.to_datetime(trend_df['GAME_DATE'])
-            for stat in trend_cols:
-                ch = alt.Chart(trend_df).mark_line(point=True).encode(
-                    x=alt.X('GAME_DATE:T', title=''),
-                    y=alt.Y(f'{stat}:Q', title=stat),
-                    tooltip=[alt.Tooltip('GAME_DATE:T', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)]
-                ).properties(height=110)
-                st.altair_chart(ch, use_container_width=True)
+        view = logs_df.head(N).copy().iloc[::-1]  # oldest to newest in the 10-game window
+        view['GAME_DATE'] = pd.to_datetime(view['GAME_DATE'])
+        view['Game'] = view['GAME_DATE'].dt.strftime('%m-%d')
+
+        # Default "core" stats + option to show all categories
+        core_stats = ['PTS','REB','AST','FG3M']
+        available_stats = [c for c in STATS_COLS if c in view.columns]
+        show_all = st.toggle("Show all categories", value=False)
+        chosen = available_stats if show_all else [c for c in core_stats if c in available_stats]
+
+        if not chosen:
+            st.info("No stats available to chart.")
         else:
-            st.info("No trend stats available.")
+            # Render a grid of bar charts (2 per row)
+            for i, stat in enumerate(chosen):
+                chart_df = view[['Game', stat]].copy()
+                chart = alt.Chart(chart_df).mark_bar().encode(
+                    x=alt.X('Game:N', title=''),
+                    y=alt.Y(f'{stat}:Q', title=stat),
+                    tooltip=[alt.Tooltip('Game:N', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)],
+                ).properties(height=140)
+
+                # Place charts two per row
+                if i % 2 == 0:
+                    colA, colB = st.columns(2)
+                    with colA:
+                        st.altair_chart(chart, use_container_width=True)
+                else:
+                    with colB:
+                        st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No recent games to chart.")
 

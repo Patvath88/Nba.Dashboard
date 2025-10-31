@@ -1,13 +1,6 @@
-# app.py — Hot Shot Props | NBA Player Analytics (Black/Red + Login + Per-user persistence)
-# - Black background, red accents
-# - Simple login (username/password)
-# - Per-user favorites + prediction history under userdata/<username>/
-# - Sidebar: search + favorites only (no "app selection", no "saved projections" UI)
-# - Headshot with team-logo overlay
-# - ML priority: Global ML -> Player ML (ad-hoc) -> Fallback
-# - Background global training thread
-# - "Last Predictions vs Results" cards
-# - NEW: Bar charts for stats (last 10 games); removed line charts
+# app.py — Hot Shot Props | NBA Player Analytics
+# Black/Red UI • Login + per-user favorites/history • Bar charts • ML predictions
+# NOW WITH: robust retries & longer timeouts for stats.nba.com calls
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -33,8 +26,46 @@ except Exception:
     Ridge = None
     SKLEARN_OK = False
 
+# -------------------------------------------------
+# Global API controls (NEW)
+# -------------------------------------------------
+NBA_TIMEOUT = 75          # seconds per request (was 30)
+NBA_RETRIES = 4           # how many times to retry on network/timeout
+NBA_BACKOFF_BASE = 1.6    # exponential backoff base
+API_SLEEP = 0.25          # polite spacing between calls
+
+def get_frames_with_retry(endpoint_cls, label: str, **kwargs):
+    """
+    Call an nba_api endpoint class and return its list of data frames.
+    Retries on exceptions with exponential backoff.
+    """
+    last_err = None
+    for attempt in range(NBA_RETRIES):
+        try:
+            # pass timeout to every endpoint call
+            ep = endpoint_cls(timeout=NBA_TIMEOUT, **kwargs)
+            frames = ep.get_data_frames()
+            return frames
+        except Exception as e:
+            last_err = e
+            # small backoff then retry
+            sleep_s = NBA_BACKOFF_BASE ** attempt
+            time.sleep(sleep_s)
+    # One clear message for the UI; don't spam
+    st.error(f"{label}: {last_err}")
+    return []
+
+def get_df_with_retry(endpoint_cls, label: str, frame_idx: int = 0, **kwargs) -> pd.DataFrame:
+    frames = get_frames_with_retry(endpoint_cls, label, **kwargs)
+    if not frames:
+        return pd.DataFrame()
+    if frame_idx >= len(frames):
+        return pd.DataFrame()
+    df = frames[frame_idx]
+    return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
 # ---------------------------------
-# Page config
+# Page config + Theme
 # ---------------------------------
 st.set_page_config(
     page_title="Hot Shot Props • NBA Player Analytics (Free)",
@@ -42,9 +73,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------
-# THEME: Black + Red
-# ---------------------------------
 st.markdown("""
 <style>
 :root { --bg:#000000; --panel:#0b0b0b; --ink:#f3f4f6; --muted:#c7c7c7; --red:#ef4444; --line:#171717; --ok:#22c55e; --warn:#f59e0b; --dim:#6b7280; }
@@ -76,7 +104,6 @@ a, .st-emotion-cache-16idsys p a{color:#f87171!important;}
 # ---------------------------------
 STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
-API_SLEEP    = 0.25
 
 # Writable roots
 DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
@@ -95,7 +122,6 @@ def _user_store_root(username: str):
     return path
 
 def _auth_valid(u, p):
-    # Prefer secrets: st.secrets["users"] = {"you":"yourpassword","analyst":"s3cret"}
     users = {}
     try:
         conf = st.secrets.get("users")
@@ -124,7 +150,6 @@ def login_ui():
         st.caption("Tip: set `st.secrets['users']` for real accounts.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Gate
 if "auth_user" not in st.session_state:
     login_ui()
     st.stop()
@@ -251,7 +276,7 @@ def get_player_history(player_id: int):
     return db.get(str(player_id), [])
 
 # ---------------------------------
-# Cached data fetchers
+# Cached data fetchers (using retry wrappers)
 # ---------------------------------
 @st.cache_data(ttl=6*3600)
 def get_active_players():
@@ -280,7 +305,7 @@ def build_team_player_index() -> dict[str, int]:
             continue
         try:
             time.sleep(API_SLEEP)
-            roster = commonteamroster.CommonTeamRoster(team_id=tid).get_data_frames()[0]
+            roster = get_df_with_retry(commonteamroster.CommonTeamRoster, f"Roster fetch timeout for {abbr}", team_id=tid)
             if roster is None or roster.empty:
                 continue
             for _, row in roster.iterrows():
@@ -290,7 +315,7 @@ def build_team_player_index() -> dict[str, int]:
                     mapping[f"{abbr} — {name}"] = pid
         except Exception:
             continue
-    # add any remaining active players (FA)
+    # add remaining active players (FA)
     act = get_active_players()
     present_names = set(label.split("—",1)[-1].strip() for label in mapping.keys())
     for p in act:
@@ -304,15 +329,18 @@ def build_team_player_index() -> dict[str, int]:
 def fetch_player(player_id: int):
     try:
         time.sleep(API_SLEEP)
-        career_stats = playercareerstats.PlayerCareerStats(player_id=player_id).get_data_frames()[0]
+        career_stats = get_df_with_retry(playercareerstats.PlayerCareerStats, "Career stats timeout", player_id=player_id)
         seasons = career_stats['SEASON_ID'].tolist() if not career_stats.empty else []
         logs_list = []
         for s in seasons:
             try:
                 time.sleep(API_SLEEP)
-                df = playergamelogs.PlayerGameLogs(
-                    player_id_nullable=player_id, season_nullable=s
-                ).get_data_frames()[0]
+                df = get_df_with_retry(
+                    playergamelogs.PlayerGameLogs,
+                    f"Game logs timeout ({s})",
+                    player_id_nullable=player_id,
+                    season_nullable=s
+                )
                 if df is not None and not df.empty:
                     logs_list.append(df)
             except Exception:
@@ -336,9 +364,13 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
         day = today + dt.timedelta(days=d)
         try:
             time.sleep(API_SLEEP)
-            sb = scoreboardv2.ScoreboardV2(game_date=day.strftime("%m/%d/%Y"))
-            frames = sb.get_data_frames()
-            game_header = next((f for f in frames if {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns)), None)
+            frames = get_frames_with_retry(scoreboardv2.ScoreboardV2, f"Scoreboard timeout ({day})",
+                                           game_date=day.strftime("%m/%d/%Y"))
+            # find frame with HOME/VISITOR cols
+            game_header = None
+            for f in frames:
+                if isinstance(f, pd.DataFrame) and {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns):
+                    game_header = f; break
             if game_header is None or game_header.empty:
                 continue
             for _, row in game_header.iterrows():
@@ -354,7 +386,7 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
     return None
 
 # ---------------------------------
-# ML: loaders + training + inference
+# ML: loaders + training + inference (unchanged)
 # ---------------------------------
 @st.cache_data(ttl=3600)
 def load_models():
@@ -452,13 +484,14 @@ def train_models_core(active_players_list=None):
     for p in act:
         pid = p.get('id')
         try:
-            cstats = playercareerstats.PlayerCareerStats(player_id=pid).get_data_frames()[0]
+            cstats = get_df_with_retry(playercareerstats.PlayerCareerStats, "Career stats timeout (trainer)", player_id=pid)
             seasons = cstats['SEASON_ID'].tolist() if not cstats.empty else []
             logs_list = []
             for s in seasons:
                 try:
                     time.sleep(API_SLEEP)
-                    df = playergamelogs.PlayerGameLogs(player_id_nullable=pid, season_nullable=s).get_data_frames()[0]
+                    df = get_df_with_retry(playergamelogs.PlayerGameLogs, f"Game logs timeout (trainer {s})",
+                                           player_id_nullable=pid, season_nullable=s)
                     if df is not None and not df.empty:
                         logs_list.append(df)
                 except Exception:
@@ -563,7 +596,7 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
     return preds
 
 # ---------------------------------
-# Sidebar — Search + Favorites (only)
+# Sidebar — Search + Favorites
 # ---------------------------------
 with st.sidebar:
     st.header(f"Welcome, {AUTH_USER}")
@@ -643,19 +676,22 @@ st.markdown(f"""
 # ---------------------------------
 # Main content
 # ---------------------------------
-if player_id:
-    ensure_background_training()
-    if st.session_state.get("_bg_training_running"):
-        st.caption(f"🟥 Training global ML in background… (started {st.session_state.get('_bg_training_started_at','now')})")
-
 if not player_id:
     st.info("Pick a player from the sidebar to load their dashboard.")
     st.stop()
 
+# Fetch player; if it fails, do NOT start background training
 career_df, logs_df = fetch_player(player_id)
 if career_df.empty:
     st.warning("No career data available for this player.")
     st.stop()
+
+# Start background training only after a successful load
+if SKLEARN_OK:
+    if not st.session_state.get("_bg_training_running"):
+        ensure_background_training()
+    if st.session_state.get("_bg_training_running"):
+        st.caption(f"🟥 Training global ML in background… (started {st.session_state.get('_bg_training_started_at','now')})")
 
 # Resolve player/team info
 if not player_name:
@@ -689,18 +725,15 @@ if ng:
 else:
     next_game_info = "TBD"; is_home_next = 0; ng_date_for_feat = None
 
-# Header strip metrics
+# Header metrics
 c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
 with c1: st.metric("Player", player_name)
 with c2: st.metric("Team", team_abbr)
 with c3: st.metric("Most Recent Game", last_game_info)
 with c4: st.metric("Next Game", next_game_info)
 
-# -------------------------------------------------
-# Headshot + team logo overlay + NEW BAR CHARTS
-# -------------------------------------------------
+# Headshot + Team logo + Bar charts (last 10 games)
 col_img, col_trend = st.columns([0.30, 0.70])
-
 with col_img:
     head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
     logo = cdn_team_logo(team_id) if team_id else None
@@ -714,20 +747,16 @@ with col_trend:
     st.markdown("#### Last 10 Games — Bar Charts")
     if logs_df is not None and not logs_df.empty:
         N = min(10, len(logs_df))
-        view = logs_df.head(N).copy().iloc[::-1]  # oldest to newest in the 10-game window
+        view = logs_df.head(N).copy().iloc[::-1]
         view['GAME_DATE'] = pd.to_datetime(view['GAME_DATE'])
         view['Game'] = view['GAME_DATE'].dt.strftime('%m-%d')
-
-        # Default "core" stats + option to show all categories
         core_stats = ['PTS','REB','AST','FG3M']
         available_stats = [c for c in STATS_COLS if c in view.columns]
         show_all = st.toggle("Show all categories", value=False)
         chosen = available_stats if show_all else [c for c in core_stats if c in available_stats]
-
         if not chosen:
             st.info("No stats available to chart.")
         else:
-            # Render a grid of bar charts (2 per row)
             for i, stat in enumerate(chosen):
                 chart_df = view[['Game', stat]].copy()
                 chart = alt.Chart(chart_df).mark_bar().encode(
@@ -735,19 +764,15 @@ with col_trend:
                     y=alt.Y(f'{stat}:Q', title=stat),
                     tooltip=[alt.Tooltip('Game:N', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)],
                 ).properties(height=140)
-
-                # Place charts two per row
                 if i % 2 == 0:
                     colA, colB = st.columns(2)
-                    with colA:
-                        st.altair_chart(chart, use_container_width=True)
+                    with colA: st.altair_chart(chart, use_container_width=True)
                 else:
-                    with colB:
-                        st.altair_chart(chart, use_container_width=True)
+                    with colB: st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No recent games to chart.")
 
-# Metric row helper
+# Metric rows
 def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "—"):
     st.markdown(f"#### {title}")
     if data is None:
@@ -767,7 +792,7 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
     with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
 
-# Row 1: Current season per-game
+# Row 1: Current Season Averages
 season_row = None
 if not career_df.empty:
     cur = career_df.iloc[-1]
@@ -776,15 +801,15 @@ if not career_df.empty:
         season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
 metric_row("Current Season Averages", season_row)
 
-# Row 2: Last game
+# Row 2: Last Game
 metric_row("Last Game Stats", last_game_stats)
 
-# Row 3: Last 5 averages
+# Row 3: Last 5 Averages
 ra = recent_averages(logs_df)
 last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
 metric_row("Last 5 Games Averages", last5)
 
-# Row 4: Predicted next game — Global ML -> Player ML -> Fallback + record prediction
+# Row 4: Prediction (ML -> Player ML -> Fallback)
 engine_mode = "fallback"
 ml_models = load_models() if SKLEARN_OK else {}
 ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
@@ -818,7 +843,7 @@ pred_date_str = ng['date'] if (ng and isinstance(ng.get('date'), str)) else None
 if ml_preds:
     record_prediction(player_id, player_name, pred_date_str, engine_mode, ml_preds)
 
-# --- Last Predictions vs Results ---
+# Last Predictions vs Results
 st.markdown("### Last Predictions vs Results")
 def find_actual_row_by_date(logs: pd.DataFrame, iso_date: str):
     if logs is None or logs.empty or not iso_date:

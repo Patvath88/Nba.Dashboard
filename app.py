@@ -7,9 +7,9 @@ import numpy as np
 import time # Import time for delays
 # import plotly.graph_objects as go # Removed Plotly
 # import requests # Removed requests for fetching logo image
-# from PIL import Image # Removed Pillow for handling logo image
+from PIL import Image # Reintroduce Pillow for handling logo image
 # from io import BytesIO # Removed BytesBytesIO for handling logo image bytes
-# import altair as alt # Removed Altair
+import altair as alt # Reintroduce Altair
 
 
 # Define core stats columns globally
@@ -17,6 +17,28 @@ stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DRE
 
 # Define prediction targets globally
 prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
+
+# Function to get NBA logo image (Fetching code removed, will instruct user on local file)
+# @st.cache_data # Cache this data
+# def get_nba_logo_image():
+#     """
+#     Attempts to get the NBA logo image from a common source.
+#     Fetching code removed due to reliability issues.
+#     """
+#     # Example URL for NBA logo (this might need adjustment based on actual sources)
+#     # logo_url = "https://upload.wikimedia.wikimedia.org/wikipedia/commons/thumb/b/ba/NBA_Logo.svg/800px-NBA_Logo.svg.png" # Example URL
+
+#     # try:
+#     #     response = requests.get(logo_url)
+#     #     if response.status_code == 200:
+#     #         return Image.open(BytesIO(response.content))
+#     #     else:
+#     #         st.warning(f"Could not fetch NBA logo image from {logo_url}. Status code: {response.status_code}")
+#     #         return None
+#     # except Exception as e:
+#     #     st.warning(f"Error fetching NBA logo image: {e}")
+#     return None # Return None as image fetching is removed
+
 
 # Fetch data for a player (Career Stats and Career Game Logs)
 @st.cache_data(ttl=3600) # Cache for 1 hour
@@ -468,7 +490,6 @@ if player1_name_select:
                  max_ast = max(max_ast, 7.0)
                  max_min = max(max_min, 30.0)
 
-
                  # Dictionary of max values for charting (still useful for scaling progress bars)
                  max_values_dict = {'PTS': max_pts, 'REB': max_reb, 'AST': max_ast, 'MIN': max_min}
 
@@ -502,6 +523,40 @@ if player1_name_select:
 
 
                 st.dataframe(display_career_df.set_index('SEASON_ID')) # Display the career dataframe, using Season ID as index for better readability
+
+                # --- Add Season Trends Visualization (Line Charts) ---
+                st.subheader("Season Trends for Key Stats")
+                if not display_career_df.empty and 'SEASON_ID' in display_career_df.columns:
+                     # Select key stats for trend visualization
+                     key_trend_stats = ['PTS', 'AST', 'REB', 'FG3M', 'MIN'] # Added MIN as it's a key stat
+
+                     # Melt the DataFrame to long format for Altair
+                     melted_df = display_career_df.melt(
+                         id_vars='SEASON_ID',
+                         value_vars=[col for col in key_trend_stats if col in display_career_df.columns],
+                         var_name='Statistic',
+                         value_name='Average per Game'
+                     )
+
+                     if not melted_df.empty:
+                         # Convert SEASON_ID to string or ordered category for Altair axis
+                         melted_df['SEASON_ID'] = melted_df['SEASON_ID'].astype(str)
+
+                         chart = alt.Chart(melted_df).mark_line(point=True).encode(
+                             x=alt.X('SEASON_ID', title='Season', sort=None), # Sort by season string
+                             y=alt.Y('Average per Game', title='Average per Game'),
+                             color='Statistic', # Different line for each statistic
+                             tooltip=['SEASON_ID', 'Statistic', alt.Tooltip('Average per Game', format='.2f')]
+                         ).properties(
+                             title=f'{player1_name_select} Season Trends for Key Stats'
+                         ).interactive() # Enable zooming and panning
+
+                         st.altair_chart(chart, use_container_width=True)
+                     else:
+                         st.info("Data is not in the correct format for plotting season trends.")
+
+                else:
+                     st.info("Not enough season data available to plot trends.")
 
 
             with tab2: # This is now the Recent Games tab
@@ -608,4 +663,4 @@ if player1_name_select:
             st.info(f"No data available for {player1_name_select}.")
 
     else: # No player selected
-        st.info("Please select a player from the dropdown to view their stats using the sidebar.")
+        st.info("Please select a player from the dropdown in the sidebar to view their stats.")

@@ -385,11 +385,12 @@ with col_title:
 with col_logo:
     # Display NBA logo from the provided local file path
     try:
-        local_logo_path = '/content/NBA-Logo-2017.png' # Use the user-provided path
+        # Use the relative path assuming the image is in the same directory as the app file
+        local_logo_path = 'NBA-Logo-2017.png'
         logo_image = Image.open(local_logo_path)
         st.image(logo_image, width=100) # Display logo with a fixed width
     except FileNotFoundError:
-        st.warning(f"NBA logo image file '{local_logo_path}' not found. Please ensure it's in the correct location.")
+        st.warning(f"NBA logo image file '{local_logo_path}' not found. Please ensure the image file is in the same directory as your app script on Streamlit Cloud.")
     except Exception as e:
         st.warning(f"Error displaying local NBA logo: {e}")
 

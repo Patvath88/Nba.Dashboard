@@ -83,7 +83,7 @@ def fetch_player_data(player_id):
             # Combine game logs from all fetched seasons
             career_game_logs = pd.concat(all_game_logs_list, ignore_index=True)
             career_game_logs['GAME_DATE'] = pd.to_datetime(career_game_logs['GAME_DATE'])
-            career_game_logs = career_game_logs.sort_values(by='GAME_DATE').reset_index(drop=True)
+            career_game_logs = career_game_logs.sort_values(by='GAME_DATE', ascending=False).reset_index(drop=True) # Sort by date descending here
         else:
              st.info("No game logs found for this player's career.")
 
@@ -162,25 +162,72 @@ def calculate_recent_game_averages(career_game_logs_df):
     """
     recent_averages = {}
     if career_game_logs_df is None or career_game_logs_df.empty:
+        st.warning("calculate_recent_game_averages: Input DataFrame is None or empty.")
         return recent_averages
 
     # Ensure game logs are sorted by date in descending order (most recent first)
-    career_game_logs_df = career_game_logs_df.sort_values(by='GAME_DATE', ascending=False)
+    career_game_logs_df = career_game_logs_df.sort_values(by='GAME_DATE', ascending=False).copy() # Use .copy() to avoid SettingWithCopyWarning
 
-    valid_game_stats_columns = [col for col in stats_columns if col in career_game_logs_df.columns]
+    # Get a list of stats columns that are actually present in the DataFrame
+    actual_stats_columns = [col for col in stats_columns if col in career_game_logs_df.columns]
 
+    if not actual_stats_columns:
+        st.warning("calculate_recent_game_averages: No valid stats columns found in game logs.")
+        return recent_averages
+
+    # Calculate last 5 games average
     if len(career_game_logs_df) >= 5:
-        recent_averages['last_5_games_avg'] = career_game_logs_df.head(5)[valid_game_stats_columns].mean().to_frame(name='Last 5 Games Avg').T
+        try:
+            last_5_df = career_game_logs_df.head(5)
+            # Ensure we only select columns present in the subset DataFrame
+            cols_to_avg_5 = [col for col in actual_stats_columns if col in last_5_df.columns]
+            if not last_5_df.empty and cols_to_avg_5:
+                 recent_averages['last_5_games_avg'] = last_5_df[cols_to_avg_5].mean().to_frame(name='Last 5 Games Avg').T
+            else:
+                 st.warning("calculate_recent_game_averages: last_5_df is empty or has no valid stats columns.")
+        except Exception as e:
+            st.error(f"calculate_recent_game_averages: Error calculating last 5 games avg: {e}")
+
+
+    # Calculate last 10 games average
     if len(career_game_logs_df) >= 10:
-        recent_averages['last_10_games_avg'] = career_game_logs_df.head(10)[valid_game_logs_df.columns].mean().to_frame(name='Last 10 Games Avg').T
+        try:
+            last_10_df = career_game_logs_df.head(10)
+            # Ensure we only select columns present in the subset DataFrame
+            cols_to_avg_10 = [col for col in actual_stats_columns if col in last_10_df.columns]
+            if not last_10_df.empty and cols_to_avg_10:
+                recent_averages['last_10_games_avg'] = last_10_df[cols_to_avg_10].mean().to_frame(name='Last 10 Games Avg').T
+            else:
+                 st.warning("calculate_recent_game_averages: last_10_df is empty or has no valid stats columns.")
+        except Exception as e:
+            st.error(f"calculate_recent_game_averages: Error calculating last 10 games avg: {e}")
+
+
+    # Calculate last 20 games average
     if len(career_game_logs_df) >= 20:
-        recent_averages['last_20_games_avg'] = career_game_logs_df.head(20)[valid_game_logs_df.columns].mean().to_frame(name='Last 20 Games Avg').T
+        try:
+            last_20_df = career_game_logs_df.head(20)
+            # Ensure we only select columns present in the subset DataFrame
+            cols_to_avg_20 = [col for col in actual_stats_columns if col in last_20_df.columns]
+            if not last_20_df.empty and cols_to_avg_20:
+                recent_averages['last_20_games_avg'] = last_20_df[cols_to_avg_20].mean().to_frame(name='Last 20 Games Avg').T
+            else:
+                 st.warning("calculate_recent_game_averages: last_20_df is empty or has no valid stats columns.")
+        except Exception as e:
+            st.error(f"calculate_recent_game_averages: Error calculating last 20 games avg: {e}")
+
 
     # Get individual last 5 games
     if len(career_game_logs_df) >= 5:
          cols_to_display_individual = ['GAME_DATE', 'MATCHUP', 'SEASON_YEAR'] + [col for col in stats_columns if col in career_game_logs_df.columns]
-         recent_averages['last_5_games_individual'] = career_game_logs_df.head(5)[cols_to_display_individual].copy()
-         recent_averages['last_5_games_individual']['GAME_DATE'] = recent_averages['last_5_games_individual']['GAME_DATE'].dt.strftime('%Y-%m-%d')
+         # Ensure that cols_to_display_individual only contains columns present in the DataFrame before indexing
+         cols_to_display_individual = [col for col in cols_to_display_individual if col in career_game_logs_df.columns]
+         try:
+             recent_averages['last_5_games_individual'] = career_game_logs_df.head(5)[cols_to_display_individual].copy()
+             if 'GAME_DATE' in recent_averages['last_5_games_individual'].columns:
+                recent_averages['last_5_games_individual']['GAME_DATE'] = recent_averages['last_5_games_individual']['GAME_DATE'].dt.strftime('%Y-%m-%d')
+         except Exception as e:
+             st.error(f"calculate_recent_game_averages: Error getting individual last 5 games: {e}")
 
 
     return recent_averages
@@ -212,7 +259,7 @@ def predict_next_game_stats(career_game_logs_df, latest_season):
     valid_stats_columns_pred = [col for col in stats_columns if col in combined_data_for_prediction.columns]
 
     player_features_for_pred = {}
-    if not combined_data_for_prediction.empty:
+    if not combined_data_for_prediction.empty and valid_stats_columns_pred: # Check if data is not empty AND there are valid columns for prediction
         for col in valid_stats_columns_pred:
             # Calculate rolling averages and get the last value (most recent game)
             # Handle potential errors if not enough games for rolling window
@@ -237,7 +284,7 @@ def predict_next_game_stats(career_game_logs_df, latest_season):
         # Calculate season average for the player from the game logs (using the primary selected season)
         # Filter game logs for the primary selected season (latest season for simplicity)
         current_season_game_logs_for_avg = combined_data_for_prediction[combined_data_for_prediction['SEASON_YEAR'] == latest_season]
-        player_season_avg_pred = current_season_game_logs_for_avg[valid_stats_columns_pred].mean() if not current_season_game_logs_for_avg.empty else combined_data_for_prediction[valid_stats_columns_pred].mean() # Fallback to overall average if current season data is empty
+        player_season_avg_pred = current_season_game_logs_for_avg[valid_stats_columns_pred].mean() if not current_season_game_logs_for_avg.empty and valid_stats_columns_pred else combined_data_for_prediction[valid_stats_columns_pred].mean() if valid_stats_columns_pred else pd.Series() # Fallback with checks
 
 
         # Generate prediction using the simplified approach with calculated features
@@ -255,11 +302,12 @@ def predict_next_game_stats(career_game_logs_df, latest_season):
                stat_col_rolling_10 in player_features_for_pred and \
                stat_col_rolling_20 in player_features_for_pred:
 
+                # Safely get season average value
+                season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0
 
-                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else (player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0)
-                season_avg_val = player_season_avg_pred[stat_col] if stat_col in player_season_avg_pred.index and pd.notna(player_season_avg_pred[stat_col]) else 0 # Handle potential NaN season avg if no games played
+                recent_5_val = player_features_for_pred[stat_col_rolling_5] if pd.notna(player_features_for_pred[stat_col_rolling_5]) else season_avg_val
+                recent_10_val = player_features_for_pred[stat_col_rolling_10] if pd.notna(player_features_for_pred[stat_col_rolling_10]) else season_avg_val
+                recent_20_val = player_features_for_pred[stat_col_rolling_20] if pd.notna(player_features_for_pred[stat_col_rolling_20]) else season_avg_val
 
 
                 predicted_value = (0.4 * recent_5_val +
@@ -546,40 +594,7 @@ if player1_name_select: # Only proceed if a player is selected
 
                 st.dataframe(display_career_df.set_index('SEASON_ID')) # Display the career dataframe, using Season ID as index for better readability
 
-                # --- Add Season Trends Visualization (Line Charts) ---
-                st.subheader("Season Trends for Key Stats")
-                if not display_career_df.empty and 'SEASON_ID' in display_career_df.columns:
-                     # Select key stats for trend visualization
-                     key_trend_stats = ['PTS', 'AST', 'REB', 'FG3M', 'MIN'] # Added MIN as it's a key stat
-
-                     # Melt the DataFrame to long format for Altair
-                     melted_df = display_career_df.melt(
-                         id_vars='SEASON_ID',
-                         value_vars=[col for col in key_trend_stats if col in display_career_df.columns],
-                         var_name='Statistic',
-                         value_name='Average per Game'
-                     )
-
-                     if not melted_df.empty:
-                         # Convert SEASON_ID to string or ordered category for Altair axis
-                         melted_df['SEASON_ID'] = melted_df['SEASON_ID'].astype(str)
-
-                         chart = alt.Chart(melted_df).mark_line(point=True).encode(
-                             x=alt.X('SEASON_ID', title='Season', sort=None), # Sort by season string
-                             y=alt.Y('Average per Game', title='Average per Game'),
-                             color='Statistic', # Different line for each statistic
-                             tooltip=['SEASON_ID', 'Statistic', alt.Tooltip('Average per Game', format='.2f')]
-                         ).properties(
-                             title=f'{player1_name_select} Season Trends for Key Stats'
-                         ).interactive() # Enable zooming and panning
-
-                         st.altair_chart(chart, use_container_width=True)
-                     else:
-                         st.info("Data is not in the correct format for plotting season trends.")
-
-                else:
-                     st.info("Not enough season data available to plot trends.")
-
+                # Removed Season Trends Visualization (Altair Charts)
 
             with tab2: # This is now the Recent Games tab
                 st.subheader("Detailed Statistics")
@@ -612,19 +627,19 @@ if player1_name_select: # Only proceed if a player is selected
                     with st.expander("Last 5 Games Average"):
                         st.dataframe(recent_averages_data['last_5_games_avg'].round(2))
                 else:
-                     st.write("Last 5 Games Averages Not Available (not enough recent games).")
+                     st.write("Last 5 Games Averages Not Available (not enough recent games or data).")
 
                 if recent_averages_data.get('last_10_games_avg') is not None and not recent_averages_data['last_10_games_avg'].empty:
                     with st.expander("Last 10 Games Average"):
                         st.dataframe(recent_averages_data['last_10_games_avg'].round(2))
                 else:
-                     st.write("Last 10 Games Averages Not Available (not enough recent games).")
+                     st.write("Last 10 Games Averages Not Available (not enough recent games or data).")
 
                 if recent_averages_data.get('last_20_games_avg') is not None and not recent_averages_data['last_20_games_avg'].empty:
                     with st.expander("Last 20 Games Average"):
                         st.dataframe(recent_averages_data['last_20_games_avg'].round(2))
                 else:
-                     st.write("Last 20 Games Averages Not Available (not enough recent games).")
+                     st.write("Last 20 Games Averages Not Available (not enough recent games or data).")
 
                 # Display individual last 5 games stats
                 st.write("Last 5 Games (Individual Performance - Most Recent):")

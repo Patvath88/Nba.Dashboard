@@ -210,9 +210,11 @@ def bdl_last_n_games(player_id: int, season_year: int, n: int = 10) -> pd.DataFr
 # ───────────────────────────── Sidebar ──────────────────────────────
 def go_home():
     st.session_state.pop("selected_player", None)
-    try: st.query_params.clear()
-    except Exception: pass
-    st.experimental_rerun()
+try:
+    st.query_params.clear()
+except Exception:
+    pass
+st.rerun()
 
 with st.sidebar:
     st.button("🏠 Home Screen", on_click=go_home, type="primary", key="home_btn")

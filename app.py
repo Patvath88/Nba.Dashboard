@@ -1,20 +1,24 @@
-# app.py — Hot Shot Props | NBA Player Analytics (Free, One-Page)
+# app.py — Hot Shot Props | NBA Player Analytics (Favorites + Daily SMS)
 # - Uses nba_api (no paid key)
-# - Auto-refresh every 60s (no toggles)
-# - Single-page layout w/ header, headshot, metric rows, trend charts
-# - NBA.com-inspired dark theme
-# - Robust caching and small delays to be gentle on nba_api
-# - FIX: use scoreboardv2 (not scoreboardv3)
+# - One-page layout: header, headshot, trends, 4 metric rows
+# - Favorites (persisted), Twilio SMS, daily sender while app is open
+# - No auto-refresh; page reruns only when you interact/select
 
 import streamlit as st
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playercareerstats, playergamelogs, scoreboardv2
 import pandas as pd
 import numpy as np
-import re, time, datetime as dt
+import re, time, datetime as dt, threading, json, os
 import altair as alt
 import requests
 from io import BytesIO
+
+# Optional Twilio (only used if credentials are provided)
+try:
+    from twilio.rest import Client as TwilioClient
+except Exception:
+    TwilioClient = None  # we'll warn in UI if needed
 
 # ---------------------------------
 # Page config + global constants
@@ -25,12 +29,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Auto refresh every 60s (silent background reload)
-st.markdown("<meta http-equiv='refresh' content='60'>", unsafe_allow_html=True)
-
 STATS_COLS = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
-API_SLEEP = 0.25  # be gentle with endpoints
+API_SLEEP = 0.25            # be gentle with nba_api
+FAV_FILE = "favorites.json" # simple persistence on disk
 
 # ---------------------------------
 # Styling (NBA.com-ish)
@@ -39,7 +41,7 @@ st.markdown("""
 <style>
 :root {
   --bg: #0f1116; --panel:#121722; --ink:#e5e7eb; --muted:#9aa3b2;
-  --blue:#1d4ed8; --blue2:#1e3a8a; --line:#1f2a44;
+  --blue:#1d4ed8; --line:#1f2a44;
 }
 html, body, [data-testid="stAppViewContainer"] { background:var(--bg); color:var(--ink); }
 h1,h2,h3,h4 { color:#b3d1ff !important; letter-spacing:.2px; }
@@ -77,10 +79,7 @@ def extract_opp_from_matchup(matchup: str) -> str | None:
     return None
 
 def cdn_headshot(player_id: int, size: str = "1040x760") -> BytesIO | None:
-    """
-    Fetches NBA media day headshot from the official CDN.
-    Common sizes: 1040x760, 260x190
-    """
+    """NBA media day headshot from official CDN."""
     url = f"https://cdn.nba.com/headshots/nba/latest/{size}/{player_id}.png"
     try:
         r = requests.get(url, timeout=10)
@@ -89,6 +88,24 @@ def cdn_headshot(player_id: int, size: str = "1040x760") -> BytesIO | None:
     except Exception:
         pass
     return None
+
+# --- Favorites persistence ---
+def load_favorites() -> list[str]:
+    try:
+        if os.path.exists(FAV_FILE):
+            with open(FAV_FILE, "r") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+def save_favorites(favs: list[str]) -> None:
+    try:
+        with open(FAV_FILE, "w") as f:
+            json.dump(favs, f)
+    except Exception:
+        pass
 
 # ---------------------------------
 # Cached data
@@ -109,9 +126,7 @@ def get_all_teams():
 
 @st.cache_data(ttl=3600)
 def fetch_player(player_id: int):
-    """
-    Returns (career_by_season_df, career_logs_df)
-    """
+    """Returns (career_by_season_df, career_logs_df)"""
     try:
         time.sleep(API_SLEEP)
         career_stats = playercareerstats.PlayerCareerStats(player_id=player_id).get_data_frames()[0]
@@ -136,14 +151,11 @@ def fetch_player(player_id: int):
 
 @st.cache_data(ttl=600)
 def next_game_for_team(team_id: int, lookahead_days: int = 10):
-    """
-    Scans the next N days via ScoreboardV2 to find the next game for the team.
-    Returns dict like {'date': 'YYYY-MM-DD', 'opp_abbr': 'XXX', 'home': True/False} or None.
-    """
+    """Scan next days via ScoreboardV2 to find the team's next game."""
     if team_id is None:
         return None
     today = dt.date.today()
-    team_map = {t['id']: t for t in get_all_teams()}  # id -> team dict (includes abbreviation)
+    team_map = {t['id']: t for t in get_all_teams()}  # id -> team dict
     for d in range(lookahead_days):
         day = today + dt.timedelta(days=d)
         try:
@@ -151,14 +163,9 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
             # ScoreboardV2 expects 'MM/DD/YYYY'
             sb = scoreboardv2.ScoreboardV2(game_date=day.strftime("%m/%d/%Y"))
             frames = sb.get_data_frames()
-            game_header = None
-            for f in frames:
-                if {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(set(f.columns)):
-                    game_header = f
-                    break
+            game_header = next((f for f in frames if {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns)), None)
             if game_header is None or game_header.empty:
                 continue
-
             for _, row in game_header.iterrows():
                 home_id = int(row.get('HOME_TEAM_ID', -1))
                 away_id = int(row.get('VISITOR_TEAM_ID', -1))
@@ -189,7 +196,7 @@ def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
     cols = safe_cols(df, STATS_COLS)
     if not cols: return None
 
-    # Season avg (prefer matching season label in logs['SEASON_YEAR'])
+    # Season avg
     season_avg = pd.Series(dtype=float)
     if 'SEASON_YEAR' in df.columns:
         cur = df[df['SEASON_YEAR'] == season_label]
@@ -213,165 +220,299 @@ def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
     return preds
 
 # ---------------------------------
-# Sidebar — Player Selection
+# SMS sending
+# ---------------------------------
+def format_prediction_sms(player_name: str, team_abbr: str, next_game_info: str, preds: dict) -> str:
+    parts = [
+        f"Hot Shot Props — {player_name} ({team_abbr})",
+        f"Next: {next_game_info}",
+        f"Pred: PTS {preds.get('PTS','-')}, REB {preds.get('REB','-')}, AST {preds.get('AST','-')}, 3PM {preds.get('FG3M','-')}"
+    ]
+    return " | ".join(parts)
+
+def send_sms(body: str, to_numbers: list[str], from_number: str, sid: str, token: str) -> dict:
+    results = {"sent":0,"errors":[]}
+    if TwilioClient is None:
+        results["errors"].append("Twilio SDK not installed. Run: pip install twilio")
+        return results
+    try:
+        client = TwilioClient(sid, token)
+        for to in to_numbers:
+            try:
+                client.messages.create(body=body, from_=from_number, to=to)
+                results["sent"] += 1
+            except Exception as e:
+                results["errors"].append(f"{to}: {e}")
+    except Exception as e:
+        results["errors"].append(str(e))
+    return results
+
+# ---------------------------------
+# Sidebar — Player selection, Favorites, SMS
 # ---------------------------------
 with st.sidebar:
     st.header("Select Player")
     act = get_active_players()
     all_t = get_all_teams()
     name_to_id = {p['full_name']: p['id'] for p in act}
+    id_to_name = {v:k for k,v in name_to_id.items()}
     names_sorted = sorted(name_to_id.keys())
 
     q = st.text_input("Search", "", help="Filter the list by name")
     filtered = [n for n in names_sorted if q.lower() in n.lower()] if q else names_sorted
     player_name = st.selectbox("Player", filtered, index=None, placeholder="Choose a player")
 
+    st.markdown("---")
+    st.subheader("⭐ Favorites")
+    if "favorites" not in st.session_state:
+        st.session_state.favorites = load_favorites()
+
+    if player_name and st.button(f"➕ Add {player_name}"):
+        if player_name not in st.session_state.favorites:
+            st.session_state.favorites.append(player_name)
+            save_favorites(st.session_state.favorites)
+            st.success(f"Added {player_name} to favorites.")
+
+    if st.session_state.favorites:
+        to_remove = st.multiselect("Remove from favorites", st.session_state.favorites)
+        if to_remove and st.button("Remove selected"):
+            st.session_state.favorites = [x for x in st.session_state.favorites if x not in to_remove]
+            save_favorites(st.session_state.favorites)
+            st.info("Updated favorites.")
+        st.caption("Favorites: " + ", ".join(st.session_state.favorites))
+    else:
+        st.caption("No favorites yet.")
+
+    st.markdown("---")
+    st.subheader("📲 SMS Notifications")
+    tw_sid   = st.text_input("Twilio Account SID", type="password")
+    tw_token = st.text_input("Twilio Auth Token", type="password")
+    tw_from  = st.text_input("From Number (+1xxxxxxxxxx)")
+    tw_to    = st.text_input("To Number(s), comma-separated", value="")
+    sms_time = st.time_input("Daily send time (server time)", value=dt.time(hour=10, minute=0))
+    send_now = st.button("Send SMS Now for Favorites")
+
 # ---------------------------------
-# Hero/Header
+# Hero/Header strip
 # ---------------------------------
 st.markdown("""
 <div class="card" style="margin-bottom: 12px;">
   <div style="display:flex; align-items:center; justify-content: space-between;">
     <div>
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
-      <div class="badge">Free Beta • All analytics unlocked • Auto-refresh 60s</div>
+      <div class="badge">Favorites + Daily SMS • No auto-refresh</div>
     </div>
-    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trend sparks • Weighted predictions • One-page UX</div>
+    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted predictions • One-page UX</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
 if not player_name:
     st.info("Pick a player from the sidebar to load their dashboard.")
-    st.stop()
+    # still show scheduler controls; nothing else to render
+else:
+    # ---- Load selected player data
+    player_id = name_to_id[player_name]
+    career_df, logs_df = fetch_player(player_id)
 
-player_id = name_to_id[player_name]
-career_df, logs_df = fetch_player(player_id)
+    if career_df.empty:
+        st.warning("No career data available for this player.")
+        st.stop()
 
-if career_df.empty:
-    st.warning("No career data available for this player.")
-    st.stop()
+    # Determine current team & latest season
+    team_abbr = "TBD"
+    if 'TEAM_ABBREVIATION' in career_df.columns and not career_df.empty:
+        team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] or team_abbr
 
-# Determine current team & latest season
-team_abbr = "TBD"
-if 'TEAM_ABBREVIATION' in career_df.columns and not career_df.empty:
-    team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] or team_abbr
+    latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
 
-latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
-
-# Last game (most recent in logs)
-last_game_info = "N/A"
-last_game_row = None
-if logs_df is not None and not logs_df.empty:
-    last_game_row = logs_df.iloc[0]
-    lg_date = pd.to_datetime(last_game_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in last_game_row else "—"
-    lg_opp = extract_opp_from_matchup(last_game_row.get('MATCHUP', '')) or "TBD"
-    last_game_info = f"{lg_date} vs {lg_opp}"
-
-# Next game (scan schedule using ScoreboardV2)
-team_id_map = {t['abbreviation']: t['id'] for t in all_t}
-team_id = team_id_map.get(team_abbr, None)
-ng = next_game_for_team(team_id) if team_id is not None else None
-next_game_info = f"{ng['date']} vs {ng['opp_abbr']}" if ng else "TBD"
-
-# ---------------------------------
-# Top header strip (4 items)
-# ---------------------------------
-h1, h2, h3, h4 = st.columns([1.3, 0.8, 1.2, 1.2])
-with h1: st.metric("Player", player_name)
-with h2: st.metric("Team", team_abbr)
-with h3: st.metric("Most Recent Game", last_game_info)
-with h4: st.metric("Next Game", next_game_info)
-
-# ---------------------------------
-# Headshot + Trend sparks row
-# ---------------------------------
-c_img, c_trends = st.columns([0.28, 0.72])
-with c_img:
-    img_bytes = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
-    if img_bytes:
-        st.image(img_bytes, use_container_width=True, caption=f"{player_name} — media day headshot")
-    else:
-        st.info("Headshot not available.")
-
-with c_trends:
+    # Last game (most recent in logs)
+    last_game_info = "N/A"
+    last_game_row = None
     if logs_df is not None and not logs_df.empty:
-        # Build compact sparkline dataset for last 10 games
-        N = min(10, len(logs_df))
-        view = logs_df.head(N).copy()
-        view = view.iloc[::-1]  # chronological left->right
-        trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
-        if trend_cols:
-            trend_df = view[['GAME_DATE'] + trend_cols].copy()
-            trend_df['GAME_DATE'] = pd.to_datetime(trend_df['GAME_DATE'])
-            for stat in trend_cols:
-                ch = alt.Chart(trend_df).mark_line(point=True).encode(
-                    x=alt.X('GAME_DATE:T', title=''),
-                    y=alt.Y(f'{stat}:Q', title=stat),
-                    tooltip=[alt.Tooltip('GAME_DATE:T', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)]
-                ).properties(height=110)
-                st.altair_chart(ch, use_container_width=True)
+        last_game_row = logs_df.iloc[0]
+        lg_date = pd.to_datetime(last_game_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in last_game_row else "—"
+        lg_opp = extract_opp_from_matchup(last_game_row.get('MATCHUP', '')) or "TBD"
+        last_game_info = f"{lg_date} vs {lg_opp}"
+
+    # Next game (via ScoreboardV2)
+    team_id_map = {t['abbreviation']: t['id'] for t in all_t}
+    team_id = team_id_map.get(team_abbr, None)
+    ng = next_game_for_team(team_id) if team_id is not None else None
+    next_game_info = f"{ng['date']} vs {ng['opp_abbr']}" if ng else "TBD"
+
+    # ---- Header strip (4 items)
+    h1, h2, h3, h4 = st.columns([1.3, 0.8, 1.2, 1.2])
+    with h1: st.metric("Player", player_name)
+    with h2: st.metric("Team", team_abbr)
+    with h3: st.metric("Most Recent Game", last_game_info)
+    with h4: st.metric("Next Game", next_game_info)
+
+    # ---- Headshot + Trends
+    c_img, c_trends = st.columns([0.28, 0.72])
+    with c_img:
+        img_bytes = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
+        if img_bytes:
+            st.image(img_bytes, use_container_width=True, caption=f"{player_name} — media day headshot")
         else:
-            st.info("No trend stats available.")
-    else:
-        st.info("No recent games to chart.")
+            st.info("Headshot not available.")
+
+    with c_trends:
+        if logs_df is not None and not logs_df.empty:
+            N = min(10, len(logs_df))
+            view = logs_df.head(N).copy().iloc[::-1]  # chronological
+            trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
+            if trend_cols:
+                trend_df = view[['GAME_DATE'] + trend_cols].copy()
+                trend_df['GAME_DATE'] = pd.to_datetime(trend_df['GAME_DATE'])
+                for stat in trend_cols:
+                    ch = alt.Chart(trend_df).mark_line(point=True).encode(
+                        x=alt.X('GAME_DATE:T', title=''),
+                        y=alt.Y(f'{stat}:Q', title=stat),
+                        tooltip=[alt.Tooltip('GAME_DATE:T', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)]
+                    ).properties(height=110)
+                    st.altair_chart(ch, use_container_width=True)
+            else:
+                st.info("No trend stats available.")
+        else:
+            st.info("No recent games to chart.")
+
+    # ---- Metric Rows
+    def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
+        st.markdown(f"#### {title}")
+        if data is None:
+            data = {}
+        if isinstance(data, pd.DataFrame):
+            row = data.iloc[0].to_dict() if not data.empty else {}
+        elif isinstance(data, pd.Series):
+            row = data.to_dict()
+        else:
+            row = dict(data)
+
+        def fmt(v):
+            return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+
+        cols = st.columns(5)
+        with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
+        with cols[1]: st.metric("REB", fmt(row.get('REB')))
+        with cols[2]: st.metric("AST", fmt(row.get('AST')))
+        with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
+        with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
+
+    # Row 1: Current season per-game
+    season_row = None
+    if not career_df.empty:
+        cur = career_df.iloc[-1]
+        gp = cur.get('GP', 0)
+        if gp and gp > 0:
+            season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
+    metric_row("Current Season Averages", season_row)
+
+    # Row 2: Last game
+    last_game_stats = {c: last_game_row.get(c, np.nan) for c in STATS_COLS} if last_game_row is not None else None
+    metric_row("Last Game Stats", last_game_stats)
+
+    # Row 3: Last 5 avg
+    ra = recent_averages(logs_df)
+    last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
+    metric_row("Last 5 Games Averages", last5)
+
+    # Row 4: Predicted next game
+    preds = predict_next(logs_df, latest_season)
+    metric_row("Predicted Next Game (Model)", preds)
 
 # ---------------------------------
-# Metric Rows
+# SMS actions (manual & daily)
 # ---------------------------------
-def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
-    st.markdown(f"#### {title}")
-    if data is None:
-        data = {}
-    if isinstance(data, pd.DataFrame):
-        row = data.iloc[0].to_dict() if not data.empty else {}
-    elif isinstance(data, pd.Series):
-        row = data.to_dict()
+def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
+    """Build one SMS line per favorite with prediction + next game."""
+    if not fav_names:
+        return []
+    all_teams = get_all_teams()
+    abbr_to_id = {t['abbreviation']: t['id'] for t in all_teams}
+    lines = []
+    for name in fav_names:
+        pid = name_to_id.get(name)
+        if not pid: continue
+        cdf, ldf = fetch_player(pid)
+        if cdf.empty: continue
+        team_abbr = cdf['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in cdf.columns else "TBD"
+        latest_season = str(cdf['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in cdf.columns else "N/A"
+        preds = predict_next(ldf, latest_season) or {}
+        tid = abbr_to_id.get(team_abbr)
+        ng = next_game_for_team(tid) if tid else None
+        next_game_info = f"{ng['date']} vs {ng['opp_abbr']}" if ng else "TBD"
+        lines.append(format_prediction_sms(name, team_abbr, next_game_info, preds))
+    return lines
+
+# Manual send
+if send_now:
+    to_numbers = [n.strip() for n in (tw_to or "").split(",") if n.strip()]
+    if not (tw_sid and tw_token and tw_from and to_numbers):
+        st.error("Enter Twilio SID, token, from number, and at least one destination number.")
+    elif not st.session_state.get("favorites"):
+        st.error("Add at least one favorite player first.")
     else:
-        row = dict(data)
+        lines = collect_favorite_predictions(st.session_state.favorites)
+        if not lines:
+            st.warning("No predictions available to send.")
+        else:
+            body = "🟦 Hot Shot Props — Daily Predictions\n" + "\n".join(lines)
+            result = send_sms(body, to_numbers, tw_from, tw_sid, tw_token)
+            if result["sent"] > 0:
+                st.success(f"Sent {result['sent']} SMS.")
+            if result["errors"]:
+                st.warning("Errors: " + "; ".join(result["errors"]))
 
-    def fmt(v): 
-        return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+# Lightweight daily scheduler (runs while the app tab is open)
+def _daily_sms_loop(schedule_time: dt.time):
+    """Background loop: checks time every 30s; sends once per day."""
+    while st.session_state.get("_daily_sms_enabled", False):
+        now = dt.datetime.now()
+        last_sent_day = st.session_state.get("_last_sms_day")
+        # Send at or after scheduled time if not yet sent today
+        if (last_sent_day != now.date()) and (now.time() >= schedule_time):
+            # Only send if creds + favorites exist
+            favs = st.session_state.get("favorites", [])
+            cred_ok = bool(tw_sid and tw_token and tw_from and (tw_to or "").strip())
+            if favs and cred_ok:
+                to_numbers = [n.strip() for n in tw_to.split(",") if n.strip()]
+                lines = collect_favorite_predictions(favs)
+                if lines:
+                    body = "🟦 Hot Shot Props — Daily Predictions\n" + "\n".join(lines)
+                    send_sms(body, to_numbers, tw_from, tw_sid, tw_token)
+                    st.session_state["_last_sms_day"] = now.date()
+        time.sleep(30)
 
-    cols = st.columns(5)
-    with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
-    with cols[1]: st.metric("REB", fmt(row.get('REB')))
-    with cols[2]: st.metric("AST", fmt(row.get('AST')))
-    with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
-    with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
-
-# Row 1: Current season averages (per-game)
-season_row = None
-if not career_df.empty:
-    cur = career_df.iloc[-1]  # latest season row
-    gp = cur.get('GP', 0)
-    if gp and gp > 0:
-        season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
-metric_row("Current Season Averages", season_row)
-
-# Row 2: Last game stats
-last_game_stats = None
-if last_game_row is not None:
-    last_game_stats = {c: last_game_row.get(c, np.nan) for c in STATS_COLS}
-metric_row("Last Game Stats", last_game_stats)
-
-# Row 3: Last 5 games averages
-ra = recent_averages(logs_df)
-last5 = None
-if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty:
-    last5 = ra['Last 5 Avg'].iloc[0].to_dict()
-metric_row("Last 5 Games Averages", last5)
-
-# Row 4: Prediction for next game
-preds = predict_next(logs_df, latest_season)
-metric_row("Predicted Next Game (Model)", preds)
+# Controls to toggle the background sender
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("⏰ Daily Sender (runs while app is open)")
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("Enable Daily SMS"):
+            if not (tw_sid and tw_token and tw_from and (tw_to or "").strip()):
+                st.error("Enter Twilio credentials and phone numbers first.")
+            elif not st.session_state.get("favorites"):
+                st.error("Add at least one favorite player first.")
+            else:
+                if not st.session_state.get("_daily_sms_enabled"):
+                    st.session_state["_daily_sms_enabled"] = True
+                    st.session_state["_last_sms_day"] = None
+                    t = threading.Thread(target=_daily_sms_loop, args=(sms_time,), daemon=True)
+                    t.start()
+                st.success("Daily SMS enabled (this tab must remain open).")
+    with colB:
+        if st.button("Disable Daily SMS"):
+            st.session_state["_daily_sms_enabled"] = False
+            st.info("Daily SMS disabled.")
 
 # ---------------------------------
 # Footer
 # ---------------------------------
 st.markdown("""
 <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; opacity:.9;">
-  <div class="badge">Early Access • One-page pro UI</div>
+  <div class="badge">Favorites • Daily SMS while app is open</div>
   <div style="font-size:.85rem; color:#9aa3b2;">Hot Shot Props © — Built with nba_api & Streamlit</div>
 </div>
 """, unsafe_allow_html=True)

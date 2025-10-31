@@ -1,11 +1,9 @@
-# app.py — Hot Shot Props | NBA Player Analytics
-# - Home: 2025–26 per-game leaders (PTS/REB/AST/3PM) with headshots + links
-# - Player: headshot, season/last-5 metrics, NEXT GAME prediction with clear label:
-#           "(Machine Learning)" when a background Ridge model is ready,
-#           otherwise "(Weighted Avg)" fallback (WMA)
-# - Background ML: per-player ad-hoc Ridge model auto-trains in a background thread
-#                  the first time you open a player page (non-blocking)
-# - Robust caching, short retries, width='stretch' (no deprecated args), no balldontlie
+# app.py — Hot Shot Props | NBA Player Analytics (Force-ML Edition)
+# - Home: 2025–26 PER-GAME league leaders (PTS/REB/AST/3PM) with headshots + links
+# - Player page: headshot, season/last-5 metrics, NEXT GAME prediction using **Machine Learning only**
+# - If ML cannot be produced (too few games or sklearn missing), show a clear message (no WMA fallback)
+# - Short retries, caching, and width='stretch' across the UI
+# - No balldontlie anywhere
 
 import time
 import math
@@ -19,7 +17,7 @@ import streamlit as st
 from nba_api.stats.static import players as static_players, teams as static_teams
 from nba_api.stats.endpoints import leagueleaders, playergamelogs
 
-# -------- Optional ML deps (safe fallback if not installed) --------
+# -------- ML deps (required now) --------
 try:
     from sklearn.linear_model import Ridge
     SKLEARN_OK = True
@@ -46,6 +44,7 @@ hr{border:0;border-top:1px solid var(--line);margin:.35rem 0 1rem;}
 [data-testid="stMetric"]{background:#121212;border:1px solid #1d1d1d;border-radius:12px;padding:12px;}
 [data-testid="stMetric"] label{color:#ffbcbc}
 [data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#fff3f3}
+.stButton>button{background:#ff6b6b;border:none;color:#fff;border-radius:10px;padding:.5rem .9rem;font-weight:700;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,10 +57,9 @@ def season_str_today() -> str:
 # -------------- Session state init ------------
 def _init_state():
     if "ml_models" not in st.session_state:
-        # ml_models[player_id] = {"model": Ridge or None, "features": [cols], "trained_at": ts}
+        # ml_models[player_id] = {"models": {tgt:Ridge}, "features":[cols], "trained_at": ts}
         st.session_state["ml_models"] = {}
     if "active_training" not in st.session_state:
-        # active_training holds player_ids currently training in background to avoid duplicate threads
         st.session_state["active_training"] = set()
 _init_state()
 
@@ -169,28 +167,7 @@ def player_logs(player_id: int) -> pd.DataFrame:
             time.sleep(0.6)
     raise last_exc
 
-# -------------- WMA fallback ------------------
-def wma(series: pd.Series, window: int = 8) -> Optional[float]:
-    series = series.dropna().head(window)
-    if series.empty:
-        return None
-    weights = pd.Series(range(len(series), 0, -1), index=series.index)
-    val = (series * weights).sum() / weights.sum()
-    try:
-        return float(val)
-    except Exception:
-        return None
-
-def predict_wma(gl: pd.DataFrame) -> dict:
-    out = {}
-    for col in ("PTS","REB","AST","FG3M"):
-        if col in gl.columns:
-            out[col] = wma(gl[col], window=8)
-        else:
-            out[col] = None
-    return out
-
-# -------------- Background ML -----------------
+# -------------- ML feature engineering --------
 ML_TARGETS = ("PTS","REB","AST","FG3M")
 BASE_FEATURES = ("MIN","FGA","FGM","FG3A","FG3M","FTA","FTM","TOV","REB","AST","PTS")
 
@@ -205,24 +182,21 @@ def _build_feature_frame(gl: pd.DataFrame) -> Optional[pd.DataFrame]:
     for win in (3,5,10):
         for c in use_cols:
             df[f"{c}_r{win}"] = df[c].rolling(win, min_periods=1).mean().shift(1)
-    # drop rows with NaNs created by shift (need at least 1 prior)
     df = df.dropna().reset_index(drop=True)
     return df
 
-def _train_model_for_player(pid: int, gl: pd.DataFrame):
-    """Trains a separate Ridge model per target (simple multi-output style), stores in session."""
+def _train_model_for_player(pid: int, gl: pd.DataFrame) -> bool:
+    """Train a separate Ridge model per target; return True if at least one model trained."""
     if not SKLEARN_OK:
-        return  # nothing to do
+        return False
     featdf = _build_feature_frame(gl)
     if featdf is None or len(featdf) < 15:
-        return
-    # features
+        return False
     X_cols = [c for c in featdf.columns if c.endswith(("_r3","_r5","_r10"))]
     if not X_cols:
-        return
+        return False
     X = featdf[X_cols].astype(float)
     model_map = {}
-    # Train a Ridge per target (keeps it simple & robust)
     for tgt in ML_TARGETS:
         if tgt not in featdf.columns:
             continue
@@ -234,70 +208,73 @@ def _train_model_for_player(pid: int, gl: pd.DataFrame):
         except Exception:
             continue
     if not model_map:
-        return
+        return False
     st.session_state["ml_models"][pid] = {
         "models": model_map,
         "features": X_cols,
         "trained_at": time.time()
     }
+    return True
 
 def _ensure_training_thread(pid: int, gl: pd.DataFrame):
-    """Launch training thread once per player if not already training."""
+    """Kick off background training if not trained recently."""
     if not SKLEARN_OK:
         return
     if pid in st.session_state["active_training"]:
         return
-    # if we already have a trained model from last 6 hours, skip
     meta = st.session_state["ml_models"].get(pid)
     if meta and (time.time() - meta.get("trained_at", 0)) < 6*60*60:
         return
-    # mark and launch
     st.session_state["active_training"].add(pid)
     def _runner():
         try:
             _train_model_for_player(pid, gl)
         finally:
-            # always remove the flag even on error
             st.session_state["active_training"].discard(pid)
-    t = threading.Thread(target=_runner, daemon=True)
-    t.start()
+    threading.Thread(target=_runner, daemon=True).start()
 
-def predict_with_ml_if_ready(pid: int, gl: pd.DataFrame) -> Tuple[dict, bool]:
-    """
-    If a trained model exists, use it; else return WMA. Returns (preds, used_ml_flag).
-    """
+def _predict_with_ml(pid: int, gl: pd.DataFrame) -> Dict[str, Optional[float]]:
+    """Require ML; attempt quick sync train if not ready; raise ValueError if impossible."""
+    if not SKLEARN_OK:
+        raise ValueError("Machine Learning backend unavailable (scikit-learn not installed).")
     meta = st.session_state["ml_models"].get(pid)
-    if not meta or "models" not in meta or "features" not in meta:
-        # not ready; fallback
-        return predict_wma(gl), False
+    if meta is None or "models" not in meta or "features" not in meta:
+        # Try a quick synchronous train (fast path) if background not done yet
+        ok = _train_model_for_player(pid, gl)
+        if not ok:
+            raise ValueError("Not enough recent data to fit an ML model yet.")
+        meta = st.session_state["ml_models"][pid]
 
     X_cols = meta["features"]
-    # Build one-row feature vector using latest rolling means
-    # We need the same engineered features as training
     featdf = _build_feature_frame(gl)
     if featdf is None or featdf.empty:
-        return predict_wma(gl), False
+        raise ValueError("Not enough engineered feature rows for ML prediction.")
     last_row = featdf.iloc[[-1]][X_cols].astype(float)
+
     preds = {}
-    used = False
-    for tgt, mdl in meta["models"].items():
+    for tgt in ML_TARGETS:
+        mdl = meta["models"].get(tgt)
+        if mdl is None:
+            continue
         try:
             preds[tgt] = float(mdl.predict(last_row)[0])
-            used = True
         except Exception:
             preds[tgt] = None
-    # If nothing predicted, fallback
-    if not used:
-        return predict_wma(gl), False
-    # Return predictions for all keys in ML_TARGETS (fill missing from WMA)
-    for tgt in ML_TARGETS:
-        if tgt not in preds or preds[tgt] is None or (isinstance(preds[tgt], float) and math.isnan(preds[tgt])):
-            preds[tgt] = predict_wma(gl).get(tgt)
-    return preds, True
 
-# -------------- Sidebar search ----------------
-def sidebar_search():
-    st.sidebar.header("Select Player")
+    if not preds:
+        raise ValueError("ML model did not yield predictions.")
+    return preds
+
+# -------------- Sidebar & nav -----------------
+def sidebar_nav():
+    st.sidebar.header("Hot Shot Props")
+    # Home button
+    if st.sidebar.button("🏠 Home"):
+        st.query_params.clear()
+        st.rerun()
+
+    # Search
+    st.sidebar.subheader("Select Player")
     _, by_name = _players_index()
     name = st.sidebar.text_input("Search player", value="", placeholder="Type a player's full name…")
     if name:
@@ -331,7 +308,7 @@ def page_home():
 def _metric_row(title: str, values: Dict[str, Optional[float]]):
     st.subheader(title)
     c1, c2, c3, c4 = st.columns(4)
-    def _fmt(v): return f"{v:.2f}" if isinstance(v,(int,float)) and not (v is None or math.isnan(v)) else "—"
+    def _fmt(v): return f"{v:.2f}" if isinstance(v,(int,float)) and v is not None and not math.isnan(v) else "—"
     with c1: st.metric("PTS", _fmt(values.get("PTS")))
     with c2: st.metric("REB", _fmt(values.get("REB")))
     with c3: st.metric("AST", _fmt(values.get("AST")))
@@ -343,7 +320,6 @@ def page_player(player_id: int):
     pname = pmeta.get("full_name", f"Player {player_id}")
     st.header(pname)
 
-    # Load logs (and kick off background training)
     with st.spinner("Loading games…"):
         try:
             gl = player_logs(player_id)
@@ -351,10 +327,9 @@ def page_player(player_id: int):
             st.error(f"Failed to load from nba_api (likely a temporary block). Try again in a minute.\n\n{e}")
             return
 
-    # Trigger background ML training (non-blocking)
+    # Always start/refresh a background training thread (keeps models fresh)
     _ensure_training_thread(player_id, gl)
 
-    # Layout
     c1, c2 = st.columns([1,3])
     with c1:
         st.image(headshot_url(player_id), width=260)
@@ -375,17 +350,24 @@ def page_player(player_id: int):
         lg = gl.loc[0]
         for k in ("PTS","REB","AST","FG3M","MIN"):
             if k in gl.columns:
-                last_game_vals[k] = float(lg.get(k))
+                try:
+                    last_game_vals[k] = float(lg.get(k))
+                except Exception:
+                    last_game_vals[k] = None
     _metric_row("Last Game", last_game_vals)
 
     # Last 5 averages
     last5_vals = gl.head(5)[present].mean(numeric_only=True).to_dict()
     _metric_row("Last 5 Games Averages", last5_vals)
 
-    # Prediction: ML if ready, else WMA
-    preds, used_ml = predict_with_ml_if_ready(player_id, gl)
-    label = "Predicted Next Game (Machine Learning)" if used_ml else "Predicted Next Game (Weighted Avg)"
-    _metric_row(label, preds)
+    # ML Prediction (required)
+    st.subheader("Predicted Next Game (Machine Learning)")
+    try:
+        preds = _predict_with_ml(player_id, gl)
+        _metric_row("Predicted Next Game (Machine Learning)", preds)
+        st.caption("Trained ad-hoc Ridge regression on rolling features (r3/r5/r10).")
+    except ValueError as e:
+        st.warning(f"ML prediction not available: {e}")
 
     # Table: last 10
     st.subheader("Breakdown (Last 10 Games)")
@@ -395,7 +377,7 @@ def page_player(player_id: int):
 
 # -------------- Main router -------------------
 def main():
-    sidebar_search()
+    sidebar_nav()
     q = st.query_params
     pid = q.get("player_id", [None])
     if isinstance(pid, list):

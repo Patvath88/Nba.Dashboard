@@ -7,7 +7,7 @@ import numpy as np
 import time # Import time for delays
 # import plotly.graph_objects as go # Removed Plotly
 # import requests # Removed requests for fetching logo image
-from PIL import Image # Reintroduce Pillow for handling logo image
+# from PIL import Image # Removed Pillow for handling logo image
 # from io import BytesIO # Removed BytesBytesIO for handling logo image bytes
 # import altair as alt # Removed Altair
 
@@ -17,28 +17,6 @@ stats_columns = ['MIN', 'FGM', 'FGA', 'FG3M', 'FG3A', 'FTM', 'FTA', 'OREB', 'DRE
 
 # Define prediction targets globally
 prediction_targets = ['PTS', 'AST', 'REB', 'FG3M']
-
-# Function to get NBA logo image (Using local file path now)
-# @st.cache_data # Cache this data
-# def get_nba_logo_image():
-#     """
-#     Attempts to get the NBA logo image from a common source.
-#     Fetching code removed due to reliability issues.
-#     """
-#     # Example URL for NBA logo (this might need adjustment based on actual sources)
-#     # logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/NBA_Logo.svg/800px-NBA_Logo.svg.png" # Example URL
-
-#     # try:
-#     #     response = requests.get(logo_url)
-#     #     if response.status_code == 200:
-#     #         return Image.open(BytesIO(response.content))
-#     #     else:
-#     #         st.warning(f"Could not fetch NBA logo image from {logo_url}. Status code: {response.status_code}")
-#     #         return None
-#     # except Exception as e:
-#     #     st.warning(f"Error fetching NBA logo image: {e}")
-#     return None # Return None as image fetching is removed
-
 
 # Fetch data for a player (Career Stats and Career Game Logs)
 @st.cache_data(ttl=3600) # Cache for 1 hour
@@ -325,12 +303,15 @@ def create_stat_bar(label, value, max_value):
 
 st.set_page_config(layout="wide", page_title="NBA Player Stats Dashboard", initial_sidebar_state="expanded") # Set wide layout, page title, and expanded sidebar
 
-# Add some basic styling using markdown for black and blue theme
+# Add some basic styling using markdown for black and blue theme and refined typography
 st.markdown("""
 <style>
+    body {
+        font-family: 'Segoe UI', Roboto, Arial, sans-serif; /* Professional sans-serif font */
+    }
     .main {
-        background-color: #000000; /* Black background */
-        color: #ffffff; /* White text for readability */
+        background-color: #121212; /* Darker black background */
+        color: #e0e0e0; /* Light gray text for readability */
     }
     .stTabs [data-baseweb="tab-list"] {
         gap: 48px;
@@ -338,25 +319,27 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         height: 50px;
         white-space: pre-wrap;
-        background-color: #0d47a1; /* Darker blue for inactive tabs */
-        color: #ffffff; /* White text */
+        background-color: #1a237e; /* Deep blue for inactive tabs */
+        color: #e0e0e0; /* Light gray text */
         border-radius: 4px 4px 0px 0px;
         gap: 4px;
         padding-top: 10px;
         padding-bottom: 10px;
         margin: 0;
         cursor: pointer;
+        font-weight: bold; /* Make tab text bold */
     }
     .stTabs [aria-selected="true"] {
-        background-color: #1e88e5; /* Brighter blue for active tab */
+        background-color: #2962ff; /* Brighter blue for active tab */
         color: white;
     }
     .stMarkdown h1, h2, h3 {
-        color: #1e88e5; /* Blue headings */
+        color: #42a5f5; /* Lighter blue headings */
+        font-weight: 600; /* Slightly bolder headings */
     }
     .stDataFrame {
-        font-size: 0.9em;
-        color: #333333; /* Dark text for table content */
+        font-size: 0.95em; /* Slightly larger font for tables */
+        color: #212121; /* Dark text for table content */
     }
      .stDataFrame tbody tr {
         background-color: #e3f2fd; /* Light blue for table rows */
@@ -365,71 +348,83 @@ st.markdown("""
         background-color: #bbdefb; /* Slightly darker blue for odd rows */
      }
      .stDataFrame th {
-         background-color: #0d47a1; /* Dark blue for table headers */
+         background-color: #1a237e; /* Deep blue for table headers */
          color: white;
+         font-weight: bold; /* Bold table headers */
+     }
+     .stDataFrame td {
+         padding: 8px; /* Add padding to table cells */
      }
     /* Style for stat bars (using st.progress) */
     .stProgress > div > div > div > div {
-        background-color: #1e88e5; /* Blue color for bars */
+        background-color: #2962ff; /* Blue color for bars */
+    }
+    /* Style for text input and selectbox labels */
+    .stTextInput label, .stSelectbox label {
+        font-weight: bold;
+        color: #e0e0e0; /* Light gray color for labels */
+    }
+    /* Style for buttons */
+    .stButton > button {
+        background-color: #2962ff;
+        color: white;
+        font-weight: bold;
+        border-radius: 4px;
+        padding: 10px 20px;
+        border: none;
+        cursor: pointer;
+    }
+    .stButton > button:hover {
+        background-color: #42a5f5;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-# Layout for Title and Logo
-col_title, col_logo = st.columns([3, 1])
-
-with col_title:
-    st.title("NBA Player Stats Dashboard")
-
-with col_logo:
-    # Display NBA logo from the provided local file path
-    try:
-        # Use the relative path assuming the image is in the same directory as the app file
-        local_logo_path = 'NBA-Logo-2017.png'
-        logo_image = Image.open(local_logo_path)
-        st.image(logo_image, width=100) # Display logo with a fixed width
-    except FileNotFoundError:
-        st.warning(f"NBA logo image file '{local_logo_path}' not found. Please ensure the image file is in the same directory as your app script on Streamlit Cloud.")
-    except Exception as e:
-        st.warning(f"Error displaying local NBA logo: {e}")
+# Removed logo column and related code
+st.title("NBA Player Stats Dashboard")
 
 
-# Get list of active players for dropdowns
-@st.cache_data # Cache this data to avoid refetching every time
-def get_active_nba_players():
-    try:
-        return players.get_active_players()
-    except Exception as e:
-        st.error(f"Error fetching active players: {e}")
-        return []
+# --- Sidebar for Player Selection ---
+with st.sidebar:
+    st.header("Select Player")
+    # Get list of active players for dropdowns
+    @st.cache_data # Cache this data to avoid refetching every time
+    def get_active_nba_players():
+        try:
+            return players.get_active_players()
+        except Exception as e:
+            st.error(f"Error fetching active players: {e}")
+            return []
 
-active_players = get_active_nba_players()
+    active_players = get_active_nba_players()
 
-# Get list of all teams for dropdowns
-@st.cache_data # Cache this data
-def get_all_nba_teams():
-    try:
-        return teams.get_teams() # Use teams.get_teams()
-    except Exception as e:
-        st.error(f"Error fetching teams: {e}")
-        return []
+    # Get list of all teams for dropdowns (needed for team_name_to_id/abbr_to_id, maybe move this out if not used in sidebar?)
+    @st.cache_data # Cache this data
+    def get_all_nba_teams():
+        try:
+            return teams.get_teams() # Use teams.get_teams()
+        except Exception as e:
+            st.error(f"Error fetching teams: {e}")
+            return []
 
-all_teams = get_all_nba_teams()
-# Create a dictionary for team names to IDs and abbreviations
-team_name_to_id = {team['full_name']: team['id'] for team in all_teams}
-team_abbr_to_id = {team['abbreviation']: team['id'] for team in all_teams}
-team_names = sorted(list(team_name_to_id.keys()))
-team_abbreviations = sorted(list(team_abbr_to_id.keys()))
+    all_teams = get_all_nba_teams()
+    # Create a dictionary for team names to IDs and abbreviations
+    team_name_to_id = {team['full_name']: team['id'] for team in all_teams}
+    team_abbr_to_id = {team['abbreviation']: team['id'] for team in all_teams}
+    team_names = sorted(list(team_name_to_id.keys()))
+    team_abbreviations = sorted(list(team_abbr_to_id.keys()))
 
-# Create a dictionary for player names to IDs
-player_name_to_id = {player['full_name']: player['id'] for player in active_players}
-player_names = sorted(list(player_name_to_id.keys())) # Sort names alphabetically
+    # Create a dictionary for player names to IDs
+    player_name_to_id = {player['full_name']: player['id'] for player in active_players}
+    player_names = sorted(list(player_name_to_id.keys())) # Sort names alphabetically
 
 
-# Add dropdown for selecting player
-player1_name_select = st.selectbox("Select Player", player_names)
+    # Add dropdown for selecting player
+    player1_name_select = st.selectbox("Choose a player:", player_names) # Changed label for sidebar context
 
+
+# --- Main Content Area ---
 player1_id = None # Initialize player_id
 career_df_all_seasons = None # Initialize to None
 career_game_logs_df = None # Initialize career game logs
@@ -441,7 +436,7 @@ if player1_name_select:
         career_df_all_seasons, career_game_logs_df = fetch_player_data(player1_id)
 
         if career_df_all_seasons is not None and not career_df_all_seasons.empty:
-            st.header(f"{player1_name_select} Stats Dashboard")
+            st.header(f"{player1_name_select} Stats Dashboard") # Player name as header in main area
 
 
             # using a single column for stats now
@@ -473,6 +468,7 @@ if player1_name_select:
                  max_ast = max(max_ast, 7.0)
                  max_min = max(max_min, 30.0)
 
+
                  # Dictionary of max values for charting (still useful for scaling progress bars)
                  max_values_dict = {'PTS': max_pts, 'REB': max_reb, 'AST': max_ast, 'MIN': max_min}
 
@@ -488,8 +484,7 @@ if player1_name_select:
                  st.info("Overall Career Averages not available.")
 
 
-            # Using Tabs for better organization
-            # Removed 'Vs. Opponents' tab
+            # Using Tabs for better organization in the main area
             tab1, tab2, tab3, tab4 = st.tabs(["Season Averages", "Recent Games", "Predictions", "Saved Predictions"])
 
             with tab1:
@@ -507,19 +502,6 @@ if player1_name_select:
 
 
                 st.dataframe(display_career_df.set_index('SEASON_ID')) # Display the career dataframe, using Season ID as index for better readability
-
-
-            # Removed the content block for the 'Vs. Opponents' tab
-            # with tab2:
-            #      st.subheader("Career Statistics Against All Opponent Teams")
-            #      if career_game_logs_df is not None and not career_game_logs_df.empty:
-            #           player_vs_all_teams_career_avg = get_player_vs_all_teams_career_stats(career_game_logs_df)
-            #           if player_vs_all_teams_career_avg is not None and not player_vs_all_teams_career_avg.empty:
-            #                st.dataframe(player_vs_all_teams_career_avg.round(2)) # Round for display
-            #           else:
-            #                st.info("Could not calculate career statistics against opponent teams.")
-            #      else:
-            #           st.info("Career game logs not available to calculate player vs team stats.")
 
 
             with tab2: # This is now the Recent Games tab
@@ -626,4 +608,4 @@ if player1_name_select:
             st.info(f"No data available for {player1_name_select}.")
 
     else: # No player selected
-        st.info("Please select a player from the dropdown to view their stats.")
+        st.info("Please select a player from the dropdown to view their stats using the sidebar.")

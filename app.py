@@ -443,7 +443,7 @@ with st.sidebar:
 
 
     # Add dropdown for selecting player
-    player1_name_select = st.selectbox("Choose a player:", player_names) # Changed label for sidebar context
+    player1_name_select = st.selectbox("Choose a player:", player_names, index=None) # Set index=None for no default selection
 
 
 # --- Main Content Area ---
@@ -451,7 +451,7 @@ player1_id = None # Initialize player_id
 career_df_all_seasons = None # Initialize to None
 career_game_logs_df = None # Initialize career game logs
 
-if player1_name_select:
+if player1_name_select: # Only proceed if a player is selected
     player1_id = player_name_to_id.get(player1_name_select)
     if player1_id is not None:
         # Fetch all data for the selected player
@@ -662,5 +662,5 @@ if player1_name_select:
         elif player1_id is not None: # Player selected but no career data found
             st.info(f"No data available for {player1_name_select}.")
 
-    else: # No player selected
-        st.info("Please select a player from the dropdown in the sidebar to view their stats.")
+else: # No player is selected initially
+    st.info("To begin, please select a player using the dropdown bar in the sidebar.")

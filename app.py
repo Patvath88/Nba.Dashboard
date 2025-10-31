@@ -1,15 +1,12 @@
-# app.py — Hot Shot Props | NBA Player Analytics
-# - One-page UX (NBA-like)
-# - Sidebar search: "TEAM_ABBR — Player Name"
-# - Sidebar favorites with inline × remove
+# app.py — Hot Shot Props | NBA Player Analytics (Black/Red + Login + Per-user persistence)
+# - Black background, red accents
+# - Simple login (username/password)
+# - Per-user favorites + prediction history under userdata/<username>/
+# - Sidebar: search + favorites only (no "app selection", no "saved projections" UI)
 # - Headshot with team-logo overlay
-# - ML prediction priority:
-#       1) Global ML models (saved .pkl)
-#       2) Player-only ad-hoc ML (trained instantly for selected player)
-#       3) Weighted fallback
-# - Background global training thread (one at a time)
-# - Cloud-safe model directory handling
-# - NEW: "Last Predictions vs Results" metric cards, persisting history
+# - ML priority: Global ML -> Player ML (ad-hoc) -> Fallback
+# - Background global training thread
+# - "Last Predictions vs Results" cards
 
 import os, json, re, time, threading, datetime as dt
 import numpy as np
@@ -24,7 +21,7 @@ from nba_api.stats.endpoints import (
     playercareerstats, playergamelogs, scoreboardv2, commonteamroster
 )
 
-# ---- ML deps (optional; used if available) ----
+# ---- Optional ML deps ----
 try:
     import joblib
     from sklearn.linear_model import Ridge
@@ -36,7 +33,7 @@ except Exception:
     SKLEARN_OK = False
 
 # ---------------------------------
-# Page config + constants
+# Page config
 # ---------------------------------
 st.set_page_config(
     page_title="Hot Shot Props • NBA Player Analytics (Free)",
@@ -44,49 +41,99 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ---------------------------------
+# THEME: Black + Red
+# ---------------------------------
+st.markdown("""
+<style>
+:root { --bg:#000000; --panel:#0b0b0b; --ink:#f3f4f6; --muted:#c7c7c7; --red:#ef4444; --line:#171717; --ok:#22c55e; --warn:#f59e0b; --dim:#6b7280; }
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important;}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#000 0%,#0b0b0b 100%)!important;border-right:1px solid #111;}
+.stButton>button{background:var(--red)!important;color:white!important;border:none!important;border-radius:10px!important;padding:.5rem .9rem!important;font-weight:700!important;}
+.stButton>button:hover{filter:brightness(1.08);}
+h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
+a, .st-emotion-cache-16idsys p a{color:#f87171!important;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.5);}
+.badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#140606;color:#fca5a5;}
+.hr{border:0;border-top:1px solid var(--line);margin:.75rem 0;}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--line);margin-left:6px;}
+.tag.ok{color:#bbf7d0;border-color:#064e3b;background:#052e16;}
+.tag.warn{color:#fde68a;border-color:#7c2d12;background:#3b0a0a;}
+.tag.dim{color:#e5e7eb;border-color:#374151;background:#111827;}
+[data-testid="stMetric"]{background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);}
+[data-testid="stMetric"] label{color:#fda4a4;}
+[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#ffe4e6;font-size:1.45rem;}
+.stDataFrame{background:#0b0b0b;border:1px solid #181818;border-radius:12px;padding:4px;}
+.inline-x button{background:#111827!important;border:1px solid #374151!important;color:#e5e7eb!important;padding:.1rem .45rem!important;font-weight:800;border-radius:6px;}
+.hit{color:#86efac;} .miss{color:#fecaca;} .pending{color:#cbd5e1;}
+.login-card{max-width:520px;margin:60px auto 20px;background:#0b0b0b;border:1px solid #171717;border-radius:16px;padding:22px;}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------
+# Constants
+# ---------------------------------
 STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
 API_SLEEP    = 0.25
-FAV_FILE     = "favorites.json"
 
-# Writable dirs: /tmp on hosted runtimes, ./ locally
+# Writable roots
 DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
 MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
 os.makedirs(MODEL_DIR, exist_ok=True)
 MODEL_FILES  = {t: os.path.join(MODEL_DIR, f"model_{t}.pkl") for t in PREDICT_COLS}
 FEAT_TEMPLATE = lambda tgt: [f'{tgt}_r5', f'{tgt}_r10', f'{tgt}_r20', f'{tgt}_season_mean', 'IS_HOME', 'DAYS_REST']
 
-# NEW: prediction history storage
-PRED_HISTORY_FILE = os.path.join(DEFAULT_TMP_DIR, "pred_history.json")
+# ---------------------------------
+# Auth & per-user storage
+# ---------------------------------
+def _user_store_root(username: str):
+    base = os.path.join(DEFAULT_TMP_DIR, "userdata") if os.access(DEFAULT_TMP_DIR, os.W_OK) else os.path.join(".", "userdata")
+    path = os.path.join(base, username)
+    os.makedirs(path, exist_ok=True)
+    return path
 
-# ---------------------------------
-# Styling
-# ---------------------------------
-st.markdown("""
-<style>
-:root { --bg:#0f1116; --panel:#121722; --ink:#e5e7eb; --muted:#9aa3b2; --blue:#1d4ed8; --line:#1f2a44; --ok:#16a34a; --warn:#f59e0b; --fade:#64748b;}
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--ink);}
-h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#0f1629 0%,#0f1116 100%);border-right:1px solid #1f2937;}
-.stButton>button{background:var(--blue);color:white;border:none;border-radius:10px;padding:.5rem .9rem;font-weight:700;}
-.stButton>button:hover{background:#2563eb;}
-[data-testid="stMetric"]{background:var(--panel);padding:16px;border-radius:16px;border:1px solid var(--line);box-shadow:0 8px 28px rgba(0,0,0,.35);}
-[data-testid="stMetric"] label{color:#cfe1ff;}
-[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#e0edff;font-size:1.5rem;}
-.stDataFrame{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.35);}
-.badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#0b1222;color:#9bd1ff;}
-.hr{border:0;border-top:1px solid var(--line);margin:.5rem 0;}
-.fav-btn button{background:transparent!important;color:#93c5fd!important;border:none!important;box-shadow:none!important;text-decoration:underline;cursor:pointer;padding:.25rem 0;}
-.fav-btn button:hover{color:#bfdbfe!important;text-decoration:underline;}
-.inline-x button{background:#172036!important;border:1px solid #24324f!important;color:#cbd5e1!important;padding:.1rem .4rem!important;font-weight:800;border-radius:6px;}
-.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--line);margin-left:6px;}
-.tag.ok{color:#bbf7d0;border-color:#14532d;background:#052e16;}
-.tag.warn{color:#fde68a;border-color:#7c2d12;background:#3b0a0a;}
-.tag.dim{color:#cbd5e1;border-color:#334155;background:#0b1222;}
-.hit{color:#86efac;} .miss{color:#fecaca;} .pending{color:#cbd5e1;}
-</style>
-""", unsafe_allow_html=True)
+def _auth_valid(u, p):
+    # Prefer secrets: st.secrets["users"] = {"pat":"strongpass","analyst":"s3cret"}
+    users = {}
+    try:
+        conf = st.secrets.get("users")
+        if isinstance(conf, dict):
+            users = conf
+    except Exception:
+        pass
+    if not users:
+        # Fallback demo (change in production)
+        users = {"demo": "demo"}
+    return (u in users) and (str(p) == str(users[u]))
+
+def login_ui():
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    st.markdown("## 🔐 Sign in")
+    u = st.text_input("Username", value="", placeholder="demo")
+    p = st.text_input("Password", value="", placeholder="demo", type="password")
+    colA, colB = st.columns([0.4,0.6])
+    ok = False
+    with colA:
+        if st.button("Sign in"):
+            if _auth_valid(u, p):
+                st.session_state["auth_user"] = u
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+    with colB:
+        st.caption("Tip: set `st.secrets['users']` for real accounts.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Gate
+if "auth_user" not in st.session_state:
+    login_ui()
+    st.stop()
+
+AUTH_USER = st.session_state["auth_user"]
+USER_ROOT = _user_store_root(AUTH_USER)
+FAV_FILE = os.path.join(USER_ROOT, "favorites.json")
+PRED_HISTORY_FILE = os.path.join(USER_ROOT, "pred_history.json")
 
 # ---------------------------------
 # Helpers
@@ -145,20 +192,13 @@ def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image,
     base.alpha_composite(logo_resized, (x, y))
     return base
 
-# Favorites persistence
+# Favorites (per-user)
 def load_favorites() -> list[dict]:
     try:
         if os.path.exists(FAV_FILE):
             with open(FAV_FILE, "r") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    out = []
-                    for x in data:
-                        if isinstance(x, dict) and "name" in x and "id" in x:
-                            out.append(x)
-                        elif isinstance(x, str):
-                            out.append({"name": x, "id": None})
-                    return out
+                return data if isinstance(data, list) else []
     except Exception:
         pass
     return []
@@ -170,7 +210,7 @@ def save_favorites(favs: list[dict]) -> None:
     except Exception:
         pass
 
-# NEW: prediction history persistence
+# Prediction history (per-user)
 def _load_pred_history():
     try:
         if os.path.exists(PRED_HISTORY_FILE):
@@ -188,26 +228,21 @@ def _save_pred_history(data):
         pass
 
 def record_prediction(player_id: int, player_name: str, pred_date: str | None, engine: str, preds: dict):
-    """
-    Store latest prediction for this player. Replaces any existing entry for the same date.
-    """
     if not preds:
         return
     db = _load_pred_history()
     key = str(player_id)
     entries = db.get(key, [])
-    # remove any existing for same date
     if pred_date:
         entries = [e for e in entries if e.get("pred_date") != pred_date]
     entry = {
         "player_id": player_id,
         "player_name": player_name,
-        "pred_date": pred_date,   # YYYY-MM-DD or None
-        "engine": engine,         # 'global_ml' | 'player_ml' | 'fallback' | 'blended_ml'
+        "pred_date": pred_date,
+        "engine": engine,
         "preds": {k: float(v) for k,v in preds.items() if k in PREDICT_COLS}
     }
     entries.append(entry)
-    # keep only last 30
     entries = sorted(entries, key=lambda x: (x.get("pred_date") or ""), reverse=True)[:30]
     db[key] = entries
     _save_pred_history(db)
@@ -320,7 +355,7 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
     return None
 
 # ---------------------------------
-# ML: loaders + features + predictors + training
+# ML: loaders + training + inference
 # ---------------------------------
 @st.cache_data(ttl=3600)
 def load_models():
@@ -362,7 +397,6 @@ def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_
         return None
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = df.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
-
     last_date = pd.to_datetime(df['GAME_DATE'].iloc[-1]).date()
     if isinstance(next_game_date, str):
         try:
@@ -370,7 +404,6 @@ def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_
         except Exception:
             next_game_date = None
     days_rest = 3 if next_game_date is None else max(0, min(7, (next_game_date - last_date).days))
-
     feat = {}
     for k in [5, 10, 20]:
         for c in STATS_COLS:
@@ -389,7 +422,6 @@ def build_features_for_inference(logs_df: pd.DataFrame, next_game_date, is_home_
             smean = df[c].expanding().mean().shift(1)
             val = smean.iloc[-1] if pd.notna(smean.iloc[-1]) else (df[c].iloc[:-1].mean() if len(df) > 1 else df[c].iloc[-1])
             feat[f'{c}_season_mean'] = float(val)
-
     feat['IS_HOME']   = int(is_home_next)
     feat['DAYS_REST'] = int(days_rest)
     return pd.DataFrame([feat])
@@ -461,7 +493,6 @@ def train_models_core(active_players_list=None):
     return True
 
 def ensure_background_training():
-    # always attempt on selection; guard for single thread
     if not SKLEARN_OK:
         return
     if st.session_state.get("_bg_training_running"):
@@ -475,13 +506,7 @@ def ensure_background_training():
             st.session_state["_bg_training_running"] = False
     threading.Thread(target=_runner, daemon=True).start()
 
-# --- Ad-hoc, player-only ML (instant) ---
 def train_player_models_in_memory(logs_df: pd.DataFrame):
-    """
-    Trains small Ridge models for the selected player only.
-    Returns dict target->model (not saved to disk).
-    Requires at least ~25 rows to be useful.
-    """
     models = {}
     if not SKLEARN_OK or logs_df is None or logs_df.empty:
         return models
@@ -500,7 +525,7 @@ def train_player_models_in_memory(logs_df: pd.DataFrame):
     return models
 
 # ---------------------------------
-# Fallback (non-ML) prediction
+# Fallback predictions
 # ---------------------------------
 def recent_averages(logs: pd.DataFrame) -> dict:
     out = {}
@@ -539,10 +564,16 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
     return preds
 
 # ---------------------------------
-# Sidebar — Search + Favorites
+# Sidebar — Search + Favorites (only)
 # ---------------------------------
 with st.sidebar:
-    st.header("Select Player")
+    st.header(f"Welcome, {AUTH_USER}")
+    if st.button("Sign out"):
+        st.session_state.pop("auth_user", None)
+        st.rerun()
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.subheader("Select Player")
     label_to_pid = build_team_player_index()
     options = sorted(label_to_pid.keys())
 
@@ -557,7 +588,7 @@ with st.sidebar:
         "Search by team or player",
         options,
         index=default_index if default_index is not None else None,
-        placeholder="e.g., LAL — LeBron James  •  BOS — Jayson Tatum  •  Nikola Jokic"
+        placeholder="e.g., LAL — LeBron James • BOS — Jayson Tatum • Nikola Jokic",
     )
 
     player_id = None
@@ -581,8 +612,7 @@ with st.sidebar:
 
     if st.session_state.favorites:
         for idx, fav in enumerate(st.session_state.favorites):
-            nm = fav.get("name", "(unknown)")
-            pid = fav.get("id")
+            nm = fav.get("name", "(unknown)"); pid = fav.get("id")
             colN, colX = st.columns([0.8, 0.2], vertical_alignment="center")
             with colN:
                 if st.container().button(nm, key=f"fav_open_{idx}_{pid}", help="Open player", use_container_width=True):
@@ -606,7 +636,7 @@ st.markdown(f"""
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
       <div class="badge">ML: {"Enabled" if SKLEARN_OK else "Disabled"} • Models dir: {MODEL_DIR}</div>
     </div>
-    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • ML/Player-ML/Fallback • Clean UX</div>
+    <div style="text-align:right; font-size:.9rem; color:#fda4a4;">Black/Red UI • Per-user data • Clean UX</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -615,16 +645,14 @@ st.markdown(f"""
 # Main content
 # ---------------------------------
 if player_id:
-    # kick off global background training every time you select a player
     ensure_background_training()
     if st.session_state.get("_bg_training_running"):
-        st.caption(f"🟦 Training global ML in background… (started {st.session_state.get('_bg_training_started_at','now')})")
+        st.caption(f"🟥 Training global ML in background… (started {st.session_state.get('_bg_training_started_at','now')})")
 
 if not player_id:
     st.info("Pick a player from the sidebar to load their dashboard.")
     st.stop()
 
-# Fetch data
 career_df, logs_df = fetch_player(player_id)
 if career_df.empty:
     st.warning("No career data available for this player.")
@@ -643,13 +671,11 @@ team_id = team_by_abbr.get(team_abbr, {}).get('id')
 latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
 
 # Last + next game
-last_game_info = "N/A"
-last_game_stats = None
+last_game_info = "N/A"; last_game_stats = None
 if logs_df is not None and not logs_df.empty:
     lg_df = logs_df.head(1).copy()
     lg_cols = safe_cols(lg_df, STATS_COLS)
-    if lg_cols:
-        last_game_stats = lg_df[lg_cols].iloc[0].to_dict()
+    if lg_cols: last_game_stats = lg_df[lg_cols].iloc[0].to_dict()
     lg_row  = lg_df.iloc[0]
     lg_date = pd.to_datetime(lg_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in lg_row else "—"
     lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
@@ -662,9 +688,7 @@ if ng:
     is_home_next = 1 if ng.get('home') else 0
     ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date()
 else:
-    next_game_info = "TBD"
-    is_home_next = 0
-    ng_date_for_feat = None
+    next_game_info = "TBD"; is_home_next = 0; ng_date_for_feat = None
 
 # Header strip metrics
 c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
@@ -705,7 +729,7 @@ with col_trend:
         st.info("No recent games to chart.")
 
 # Metric row helper
-def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
+def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "—"):
     st.markdown(f"#### {title}")
     if data is None:
         data = {}
@@ -716,7 +740,7 @@ def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str 
     else:
         row = dict(data)
     def fmt(v):
-        return f"{float(v):2.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+        return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
     cols = st.columns(5)
     with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
     with cols[1]: st.metric("REB", fmt(row.get('REB')))
@@ -741,7 +765,7 @@ ra = recent_averages(logs_df)
 last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
 metric_row("Last 5 Games Averages", last5)
 
-# Row 4: Predicted next game — Global ML -> Player ML -> Fallback, and RECORD the prediction
+# Row 4: Predicted next game — Global ML -> Player ML -> Fallback + record prediction
 engine_mode = "fallback"
 ml_models = load_models() if SKLEARN_OK else {}
 ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
@@ -770,18 +794,13 @@ label = {
 }[engine_mode]
 st.markdown(label, unsafe_allow_html=True)
 
-# --- SAVE the prediction (only if we know the next game date) ---
-pred_date_str = None
-if ng and isinstance(ng.get('date'), str):
-    pred_date_str = ng['date']
+# Save prediction to per-user history (only if next game date known)
+pred_date_str = ng['date'] if (ng and isinstance(ng.get('date'), str)) else None
 if ml_preds:
     record_prediction(player_id, player_name, pred_date_str, engine_mode, ml_preds)
 
-# ---------------------------------
-# NEW: Last Predictions vs Results (metric cards)
-# ---------------------------------
+# --- Last Predictions vs Results ---
 st.markdown("### Last Predictions vs Results")
-
 def find_actual_row_by_date(logs: pd.DataFrame, iso_date: str):
     if logs is None or logs.empty or not iso_date:
         return None
@@ -798,29 +817,23 @@ history = get_player_history(player_id)
 if not history:
     st.caption("No stored predictions yet. A prediction is saved when a next game date is known.")
 else:
-    # Show up to last 3 entries, newest first
     shown = 0
     for entry in sorted(history, key=lambda x: (x.get("pred_date") or ""), reverse=True):
-        if shown >= 3:
-            break
+        if shown >= 3: break
         pdate = entry.get("pred_date")
         preds = entry.get("preds", {})
         engine = entry.get("engine", "unknown")
         actual_row = find_actual_row_by_date(logs_df, pdate) if pdate else None
 
-        # Header line for this prediction
         hdr = f"**Predicted for {pdate}**" if pdate else "**Prediction (no date recorded)**"
         eng = {"global_ml":"Global ML","player_ml":"Player ML","fallback":"Fallback","blended_ml":"Blended ML"}.get(engine,"Model")
         st.markdown(f"{hdr} — _{eng}_")
 
-        # Build metric cards per stat
         cols = st.columns(4)
-        stat_keys = ['PTS','REB','AST','FG3M']
-        for i, k in enumerate(stat_keys):
+        for i, k in enumerate(['PTS','REB','AST','FG3M']):
             with cols[i]:
                 pred_val = preds.get(k, None)
                 if actual_row is None:
-                    # Pending
                     st.metric(f"{k} • Pending", value=str(pred_val) if pred_val is not None else "—", delta="Game not played")
                     st.caption(f'<span class="pending">Awaiting result</span>', unsafe_allow_html=True)
                 else:

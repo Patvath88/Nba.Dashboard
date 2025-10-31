@@ -991,4 +991,3 @@ with col_sms:
         if send2:
             ok, msg = send_sms_png(to_phone.strip(), note2 or "", png_bytes)
             st.success(msg) if ok else st.error(msg)
-

@@ -1,12 +1,18 @@
-# app.py — Hot Shot Props | NBA Player Analytics (Favorites + Daily SMS)
-# - Uses nba_api (no paid key)
-# - One-page layout: header, headshot, trends, 4 metric rows
-# - Favorites (persisted), Twilio SMS, daily sender while app is open
-# - No auto-refresh; page reruns only when you interact/select
+# app.py — Hot Shot Props | NBA Player Analytics (One-Page + Favorites/SMS)
+# - One compact search bar for teams/players (e.g., "LAL" or "LeBron" or "Celtics")
+# - Favorites w/ Twilio SMS (manual + daily while app open)
+# - No auto-refresh; reruns only on interaction
+# - Headshots from NBA CDN, trend charts, 4 metric rows
+# - FIX: Last Game Stats now robust (uses safe column intersection)
 
 import streamlit as st
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playercareerstats, playergamelogs, scoreboardv2
+from nba_api.stats.endpoints import (
+    playercareerstats,
+    playergamelogs,
+    scoreboardv2,
+    commonteamroster,   # for team roster -> player mapping
+)
 import pandas as pd
 import numpy as np
 import re, time, datetime as dt, threading, json, os
@@ -18,7 +24,7 @@ from io import BytesIO
 try:
     from twilio.rest import Client as TwilioClient
 except Exception:
-    TwilioClient = None  # we'll warn in UI if needed
+    TwilioClient = None
 
 # ---------------------------------
 # Page config + global constants
@@ -29,38 +35,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-STATS_COLS = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
+STATS_COLS   = ['MIN','FGM','FGA','FG3M','FG3A','FTM','FTA','OREB','DREB','REB','AST','STL','BLK','TOV','PF','PTS']
 PREDICT_COLS = ['PTS','AST','REB','FG3M']
-API_SLEEP = 0.25            # be gentle with nba_api
-FAV_FILE = "favorites.json" # simple persistence on disk
+API_SLEEP    = 0.25
+FAV_FILE     = "favorites.json"
 
 # ---------------------------------
-# Styling (NBA.com-ish)
+# Styling (dark premium look)
 # ---------------------------------
 st.markdown("""
 <style>
-:root {
-  --bg: #0f1116; --panel:#121722; --ink:#e5e7eb; --muted:#9aa3b2;
-  --blue:#1d4ed8; --line:#1f2a44;
-}
-html, body, [data-testid="stAppViewContainer"] { background:var(--bg); color:var(--ink); }
-h1,h2,h3,h4 { color:#b3d1ff !important; letter-spacing:.2px; }
-[data-testid="stSidebar"] { background:linear-gradient(180deg,#0f1629 0%,#0f1116 100%); border-right:1px solid #1f2937; }
-.stButton > button { background:var(--blue); color:white; border:none; border-radius:10px; padding:.6rem 1rem; font-weight:700; }
-.stButton > button:hover { background:#2563eb; }
-[data-testid="stMetric"]{
-  background:var(--panel); padding:16px; border-radius:16px; border:1px solid var(--line);
-  box-shadow:0 8px 28px rgba(0,0,0,.35);
-}
-[data-testid="stMetric"] label{ color:#cfe1ff; }
-[data-testid="stMetric"] div[data-testid="stMetricValue"]{ color:#e0edff; font-size:1.5rem; }
-.stDataFrame { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:4px; }
-.card {
-  background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px;
-  box-shadow:0 8px 28px rgba(0,0,0,.35);
-}
-.badge{ display:inline-block; padding:4px 10px; font-size:.8rem; border:1px solid var(--line); border-radius:9999px; background:#0b1222; color:#9bd1ff; }
-.stProgress > div > div > div > div { background-color: var(--blue) !important; }
+:root { --bg:#0f1116; --panel:#121722; --ink:#e5e7eb; --muted:#9aa3b2; --blue:#1d4ed8; --line:#1f2a44; }
+html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--ink);}
+h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#0f1629 0%,#0f1116 100%);border-right:1px solid #1f2937;}
+.stButton>button{background:var(--blue);color:white;border:none;border-radius:10px;padding:.6rem 1rem;font-weight:700;}
+.stButton>button:hover{background:#2563eb;}
+[data-testid="stMetric"]{background:var(--panel);padding:16px;border-radius:16px;border:1px solid var(--line);box-shadow:0 8px 28px rgba(0,0,0,.35);}
+[data-testid="stMetric"] label{color:#cfe1ff;}
+[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#e0edff;font-size:1.5rem;}
+.stDataFrame{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.35);}
+.badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#0b1222;color:#9bd1ff;}
+.stProgress>div>div>div>div{background-color:var(--blue)!important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -112,17 +109,54 @@ def save_favorites(favs: list[str]) -> None:
 # ---------------------------------
 @st.cache_data(ttl=6*3600)
 def get_active_players():
-    try: return players.get_active_players()
+    try:
+        return players.get_active_players()
     except Exception as e:
         st.error(f"Error fetching active players: {e}")
         return []
 
 @st.cache_data(ttl=12*3600)
 def get_all_teams():
-    try: return teams.get_teams()
+    try:
+        return teams.get_teams()
     except Exception as e:
         st.error(f"Error fetching teams: {e}")
         return []
+
+@st.cache_data(ttl=12*3600)
+def build_team_player_index() -> dict[str, int]:
+    """
+    Returns mapping: 'TEAM_ABBR — Player Name' -> PLAYER_ID
+    Built from each team's roster (cached), plus extra active players marked 'FA'.
+    """
+    mapping: dict[str, int] = {}
+    all_t = get_all_teams()
+    for t in all_t:
+        tid  = t.get("id")
+        abbr = t.get("abbreviation", "TBD")
+        if not tid:
+            continue
+        try:
+            time.sleep(API_SLEEP)
+            roster = commonteamroster.CommonTeamRoster(team_id=tid).get_data_frames()[0]
+            if roster is None or roster.empty:
+                continue
+            for _, row in roster.iterrows():
+                name = str(row.get("PLAYER", "")).strip()
+                pid  = int(row.get("PLAYER_ID")) if pd.notna(row.get("PLAYER_ID")) else None
+                if name and pid:
+                    mapping[f"{abbr} — {name}"] = pid
+        except Exception:
+            continue
+    # Add any remaining active players not captured by rosters (FA, two-way, etc.)
+    act = get_active_players()
+    present_names = set(label.split("—",1)[-1].strip() for label in mapping.keys())
+    for p in act:
+        name = p.get('full_name')
+        pid  = p.get('id')
+        if name and pid and name not in present_names:
+            mapping[f"FA — {name}"] = pid
+    return mapping
 
 @st.cache_data(ttl=3600)
 def fetch_player(player_id: int):
@@ -135,7 +169,9 @@ def fetch_player(player_id: int):
         for s in seasons:
             try:
                 time.sleep(API_SLEEP)
-                df = playergamelogs.PlayerGameLogs(player_id_nullable=player_id, season_nullable=s).get_data_frames()[0]
+                df = playergamelogs.PlayerGameLogs(
+                    player_id_nullable=player_id, season_nullable=s
+                ).get_data_frames()[0]
                 if df is not None and not df.empty:
                     logs_list.append(df)
             except Exception as se:
@@ -155,12 +191,11 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
     if team_id is None:
         return None
     today = dt.date.today()
-    team_map = {t['id']: t for t in get_all_teams()}  # id -> team dict
+    team_map = {t['id']: t for t in get_all_teams()}
     for d in range(lookahead_days):
         day = today + dt.timedelta(days=d)
         try:
             time.sleep(API_SLEEP)
-            # ScoreboardV2 expects 'MM/DD/YYYY'
             sb = scoreboardv2.ScoreboardV2(game_date=day.strftime("%m/%d/%Y"))
             frames = sb.get_data_frames()
             game_header = next((f for f in frames if {'HOME_TEAM_ID','VISITOR_TEAM_ID'}.issubset(f.columns)), None)
@@ -170,9 +205,9 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
                 home_id = int(row.get('HOME_TEAM_ID', -1))
                 away_id = int(row.get('VISITOR_TEAM_ID', -1))
                 if team_id in (home_id, away_id):
-                    opp_id = away_id if team_id == home_id else home_id
-                    opp_abbr = team_map.get(opp_id, {}).get('abbreviation', 'TBD')
-                    return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abbr, 'home': (team_id == home_id)}
+                    opp_id  = away_id if team_id == home_id else home_id
+                    opp_abr = team_map.get(opp_id, {}).get('abbreviation', 'TBD')
+                    return {'date': day.strftime("%Y-%m-%d"), 'opp_abbr': opp_abr, 'home': (team_id == home_id)}
         except Exception:
             continue
     return None
@@ -182,7 +217,8 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
 # ---------------------------------
 def recent_averages(logs: pd.DataFrame) -> dict:
     out = {}
-    if logs is None or logs.empty: return out
+    if logs is None or logs.empty:
+        return out
     df = logs.copy()
     cols = safe_cols(df, STATS_COLS)
     if len(df) >= 5 and cols:
@@ -191,17 +227,21 @@ def recent_averages(logs: pd.DataFrame) -> dict:
     return out
 
 def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
-    if logs is None or logs.empty: return None
+    if logs is None or logs.empty:
+        return None
     df = logs.sort_values('GAME_DATE', ascending=True).reset_index(drop=True)
     cols = safe_cols(df, STATS_COLS)
-    if not cols: return None
+    if not cols:
+        return None
 
     # Season avg
     season_avg = pd.Series(dtype=float)
     if 'SEASON_YEAR' in df.columns:
         cur = df[df['SEASON_YEAR'] == season_label]
-        if not cur.empty: season_avg = cur[cols].mean()
-    if season_avg.empty: season_avg = df[cols].mean()
+        if not cur.empty:
+            season_avg = cur[cols].mean()
+    if season_avg.empty:
+        season_avg = df[cols].mean()
 
     feats = {}
     for c in cols:
@@ -220,7 +260,7 @@ def predict_next(logs: pd.DataFrame, season_label: str) -> dict | None:
     return preds
 
 # ---------------------------------
-# SMS sending
+# SMS helpers
 # ---------------------------------
 def format_prediction_sms(player_name: str, team_abbr: str, next_game_info: str, preds: dict) -> str:
     parts = [
@@ -248,19 +288,29 @@ def send_sms(body: str, to_numbers: list[str], from_number: str, sid: str, token
     return results
 
 # ---------------------------------
-# Sidebar — Player selection, Favorites, SMS
+# Sidebar — Single Search + Favorites + SMS
 # ---------------------------------
 with st.sidebar:
     st.header("Select Player")
-    act = get_active_players()
-    all_t = get_all_teams()
-    name_to_id = {p['full_name']: p['id'] for p in act}
-    id_to_name = {v:k for k,v in name_to_id.items()}
-    names_sorted = sorted(name_to_id.keys())
 
-    q = st.text_input("Search", "", help="Filter the list by name")
-    filtered = [n for n in names_sorted if q.lower() in n.lower()] if q else names_sorted
-    player_name = st.selectbox("Player", filtered, index=None, placeholder="Choose a player")
+    # Single searchable mapping: "TEAM_ABBR — Player Name" -> PLAYER_ID
+    label_to_pid = build_team_player_index()
+    options = sorted(label_to_pid.keys())
+
+    selection = st.selectbox(
+        "Search by team or player",
+        options,
+        index=None,
+        placeholder="e.g., LAL — LeBron James  •  BOS  •  Nikola Jokic"
+    )
+
+    player_id = None
+    player_name = None
+    if selection:
+        player_id = label_to_pid[selection]
+        player_name = selection.split("—", 1)[-1].strip() if "—" in selection else selection.strip()
+
+    all_t = get_all_teams()
 
     st.markdown("---")
     st.subheader("⭐ Favorites")
@@ -293,51 +343,58 @@ with st.sidebar:
     send_now = st.button("Send SMS Now for Favorites")
 
 # ---------------------------------
-# Hero/Header strip
+# Header card
 # ---------------------------------
 st.markdown("""
 <div class="card" style="margin-bottom: 12px;">
   <div style="display:flex; align-items:center; justify-content: space-between;">
     <div>
       <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
-      <div class="badge">Favorites + Daily SMS • No auto-refresh</div>
+      <div class="badge">One-page • Favorites + SMS • No auto-refresh</div>
     </div>
-    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted predictions • One-page UX</div>
+    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted predictions • Clean UX</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-if not player_name:
+# Stop if no player chosen
+if not player_id:
     st.info("Pick a player from the sidebar to load their dashboard.")
-    # still show scheduler controls; nothing else to render
+    # still allow SMS controls below
 else:
     # ---- Load selected player data
-    player_id = name_to_id[player_name]
     career_df, logs_df = fetch_player(player_id)
-
     if career_df.empty:
         st.warning("No career data available for this player.")
         st.stop()
 
-    # Determine current team & latest season
-    team_abbr = "TBD"
-    if 'TEAM_ABBREVIATION' in career_df.columns and not career_df.empty:
-        team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] or team_abbr
-
+    # Determine name & team & latest season
+    if not player_name:
+        # fallback: resolve from active players
+        for p in get_active_players():
+            if p['id'] == player_id:
+                player_name = p['full_name']; break
+    team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in career_df.columns else "TBD"
     latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
 
-    # Last game (most recent in logs)
+    # Last game info + robust last game stats
     last_game_info = "N/A"
-    last_game_row = None
+    last_game_stats = None
     if logs_df is not None and not logs_df.empty:
-        last_game_row = logs_df.iloc[0]
-        lg_date = pd.to_datetime(last_game_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in last_game_row else "—"
-        lg_opp = extract_opp_from_matchup(last_game_row.get('MATCHUP', '')) or "TBD"
+        lg_df = logs_df.head(1).copy()
+        # Build safe per-row dict only from columns we expect:
+        lg_cols = safe_cols(lg_df, STATS_COLS)
+        if lg_cols:
+            last_game_stats = lg_df[lg_cols].iloc[0].to_dict()
+        # Info line
+        lg_row  = lg_df.iloc[0]
+        lg_date = pd.to_datetime(lg_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in lg_row else "—"
+        lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
         last_game_info = f"{lg_date} vs {lg_opp}"
 
-    # Next game (via ScoreboardV2)
+    # Next game (scan next 10 days)
     team_id_map = {t['abbreviation']: t['id'] for t in all_t}
-    team_id = team_id_map.get(team_abbr, None)
+    team_id = team_id_map.get(team_abbr)
     ng = next_game_for_team(team_id) if team_id is not None else None
     next_game_info = f"{ng['date']} vs {ng['opp_abbr']}" if ng else "TBD"
 
@@ -360,7 +417,7 @@ else:
     with c_trends:
         if logs_df is not None and not logs_df.empty:
             N = min(10, len(logs_df))
-            view = logs_df.head(N).copy().iloc[::-1]  # chronological
+            view = logs_df.head(N).copy().iloc[::-1]
             trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
             if trend_cols:
                 trend_df = view[['GAME_DATE'] + trend_cols].copy()
@@ -403,16 +460,15 @@ else:
     season_row = None
     if not career_df.empty:
         cur = career_df.iloc[-1]
-        gp = cur.get('GP', 0)
+        gp  = cur.get('GP', 0)
         if gp and gp > 0:
             season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
     metric_row("Current Season Averages", season_row)
 
-    # Row 2: Last game
-    last_game_stats = {c: last_game_row.get(c, np.nan) for c in STATS_COLS} if last_game_row is not None else None
+    # Row 2: Last game — FIXED (uses safe intersection from lg_df)
     metric_row("Last Game Stats", last_game_stats)
 
-    # Row 3: Last 5 avg
+    # Row 3: Last 5 averages
     ra = recent_averages(logs_df)
     last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
     metric_row("Last 5 Games Averages", last5)
@@ -422,7 +478,7 @@ else:
     metric_row("Predicted Next Game (Model)", preds)
 
 # ---------------------------------
-# SMS actions (manual & daily)
+# SMS actions (manual & daily while open)
 # ---------------------------------
 def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
     """Build one SMS line per favorite with prediction + next game."""
@@ -430,12 +486,20 @@ def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
         return []
     all_teams = get_all_teams()
     abbr_to_id = {t['abbreviation']: t['id'] for t in all_teams}
+    # Map names to ids using combined index
+    name_to_id = {}
+    for label, pid in build_team_player_index().items():
+        nm = label.split("—",1)[-1].strip()
+        name_to_id[nm] = pid
+
     lines = []
     for name in fav_names:
         pid = name_to_id.get(name)
-        if not pid: continue
+        if not pid: 
+            continue
         cdf, ldf = fetch_player(pid)
-        if cdf.empty: continue
+        if cdf.empty:
+            continue
         team_abbr = cdf['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in cdf.columns else "TBD"
         latest_season = str(cdf['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in cdf.columns else "N/A"
         preds = predict_next(ldf, latest_season) or {}
@@ -446,7 +510,9 @@ def collect_favorite_predictions(fav_names: list[str]) -> list[str]:
     return lines
 
 # Manual send
+to_numbers = [n.strip() for n in (st.session_state.get("tw_to_override") or "").split(",") if n.strip()]
 if send_now:
+    # Use current inputs
     to_numbers = [n.strip() for n in (tw_to or "").split(",") if n.strip()]
     if not (tw_sid and tw_token and tw_from and to_numbers):
         st.error("Enter Twilio SID, token, from number, and at least one destination number.")
@@ -465,26 +531,21 @@ if send_now:
                 st.warning("Errors: " + "; ".join(result["errors"]))
 
 # Lightweight daily scheduler (runs while the app tab is open)
-def _daily_sms_loop(schedule_time: dt.time):
-    """Background loop: checks time every 30s; sends once per day."""
+def _daily_sms_loop(schedule_time: dt.time, sid, token, from_num, to_csv):
     while st.session_state.get("_daily_sms_enabled", False):
         now = dt.datetime.now()
         last_sent_day = st.session_state.get("_last_sms_day")
-        # Send at or after scheduled time if not yet sent today
         if (last_sent_day != now.date()) and (now.time() >= schedule_time):
-            # Only send if creds + favorites exist
             favs = st.session_state.get("favorites", [])
-            cred_ok = bool(tw_sid and tw_token and tw_from and (tw_to or "").strip())
-            if favs and cred_ok:
-                to_numbers = [n.strip() for n in tw_to.split(",") if n.strip()]
+            if favs and sid and token and from_num and (to_csv or "").strip():
+                to_numbers = [n.strip() for n in to_csv.split(",") if n.strip()]
                 lines = collect_favorite_predictions(favs)
                 if lines:
                     body = "🟦 Hot Shot Props — Daily Predictions\n" + "\n".join(lines)
-                    send_sms(body, to_numbers, tw_from, tw_sid, tw_token)
+                    send_sms(body, to_numbers, from_num, sid, token)
                     st.session_state["_last_sms_day"] = now.date()
         time.sleep(30)
 
-# Controls to toggle the background sender
 with st.sidebar:
     st.markdown("---")
     st.subheader("⏰ Daily Sender (runs while app is open)")
@@ -499,7 +560,7 @@ with st.sidebar:
                 if not st.session_state.get("_daily_sms_enabled"):
                     st.session_state["_daily_sms_enabled"] = True
                     st.session_state["_last_sms_day"] = None
-                    t = threading.Thread(target=_daily_sms_loop, args=(sms_time,), daemon=True)
+                    t = threading.Thread(target=_daily_sms_loop, args=(sms_time, tw_sid, tw_token, tw_from, tw_to), daemon=True)
                     t.start()
                 st.success("Daily SMS enabled (this tab must remain open).")
     with colB:

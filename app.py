@@ -138,4 +138,4 @@ PREDICT_COLS = ['PTS','AST','REB','FG3M']
 
 DEFAULT_TMP_DIR = "/tmp" if os.access("/", os.W_OK) else "."
 MODEL_DIR = os.environ.get("MODEL_DIR", os.path.join(DEFAULT_TMP_DIR, "models"))
-os.makedirs(MODE
+os.makedirs(MODE)

@@ -1,12 +1,10 @@
 # app.py — Hot Shot Props | NBA Player Analytics
 # - One-page UX (NBA-like)
 # - Single combined search: "TEAM_ABBR — Player Name"
+# - Sidebar: Favorites list (click to open) with inline "×" remove buttons
 # - Headshot with team-logo overlay (top-right)
-# - Favorites panel with clickable player "links"
-# - Auto ML training: spawns ONE background thread on player selection if
-#   models are missing or older than 24h; saves to ./models/
-# - Manual trainer panel (optional)
-# - Uses scoreboardv2 (not v3)
+# - Auto ML training only (background thread) when models missing/stale; no manual UI
+# - Uses scoreboardv2 (not v3); weighted fallback if ML deps/models absent
 
 import streamlit as st
 from nba_api.stats.static import players, teams
@@ -24,12 +22,11 @@ import requests
 from io import BytesIO
 from PIL import Image
 
-# ---- ML deps ----
+# ---- ML deps (optional; used if available) ----
 try:
     import joblib
     from sklearn.linear_model import Ridge
     from sklearn.model_selection import train_test_split
-    from sklearn.metrics import mean_absolute_error
 except Exception:
     joblib = None
     Ridge = None
@@ -61,7 +58,7 @@ st.markdown("""
 html,body,[data-testid="stAppViewContainer"]{background:var(--bg);color:var(--ink);}
 h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0f1629 0%,#0f1116 100%);border-right:1px solid #1f2937;}
-.stButton>button{background:var(--blue);color:white;border:none;border-radius:10px;padding:.6rem 1rem;font-weight:700;}
+.stButton>button{background:var(--blue);color:white;border:none;border-radius:10px;padding:.5rem .9rem;font-weight:700;}
 .stButton>button:hover{background:#2563eb;}
 [data-testid="stMetric"]{background:var(--panel);padding:16px;border-radius:16px;border:1px solid var(--line);box-shadow:0 8px 28px rgba(0,0,0,.35);}
 [data-testid="stMetric"] label{color:#cfe1ff;}
@@ -69,9 +66,10 @@ h1,h2,h3,h4{color:#b3d1ff!important;letter-spacing:.2px;}
 .stDataFrame{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,.35);}
 .badge{display:inline-block;padding:4px 10px;font-size:.8rem;border:1px solid var(--line);border-radius:9999px;background:#0b1222;color:#9bd1ff;}
-.linklike button{background:transparent!important;color:#93c5fd!important;border:none!important;box-shadow:none!important;text-decoration:underline;cursor:pointer;}
-.linklike button:hover{color:#bfdbfe!important;text-decoration:underline;}
-hr{border:0;border-top:1px solid var(--line);}
+.link-btn button{background:transparent!important;color:#93c5fd!important;border:none!important;box-shadow:none!important;text-decoration:underline;cursor:pointer;padding:.25rem 0;}
+.link-btn button:hover{color:#bfdbfe!important;text-decoration:underline;}
+.inline-x button{background:#172036!important;border:1px solid #24324f!important;color:#cbd5e1!important;padding:.1rem .4rem!important;font-weight:800;border-radius:6px;}
+.hr{border:0;border-top:1px solid var(--line);margin:.5rem 0;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -101,11 +99,7 @@ def cdn_headshot(player_id: int, size: str = "1040x760") -> Image.Image | None:
     return None
 
 def cdn_team_logo(team_id: int, size: str = "L") -> Image.Image | None:
-    """
-    Fetch team logo PNG from NBA CDN.
-    Common pattern: https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png
-    Sizes: S/M/L (commonly exist); fallback attempts included.
-    """
+    """Team logo from NBA CDN."""
     candidates = [
         f"https://cdn.nba.com/logos/nba/{team_id}/global/{size}/logo.png",
         f"https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.png",
@@ -115,32 +109,25 @@ def cdn_team_logo(team_id: int, size: str = "L") -> Image.Image | None:
         try:
             r = requests.get(url, timeout=10)
             if r.status_code == 200:
-                img = Image.open(BytesIO(r.content)).convert("RGBA")
-                return img
+                return Image.open(BytesIO(r.content)).convert("RGBA")
         except Exception:
             continue
     return None
 
-def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image, padding_ratio: float = 0.04, logo_width_ratio: float = 0.22) -> Image.Image:
-    """
-    Paste team logo onto the headshot's top-right corner with padding.
-    - padding_ratio: fraction of headshot width for margin
-    - logo_width_ratio: fraction of headshot width for logo width
-    """
+def overlay_logo_top_right(headshot: Image.Image, logo: Image.Image,
+                           padding_ratio: float = 0.035, logo_width_ratio: float = 0.22) -> Image.Image:
+    """Paste team logo onto headshot's top-right corner with padding."""
     if headshot is None:
         return None
     base = headshot.copy()
     if logo is None:
         return base
-
     W, H = base.size
     pad = int(W * padding_ratio)
     logo_w = int(W * logo_width_ratio)
     aspect = logo.size[1] / logo.size[0]
     logo_h = int(logo_w * aspect)
     logo_resized = logo.resize((logo_w, logo_h), Image.LANCZOS)
-
-    # position (top-right)
     x = W - logo_w - pad
     y = pad
     base.alpha_composite(logo_resized, (x, y))
@@ -281,7 +268,7 @@ def next_game_for_team(team_id: int, lookahead_days: int = 10):
     return None
 
 # ---------------------------------
-# ML: loaders + feature builders + predictors + training
+# ML: loaders + predictors + background training
 # ---------------------------------
 def models_exist_and_fresh(max_age_hours: int = MODEL_MAX_AGE_HOURS) -> bool:
     """All model files exist and are newer than max_age_hours."""
@@ -395,13 +382,9 @@ def predict_next_ml(logs_df: pd.DataFrame, next_game_date: dt.date | None, is_ho
     return preds if preds else None
 
 def train_models_core(active_players=None):
-    """
-    Core trainer with no Streamlit UI calls (safe for background thread).
-    Trains Ridge for PTS/REB/AST/FG3M on provided players (active by default).
-    """
+    """Core trainer with no Streamlit UI calls (safe for background thread)."""
     if joblib is None or Ridge is None:
         return False
-
     os.makedirs(MODEL_DIR, exist_ok=True)
     act = active_players if active_players is not None else players.get_active_players()
     rows = []
@@ -426,54 +409,40 @@ def train_models_core(active_players=None):
                 continue
             logs['GAME_DATE'] = pd.to_datetime(logs['GAME_DATE'])
             logs = logs.sort_values('GAME_DATE').reset_index(drop=True)
-
             feats = build_features_for_training(logs)
             if feats.empty:
                 continue
             rows.append(feats)
         except Exception:
             continue
-
     if not rows:
         return False
-
     data = pd.concat(rows, ignore_index=True)
     for target in PREDICT_COLS:
         feat_cols = FEAT_TEMPLATE(target)
         if not all(c in data.columns for c in feat_cols):
             continue
-        X = data[feat_cols]
-        y = data[target]
+        X = data[feat_cols]; y = data[target]
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-        model = Ridge(alpha=1.0, random_state=42)
-        model.fit(X_train, y_train)
-        # Save
+        model = Ridge(alpha=1.0, random_state=42).fit(X_train, y_train)
         joblib.dump(model, MODEL_FILES[target])
-
     return True
 
-# Background training thread management
 def ensure_background_training():
-    """
-    If models are missing or stale and no trainer is running, start one background thread.
-    """
+    """If models are missing or stale and no trainer is running, start one background thread."""
     if joblib is None or Ridge is None:
         return
     if models_exist_and_fresh():
         return
     if st.session_state.get("_bg_training_running"):
         return
-    # mark running and start
     st.session_state["_bg_training_running"] = True
-
     def _runner():
         try:
             train_models_core()
         finally:
             st.session_state["_bg_training_running"] = False
-
-    th = threading.Thread(target=_runner, daemon=True)
-    th.start()
+    threading.Thread(target=_runner, daemon=True).start()
 
 # ---------------------------------
 # Fallback (non-ML) prediction
@@ -497,7 +466,6 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
     cols = safe_cols(df, STATS_COLS)
     if not cols:
         return None
-
     season_avg = pd.Series(dtype=float)
     if 'SEASON_YEAR' in df.columns:
         cur = df[df['SEASON_YEAR'] == season_label]
@@ -505,32 +473,25 @@ def predict_next_fallback(logs: pd.DataFrame, season_label: str) -> dict | None:
             season_avg = cur[cols].mean()
     if season_avg.empty:
         season_avg = df[cols].mean()
-
-    feats = {}
-    for c in cols:
-        feats[f'{c}_r5']  = df[c].rolling(5,  min_periods=1).mean().iloc[-1]
-        feats[f'{c}_r10'] = df[c].rolling(10, min_periods=1).mean().iloc[-1]
-        feats[f'{c}_r20'] = df[c].rolling(20, min_periods=1).mean().iloc[-1]
-
+    feats = {f'{c}_r5': df[c].rolling(5, min_periods=1).mean().iloc[-1] for c in cols}
+    feats.update({f'{c}_r10': df[c].rolling(10, min_periods=1).mean().iloc[-1] for c in cols})
+    feats.update({f'{c}_r20': df[c].rolling(20, min_periods=1).mean().iloc[-1] for c in cols})
     preds = {}
     for c in PREDICT_COLS:
-        r5  = feats.get(f'{c}_r5',  np.nan)
-        r10 = feats.get(f'{c}_r10', np.nan)
-        r20 = feats.get(f'{c}_r20', np.nan)
-        s   = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
+        r5, r10, r20 = feats.get(f'{c}_r5', np.nan), feats.get(f'{c}_r10', np.nan), feats.get(f'{c}_r20', np.nan)
+        s = season_avg.get(c, 0.0) if pd.notna(season_avg.get(c, np.nan)) else 0.0
         v5, v10, v20 = (r5 if pd.notna(r5) else s), (r10 if pd.notna(r10) else s), (r20 if pd.notna(r20) else s)
         preds[c] = round(float(0.4*v5 + 0.3*v10 + 0.2*v20 + 0.1*s), 2)
     return preds
 
 # ---------------------------------
-# Sidebar — Single Search
+# Sidebar — Search + Favorites (with inline remove)
 # ---------------------------------
 with st.sidebar:
     st.header("Select Player")
     label_to_pid = build_team_player_index()
     options = sorted(label_to_pid.keys())
 
-    # default selection from favorite click
     default_index = None
     if 'selected_player_id' in st.session_state and st.session_state['selected_player_id'] is not None:
         try:
@@ -552,212 +513,189 @@ with st.sidebar:
         player_name = selection.split("—", 1)[-1].strip() if "—" in selection else selection.strip()
         st.session_state['selected_player_id'] = player_id
 
-# Header card
-st.markdown("""
-<div class="card" style="margin-bottom: 12px;">
-  <div style="display:flex; align-items:center; justify-content: space-between;">
-    <div>
-      <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
-      <div class="badge">One-page • Favorites • ML predictions (auto-trains in background if needed)</div>
-    </div>
-    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted fallback • Clean UX</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-# Layout: left content + right favorites/training
-left, right = st.columns([0.72, 0.28])
-
-with right:
-    # ===== Favorites Panel (clickable) =====
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.subheader("⭐ Favorites")
+
     if "favorites" not in st.session_state:
         st.session_state.favorites = load_favorites()
 
+    # Quick-add current to favorites
     if player_name and player_id and st.button(f"➕ Add {player_name}", use_container_width=True):
         if not any(f.get("id")==player_id for f in st.session_state.favorites):
             st.session_state.favorites.append({"name": player_name, "id": player_id})
             save_favorites(st.session_state.favorites)
             st.success(f"Added {player_name} to favorites.")
 
+    # Render favorites list: [Name] [×]
     if st.session_state.favorites:
-        for fav in st.session_state.favorites:
-            nm = fav.get("name","(unknown)")
+        for idx, fav in enumerate(st.session_state.favorites):
+            nm = fav.get("name", "(unknown)")
             pid = fav.get("id")
-            if st.container().button(nm, key=f"fav_{nm}_{pid}", use_container_width=True, help="Open player page"):
-                st.session_state['selected_player_id'] = pid
-                st.rerun()
-        with st.expander("Manage favorites"):
-            to_remove = st.multiselect("Select to remove", [f["name"] for f in st.session_state.favorites])
-            if to_remove and st.button("Remove selected"):
-                st.session_state.favorites = [f for f in st.session_state.favorites if f["name"] not in to_remove]
-                save_favorites(st.session_state.favorites)
-                st.info("Favorites updated.")
+            colN, colX = st.columns([0.8, 0.2], vertical_alignment="center")
+            with colN:
+                # link-like button to open
+                if st.container().button(nm, key=f"fav_open_{idx}_{pid}", help="Open player", use_container_width=True):
+                    st.session_state['selected_player_id'] = pid
+                    st.rerun()
+            with colX:
+                if st.container().button("×", key=f"fav_del_{idx}_{pid}", help="Remove", type="secondary"):
+                    st.session_state.favorites.pop(idx)
+                    save_favorites(st.session_state.favorites)
+                    st.rerun()
     else:
         st.caption("No favorites yet.")
 
-    st.markdown("---")
+# ---------------------------------
+# Header card
+# ---------------------------------
+st.markdown("""
+<div class="card" style="margin-bottom: 12px;">
+  <div style="display:flex; align-items:center; justify-content: space-between;">
+    <div>
+      <h1 style="margin:0;">Hot Shot Props — NBA Player Analytics</h1>
+      <div class="badge">One-page • Sidebar favorites • ML predictions (background only)</div>
+    </div>
+    <div style="text-align:right; font-size:.9rem; color:#9aa3b2;">Trends • Weighted fallback • Clean UX</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-    # ===== Manual Model Training Panel (optional) =====
-    st.subheader("🧠 Train ML Models (manual)")
-    st.caption("Trains Ridge models for PTS/REB/AST/3PM on active players and saves to ./models/")
-    colA, colB = st.columns(2)
-    with colA:
-        use_all = st.checkbox("Train on ALL active players", value=True)
-    with colB:
-        limit = st.number_input("Or limit players", min_value=50, max_value=500, value=200, step=10, help="Ignored if 'ALL' is checked")
+# ---------------------------------
+# Main content
+# ---------------------------------
+if player_id:
+    # kick off background training if needed
+    ensure_background_training()
+    if st.session_state.get("_bg_training_running"):
+        st.caption("🟦 Training ML models in background… (first run or refresh)")
 
-    if st.button("Train Models Now", use_container_width=True):
-        if joblib is None or Ridge is None:
-            st.error("Install ML deps first: pip install scikit-learn joblib")
-        else:
-            with st.spinner("Training models..."):
-                # manual (blocking) training with simple progress prints via UI is omitted for brevity
-                success = train_models_core(None if use_all else players.get_active_players()[:int(limit)])
-            if success:
-                st.success("Models trained and saved.")
-                # clear cache so app reloads new models immediately
-                load_models.clear()
-            else:
-                st.warning("Training did not produce models.")
+if not player_id:
+    st.info("Pick a player from the sidebar to load their dashboard.")
+else:
+    # Fetch data
+    career_df, logs_df = fetch_player(player_id)
+    if career_df.empty:
+        st.warning("No career data available for this player.")
+        st.stop()
 
-with left:
-    # If a player was chosen: Start background training if needed
-    if player_id:
-        ensure_background_training()
-        if st.session_state.get("_bg_training_running"):
-            st.caption("🟦 Training ML models in background… (first run or refresh)")
+    # Resolve name (if missing)
+    if not player_name:
+        for p in get_active_players():
+            if p['id'] == player_id:
+                player_name = p['full_name']; break
 
-    if not player_id:
-        st.info("Pick a player from the sidebar to load their dashboard.")
+    all_t = get_all_teams()
+    team_by_abbr = {t['abbreviation']: t for t in all_t}
+
+    team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in career_df.columns else "TBD"
+    team_id = team_by_abbr.get(team_abbr, {}).get('id')
+    latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
+
+    # Last game
+    last_game_info = "N/A"
+    last_game_stats = None
+    if logs_df is not None and not logs_df.empty:
+        lg_df = logs_df.head(1).copy()
+        lg_cols = safe_cols(lg_df, STATS_COLS)
+        if lg_cols:
+            last_game_stats = lg_df[lg_cols].iloc[0].to_dict()
+        lg_row  = lg_df.iloc[0]
+        lg_date = pd.to_datetime(lg_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in lg_row else "—"
+        lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
+        last_game_info = f"{lg_date} vs {lg_opp}"
+
+    # Next game
+    ng = next_game_for_team(team_id) if team_id is not None else None
+    if ng:
+        icon = "🏠" if ng.get('home') else "✈️"
+        next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}"
+        is_home_next = 1 if ng.get('home') else 0
+        ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date()
     else:
-        # Fetch data
-        career_df, logs_df = fetch_player(player_id)
-        if career_df.empty:
-            st.warning("No career data available for this player.")
-            st.stop()
+        next_game_info = "TBD"
+        is_home_next = 0
+        ng_date_for_feat = None
 
-        # Player name fix
-        if not player_name:
-            for p in get_active_players():
-                if p['id'] == player_id:
-                    player_name = p['full_name']; break
+    # Header strip metrics
+    c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
+    with c1: st.metric("Player", player_name)
+    with c2: st.metric("Team", team_abbr)
+    with c3: st.metric("Most Recent Game", last_game_info)
+    with c4: st.metric("Next Game", next_game_info)
 
-        all_t = get_all_teams()
-        team_by_id = {t['id']: t for t in all_t}
-        team_by_abbr = {t['abbreviation']: t for t in all_t}
+    # Headshot + logo overlay + trend charts
+    col_img, col_trend = st.columns([0.32, 0.68])
+    with col_img:
+        head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
+        logo = cdn_team_logo(team_id) if team_id else None
+        if head:
+            composed = overlay_logo_top_right(head, logo, padding_ratio=0.035, logo_width_ratio=0.22)
+            st.image(composed, use_container_width=True, caption=f"{player_name} — media day headshot")
+        else:
+            st.info("Headshot not available.")
 
-        team_abbr = career_df['TEAM_ABBREVIATION'].iloc[-1] if 'TEAM_ABBREVIATION' in career_df.columns else "TBD"
-        team_id = team_by_abbr.get(team_abbr, {}).get('id')
-        latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1]) if 'SEASON_ID' in career_df.columns else "N/A"
-
-        # Last game
-        last_game_info = "N/A"
-        last_game_stats = None
+    with col_trend:
         if logs_df is not None and not logs_df.empty:
-            lg_df = logs_df.head(1).copy()
-            lg_cols = safe_cols(lg_df, STATS_COLS)
-            if lg_cols:
-                last_game_stats = lg_df[lg_cols].iloc[0].to_dict()
-            lg_row  = lg_df.iloc[0]
-            lg_date = pd.to_datetime(lg_row['GAME_DATE']).strftime("%Y-%m-%d") if 'GAME_DATE' in lg_row else "—"
-            lg_opp  = extract_opp_from_matchup(lg_row.get('MATCHUP', '')) or "TBD"
-            last_game_info = f"{lg_date} vs {lg_opp}"
-
-        # Next game
-        ng = next_game_for_team(team_id) if team_id is not None else None
-        if ng:
-            icon = "🏠" if ng.get('home') else "✈️"
-            next_game_info = f"{icon} {ng['date']} vs {ng['opp_abbr']}"
-            is_home_next = 1 if ng.get('home') else 0
-            ng_date_for_feat = dt.datetime.strptime(ng['date'], "%Y-%m-%d").date()
+            N = min(10, len(logs_df))
+            view = logs_df.head(N).copy().iloc[::-1]
+            trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
+            if trend_cols:
+                trend_df = view[['GAME_DATE'] + trend_cols].copy()
+                trend_df['GAME_DATE'] = pd.to_datetime(trend_df['GAME_DATE'])
+                for stat in trend_cols:
+                    ch = alt.Chart(trend_df).mark_line(point=True).encode(
+                        x=alt.X('GAME_DATE:T', title=''),
+                        y=alt.Y(f'{stat}:Q', title=stat),
+                        tooltip=[alt.Tooltip('GAME_DATE:T', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)]
+                    ).properties(height=110)
+                    st.altair_chart(ch, use_container_width=True)
+            else:
+                st.info("No trend stats available.")
         else:
-            next_game_info = "TBD"
-            is_home_next = 0
-            ng_date_for_feat = None
+            st.info("No recent games to chart.")
 
-        # Header strip metrics
-        c1, c2, c3, c4 = st.columns([1.3, 0.8, 1.2, 1.2])
-        with c1: st.metric("Player", player_name)
-        with c2: st.metric("Team", team_abbr)
-        with c3: st.metric("Most Recent Game", last_game_info)
-        with c4: st.metric("Next Game", next_game_info)
-
-        # Headshot + logo overlay + trend charts
-        col_img, col_trend = st.columns([0.32, 0.68])
-        with col_img:
-            head = cdn_headshot(player_id, "1040x760") or cdn_headshot(player_id, "260x190")
-            logo = cdn_team_logo(team_id) if team_id else None
-            if head:
-                composed = overlay_logo_top_right(head, logo, padding_ratio=0.035, logo_width_ratio=0.22)
-                st.image(composed, use_container_width=True, caption=f"{player_name} — media day headshot")
-            else:
-                st.info("Headshot not available.")
-
-        with col_trend:
-            if logs_df is not None and not logs_df.empty:
-                N = min(10, len(logs_df))
-                view = logs_df.head(N).copy().iloc[::-1]
-                trend_cols = [c for c in ['PTS','REB','AST','FG3M'] if c in view.columns]
-                if trend_cols:
-                    trend_df = view[['GAME_DATE'] + trend_cols].copy()
-                    trend_df['GAME_DATE'] = pd.to_datetime(trend_df['GAME_DATE'])
-                    for stat in trend_cols:
-                        ch = alt.Chart(trend_df).mark_line(point=True).encode(
-                            x=alt.X('GAME_DATE:T', title=''),
-                            y=alt.Y(f'{stat}:Q', title=stat),
-                            tooltip=[alt.Tooltip('GAME_DATE:T', title='Game'), alt.Tooltip(f'{stat}:Q', title=stat)]
-                        ).properties(height=110)
-                        st.altair_chart(ch, use_container_width=True)
-                else:
-                    st.info("No trend stats available.")
-            else:
-                st.info("No recent games to chart.")
-
-        # Metric rows
-        def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
-            st.markdown(f"#### {title}")
-            if data is None:
-                data = {}
-            if isinstance(data, pd.DataFrame):
-                row = data.iloc[0].to_dict() if not data.empty else {}
-            elif isinstance(data, pd.Series):
-                row = data.to_dict()
-            else:
-                row = dict(data)
-
-            def fmt(v):
-                return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
-
-            cols = st.columns(5)
-            with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
-            with cols[1]: st.metric("REB", fmt(row.get('REB')))
-            with cols[2]: st.metric("AST", fmt(row.get('AST')))
-            with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
-            with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
-
-        # Row 1: Current season per-game
-        season_row = None
-        if not career_df.empty:
-            cur = career_df.iloc[-1]
-            gp  = cur.get('GP', 0)
-            if gp and gp > 0:
-                season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
-        metric_row("Current Season Averages", season_row)
-
-        # Row 2: Last game
-        metric_row("Last Game Stats", last_game_stats)
-
-        # Row 3: Last 5 averages
-        ra = recent_averages(logs_df)
-        last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
-        metric_row("Last 5 Games Averages", last5)
-
-        # Row 4: Predicted next game (ML or fallback)
-        ml_models = load_models()
-        ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
-        if ml_preds:
-            metric_row("Predicted Next Game (ML)", ml_preds)
+    # Metric rows
+    def metric_row(title: str, data: dict | pd.Series | pd.DataFrame, fallback: str = "N/A"):
+        st.markdown(f"#### {title}")
+        if data is None:
+            data = {}
+        if isinstance(data, pd.DataFrame):
+            row = data.iloc[0].to_dict() if not data.empty else {}
+        elif isinstance(data, pd.Series):
+            row = data.to_dict()
         else:
-            preds = predict_next_fallback(logs_df, latest_season)
-            metric_row("Predicted Next Game (Model)", preds)
+            row = dict(data)
+        def fmt(v):
+            return f"{float(v):.2f}" if isinstance(v, (int,float,np.floating)) and pd.notna(v) else fallback
+        cols = st.columns(5)
+        with cols[0]: st.metric("PTS", fmt(row.get('PTS')))
+        with cols[1]: st.metric("REB", fmt(row.get('REB')))
+        with cols[2]: st.metric("AST", fmt(row.get('AST')))
+        with cols[3]: st.metric("3PM", fmt(row.get('FG3M')))
+        with cols[4]: st.metric("MIN", fmt(row.get('MIN')))
+
+    # Row 1: Current season per-game
+    season_row = None
+    if not career_df.empty:
+        cur = career_df.iloc[-1]
+        gp  = cur.get('GP', 0)
+        if gp and gp > 0:
+            season_row = {c: (cur.get(c, 0)/gp) for c in STATS_COLS}
+    metric_row("Current Season Averages", season_row)
+
+    # Row 2: Last game
+    metric_row("Last Game Stats", last_game_stats)
+
+    # Row 3: Last 5 averages
+    ra = recent_averages(logs_df)
+    last5 = ra['Last 5 Avg'].iloc[0].to_dict() if 'Last 5 Avg' in ra and not ra['Last 5 Avg'].empty else None
+    metric_row("Last 5 Games Averages", last5)
+
+    # Row 4: Predicted next game (ML or fallback)
+    ml_models = load_models()
+    ml_preds  = predict_next_ml(logs_df, ng_date_for_feat, is_home_next, ml_models) if ml_models else None
+    if ml_preds:
+        metric_row("Predicted Next Game (ML)", ml_preds)
+    else:
+        preds = predict_next_fallback(logs_df, latest_season)
+        metric_row("Predicted Next Game (Model)", preds)

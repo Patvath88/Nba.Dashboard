@@ -21,7 +21,7 @@ from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import (
     playercareerstats, playergamelogs, scoreboardv2, leagueleaders, leaguedashteamstats
 )
-# leaguestandingsv3 may not exist for some nba_api versions; we will guard it.
+# leaguestandingsv3 may not exist for some nba_api versions; we rely on dash team stats.
 
 # ------------------ Optional ML deps ------------------
 try:
@@ -85,7 +85,6 @@ h1,h2,h3,h4{color:#ffb4b4!important;letter-spacing:.2px;}
 [data-testid="stSidebar"] .stButton>button, [data-testid="stSidebar"] .stSelectbox { font-size: 1.02rem !important; }
 .leader-card{display:flex;gap:14px;align-items:center;background:#0e0e0e;border:1px solid #181818;border-radius:14px;padding:10px;margin-bottom:10px;}
 .leader-img{width:56px;height:56px;border-radius:10px;overflow:hidden;border:1px solid #222;}
-.leader-img img{width:56px;height:56px;object-fit:cover;}
 .leader-name a{color:#ffb4b4;text-decoration:none;font-weight:700;}
 </style>
 """, unsafe_allow_html=True)
@@ -392,26 +391,67 @@ def get_last_night_results():
     if 'PTS_VISITOR' not in out.columns: out['PTS_VISITOR'] = np.nan
     return out[['AWAY','PTS_VISITOR','HOME','PTS_HOME','GAME_STATUS_TEXT']]
 
+def _nba_season_str(today=None):
+    # Returns season string like "2024-25"
+    d = today or dt.date.today()
+    start_year = d.year if d.month >= 10 else d.year - 1
+    return f"{start_year}-{str((start_year+1)%100).zfill(2)}"
+
 @st.cache_data(ttl=1800)
 def get_standings_by_conf():
-    # Try leaguedashteamstats as a durable fallback (rank by W%)
+    """
+    Robust standings using LeagueDashTeamStats with minimal, widely-supported args.
+    Splits East/West and sorts by win% descending.
+    Falls back cleanly if columns differ across nba_api versions.
+    """
+    season = _nba_season_str()
     try:
-        df = get_df_with_retry(leaguedashteamstats.LeagueDashTeamStats, "Team stats standings",
-                               measure_type_detailed_def="Base", per_mode_detailed="Totals",
-                               season_type_all_star="Regular Season")
-        if not df.empty:
-            need = ['TEAM_ID','TEAM_NAME','TEAM_ABBREVIATION','W','L','W_PCT','CONF_RANK','CONF']
-            avail = [c for c in need if c in df.columns]
-            t = df[avail].copy()
-            if 'W_PCT' in t.columns: t = t.sort_values('W_PCT', ascending=False)
-            east = t[t['CONF'].str.upper().eq('EAST')] if 'CONF' in t.columns else t.iloc[:0]
-            west = t[t['CONF'].str.upper().eq('WEST')] if 'CONF' in t.columns else t.iloc[:0]
-            # If CONF unknown, split heuristically via team abbreviations (last resort)
-            return east, west
-    except Exception:
-        pass
-    # Fallback empty
-    return pd.DataFrame(), pd.DataFrame()
+        # Minimal args only (avoid 'measure_type_*' which varies by version)
+        df = get_df_with_retry(
+            leaguedashteamstats.LeagueDashTeamStats,
+            "Team stats standings",
+            season=season,
+            season_type_all_star="Regular Season",
+            per_mode_detailed="Totals",
+        )
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        # Conference column can vary
+        conf_col = "TEAM_CONFERENCE" if "TEAM_CONFERENCE" in df.columns else ("CONF" if "CONF" in df.columns else None)
+
+        cols = [c for c in ["TEAM_ID","TEAM_NAME","TEAM_ABBREVIATION","W","L","W_PCT"] if c in df.columns]
+        out = df[cols + ([conf_col] if conf_col else [])].copy()
+
+        # If no conference column, infer via a static east set
+        if not conf_col:
+            EAST = {"ATL","BOS","BKN","CHA","CHI","CLE","DET","IND","MIA","MIL","NYK","ORL","PHI","TOR","WAS"}
+            out["CONF_IMPUTED"] = out["TEAM_ABBREVIATION"].map(lambda a: "EAST" if a in EAST else "WEST")
+            conf_col = "CONF_IMPUTED"
+
+        # Sort by win%
+        if "W_PCT" in out.columns:
+            out = out.sort_values("W_PCT", ascending=False)
+        elif "W" in out.columns:
+            out = out.sort_values("W", ascending=False)
+
+        east = out[out[conf_col].str.upper().eq("EAST")] if conf_col in out.columns else out.iloc[:0]
+        west = out[out[conf_col].str.upper().eq("WEST")] if conf_col in out.columns else out.iloc[:0]
+
+        def tidy(x):
+            view = x.copy()
+            if "W_PCT" in view.columns:
+                view["WIN%"] = (view["W_PCT"] * 100).round(1)
+            if "TEAM_ABBREVIATION" in view.columns:
+                view = view.rename(columns={"TEAM_ABBREVIATION": "TEAM"})
+            keep = [c for c in ["TEAM","W","L","WIN%"] if c in view.columns]
+            return view[keep].reset_index(drop=True)
+
+        return tidy(east), tidy(west)
+
+    except Exception as e:
+        st.error(f"Standings fetch failed: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=900)
 def get_league_leaders():
@@ -672,17 +712,13 @@ if not player_id:
     with colE:
         st.subheader("Eastern Conference")
         if not east.empty:
-            show = east[['TEAM_ABBREVIATION','W','L','W_PCT']].rename(columns={'TEAM_ABBREVIATION':'TEAM','W_PCT':'WIN%'}).copy()
-            show['WIN%'] = (show['WIN%']*100).round(1)
-            st.dataframe(show.reset_index(drop=True), use_container_width=True)
+            st.dataframe(east, use_container_width=True)
         else:
             st.caption("Standings unavailable.")
     with colW:
         st.subheader("Western Conference")
         if not west.empty:
-            show = west[['TEAM_ABBREVIATION','W','L','W_PCT']].rename(columns={'TEAM_ABBREVIATION':'TEAM','W_PCT':'WIN%'}).copy()
-            show['WIN%'] = (show['WIN%']*100).round(1)
-            st.dataframe(show.reset_index(drop=True), use_container_width=True)
+            st.dataframe(west, use_container_width=True)
         else:
             st.caption("Standings unavailable.")
 
@@ -691,31 +727,17 @@ if not player_id:
     if not leaders:
         st.caption("Leaders data unavailable.")
     else:
-        # Build name->id map once
         act_map = {p['full_name']: p['id'] for p in get_active_players_fast()}
         for stat, df in leaders.items():
             st.markdown(f"#### {stat}")
             for _, row in df.iterrows():
-                pname = row.get('PLAYER'); pid = int(row.get('PLAYER_ID', 0))
+                pname = row.get('PLAYER')
+                pid = int(row.get('PLAYER_ID', 0))
                 if not pid and pname in act_map: pid = act_map[pname]
-                head = cdn_headshot(pid, "260x190")
-                png = None
-                if head:
-                    buf = BytesIO(); head.convert("RGB").save(buf, format="PNG"); buf.seek(0)
-                    png = buf
                 url = f"?pid={pid}" if pid else "#"
                 val = row.get(stat, None)
                 val_txt = f"{float(val):.2f}" if isinstance(val,(int,float,np.floating)) else "—"
-                st.markdown(
-                    f"""
-<div class="leader-card">
-  <div class="leader-img">{'<img src="data:image/png;base64,'+png.getvalue().hex()+'" />' if False else ''}</div>
-  <div class="leader-name"><a href="{url}">{pname}</a> — <span style="opacity:.8">{row.get('TEAM','')}</span></div>
-  <div style="margin-left:auto;font-weight:700;">{stat}: {val_txt}</div>
-</div>
-""",
-                    unsafe_allow_html=True
-                )
+                st.markdown(f"- **[{pname}]({url})** — {row.get('TEAM','')} • {stat}: **{val_txt}**")
     st.stop()
 
 # ------------------ Player page -----------------------

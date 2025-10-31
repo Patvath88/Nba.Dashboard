@@ -2,7 +2,7 @@
 # - Uses nba_api (no external paid key)
 # - Stabilized endpoints + caching + small delays to reduce rate-limit issues
 # - NBA.com-inspired dark/blue theme, premium card styling
-# - Player search, auto-refresh toggle, watchlist, CSV export
+# - Player search, auto-refresh toggle (HTML meta refresh), watchlist, CSV export
 # - Safer data guards to avoid crashes if columns are missing
 
 import streamlit as st
@@ -193,13 +193,12 @@ def fetch_player_data(player_id: int):
         if career_df is None or career_df.empty:
             return career_df, None
 
-        # Seasons list (as provided, e.g., '2019-20')
+        # Seasons list (e.g., '2019-20')
         seasons = career_df['SEASON_ID'].tolist()
         logs_list = []
         for s in seasons:
             try:
                 time.sleep(API_SLEEP)
-                # PlayerGameLogs supports 'season_nullable' as '2023-24', and returns combined logs
                 logs_df = playergamelogs.PlayerGameLogs(
                     player_id_nullable=player_id,
                     season_nullable=s
@@ -212,7 +211,6 @@ def fetch_player_data(player_id: int):
 
         if logs_list:
             career_game_logs = pd.concat(logs_list, ignore_index=True)
-            # Ensure correct types
             if 'GAME_DATE' in career_game_logs.columns:
                 career_game_logs['GAME_DATE'] = pd.to_datetime(career_game_logs['GAME_DATE'])
                 career_game_logs = career_game_logs.sort_values('GAME_DATE', ascending=False).reset_index(drop=True)
@@ -338,24 +336,14 @@ with st.sidebar:
     st.markdown("<hr>", unsafe_allow_html=True)
     colA, colB = st.columns(2)
     with colA:
-        auto_refresh = st.toggle("Auto-refresh (60s)", value=False, help="Re-run the app every 60 seconds.")
+        auto_refresh = st.toggle("Auto-refresh (60s)", value=False, help="Reload the page every 60 seconds.")
     with colB:
         show_vs_all_teams = st.toggle("Show vs Opponents", value=False, help="Show career averages vs each opponent.")
 
+    # Robust auto-refresh (works across Streamlit versions)
+    # We use a simple HTML meta refresh to reload the page.
     if auto_refresh:
-        st.experimental_rerun  # static type hint
-        st.autorefresh = st.experimental_rerun  # appease linters
-        st_autorefresh = st.experimental_rerun
-    if auto_refresh:
-        st.experimental_rerun  # noop for older versions
-    if auto_refresh:
-        st_autorefresh_ref = st.experimental_rerun
-    if auto_refresh:
-        # real refresh
-        st_autorefresh = st.autorefresh if hasattr(st, "autorefresh") else None
-        st.experimental_rerun  # will be ignored; use native helper:
-        st_autorefresh = st.session_state.get("_autorefresh", None)
-        st.session_state["_autorefresh"] = st.experimental_rerun
+        st.markdown("<meta http-equiv='refresh' content='60'>", unsafe_allow_html=True)
 
     # Simple watchlist (session-only)
     st.subheader("Watchlist")
@@ -424,7 +412,6 @@ with m4: st.metric("Minutes", f"{overall_avg.get('MIN', np.nan):.2f}" if 'MIN' i
 
 # Determine latest season id string robustly
 if 'SEASON_ID' in career_df.columns and not career_df['SEASON_ID'].empty:
-    # Career frames often come oldest->latest; grab last non-null
     latest_season = str(career_df['SEASON_ID'].dropna().iloc[-1])
 else:
     latest_season = str(logs_df['SEASON_YEAR'].dropna().iloc[-1]) if logs_df is not None and 'SEASON_YEAR' in logs_df.columns and not logs_df.empty else "N/A"
@@ -452,7 +439,7 @@ with tab1:
     st.dataframe(disp, use_container_width=True)
 
     # Quick trend chart (PTS per season) if available
-    if {'PTS','GP'}.issubset(disp.columns) or ('PTS' in career_df.columns and 'GP' in career_df.columns):
+    if {'PTS','GP'}.issubset(career_df.columns):
         chart_df = career_df[['SEASON_ID','PTS','GP']].copy()
         chart_df['PTS/G'] = chart_df.apply(lambda r: r['PTS']/r['GP'] if r['GP']>0 else 0.0, axis=1)
         c = alt.Chart(chart_df).mark_line(point=True).encode(

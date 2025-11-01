@@ -1,445 +1,560 @@
-# app.py — Hot Shot Props | NBA "Topps Card" Analytics (Overhauled)
-# • Direct HTTPS calls to stats.nba.com endpoints with browser headers
-# • Disk + memory cache with graceful fallbacks
-# • ML-first predictions (Ridge) with WMA fallback
-# • Home (leaders, bigger pictures), Player, Favorites
-# • Trading-card PNG export
+# app.py — Hot Shot Props | NBA Player Projections (Streamlit + nba_api)
+# - Search any player
+# - Live stats (recent logs, season/last season)
+# - Progressive "regression-proof" projection model (PTS/REB/AST/3PM) for next game
+# - Caching + retry logic for nba_api calls
+# - Clean, mobile-friendly UI with charts
 
-import os, io, re, time, random, math, json
-from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+import os
+import time
+import math
+import json
+import datetime as dt
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import requests
-from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
-import streamlit.components.v1 as components
+import altair as alt
 
-# ---------- Page setup ----------
-st.set_page_config(page_title="Hot Shot Props — NBA Card View", layout="wide")
+# nba_api
+from nba_api.stats.static import players as static_players, teams as static_teams
+from nba_api.stats.endpoints import (
+    playergamelogs, playercareerstats, commonplayerinfo,
+    leaguegamelog, scoreboardv2, leaguedashteamstats
+)
+from nba_api.stats.library.parameters import SeasonAll
 
-components.html('<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">', height=0)
+# --------------------------- Streamlit Page Config ---------------------------
+st.set_page_config(
+    page_title="NBA Live Player Projections — Hot Shot Props",
+    page_icon="🏀",
+    layout="wide",
+)
 
-# ---------- Theme (Topps card vibe) ----------
-st.markdown("""
-<style>
-:root{--bg:#0a0a0a;--panel:#101014;--ink:#f4f4f5;--muted:#b4b4b7;--accent:#ff3b3b;--line:#1c1c21;--gold:#f5d36e}
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;color:var(--ink)!important}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#0a0a0a 0%,#131318 100%)!important;border-right:1px solid var(--line)}
-.card{background:linear-gradient(160deg,#13131a 0%,#0e0e14 100%);border:1px solid #23232b;border-radius:18px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.55)}
-.topps{border:3px solid var(--gold);border-radius:22px;box-shadow:0 0 0 6px #1c1500 inset, 0 16px 60px rgba(0,0,0,.65)}
-.leader{display:flex;gap:14px;align-items:center;background:#0f0f13;border:1px solid #22252b;border-radius:14px;padding:12px;margin-bottom:12px}
-.leader img{width:92px;height:92px;border-radius:12px;border:1px solid #2a2f37;object-fit:cover;background:#111}
-.leader .name{font-weight:800;font-size:1.12rem}
-a{color:#f7b0b0;text-decoration:none} a:hover{text-decoration:underline}
-.stButton>button{background:var(--accent)!important;color:#fff!important;border:none!important;border-radius:12px!important;padding:.5rem .9rem!important;font-weight:700}
-[data-testid="stMetric"]{background:#0e0e12;border:1px solid #1d1d24;border-radius:14px;padding:12px}
-[data-testid="stMetric"] label{color:#f9b1b1}
-[data-testid="stMetric"] div[data-testid="stMetricValue"]{color:#fff;font-size:1.35rem}
-@media (max-width:780px){.block-container{padding:0.6rem!important} [data-testid="column"]{width:100%!important;display:block!important}}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------- Globals ----------
-SEASON        = "2025-26"
-LAST_SEASON   = "2024-25"
-SEASON_TYPE   = "Regular Season"
-PREDICT_STATS = ["PTS","REB","AST","FG3M"]
-CACHE_DIR     = Path("nba_cache"); CACHE_DIR.mkdir(exist_ok=True)
-
-# ---------- HTTP session with retries ----------
-def _headers() -> Dict[str,str]:
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nba.com/",
-        "Origin": "https://www.nba.com",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Connection": "keep-alive",
-    }
-
-_SESSION = None
-def sess() -> requests.Session:
-    global _SESSION
-    if _SESSION is None:
-        from urllib3.util.retry import Retry
-        from requests.adapters import HTTPAdapter
-        s = requests.Session()
-        s.headers.update(_headers())
-        r = Retry(total=3, connect=3, read=3, backoff_factor=0.7,
-                  status_forcelist=(429,500,502,503,504), allowed_methods=frozenset(["GET"]))
-        ad = HTTPAdapter(max_retries=r, pool_connections=30, pool_maxsize=60)
-        s.mount("https://", ad); s.mount("http://", ad)
-        _SESSION = s
-    return _SESSION
-
-# ---------- Static players list (no network) ----------
-@st.cache_data
-def players_df() -> pd.DataFrame:
-    # Minimal baked list from NBA JSON (id+name) bundled here to avoid extra fetches.
-    # You can swap this with nba_api.static.players.get_players() if you prefer.
-    url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2_1.json"
-    # We won't hit it; use local minimal CSV if exists; otherwise load a tiny baked sample.
-    f = CACHE_DIR / "players_min.csv"
-    if f.exists():
-        df = pd.read_csv(f)
-    else:
-        # tiny fallback; encourage user search to still work by id param
-        df = pd.DataFrame([
-            {"id": 201939, "full_name": "Stephen Curry"},
-            {"id": 203500, "full_name": "Giannis Antetokounmpo"},
-            {"id": 201142, "full_name": "Kevin Durant"},
-            {"id": 1629029,"full_name": "Tyrese Maxey"},
-            {"id": 1626157,"full_name": "Devin Booker"},
-        ])
-    df["full_name_lower"] = df["full_name"].str.lower()
-    return df.sort_values("full_name")
-
-def headshot_url(pid:int) -> str:
-    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
-
-# ---------- Low-level stats endpoints (direct) ----------
-def _get_json(url:str, params:Dict[str,str], timeout:int=15) -> Optional[dict]:
-    try:
-        time.sleep(random.uniform(0.4, 1.2))  # polite jitter
-        r = sess().get(url, params=params, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-@st.cache_data(ttl=24*3600, show_spinner=False)
-def fetch_leaders(season:str) -> pd.DataFrame:
+alt.themes.enable("none")
+st.markdown(
     """
-    Direct call to leaguedashplayerstats (PerGame) → robust + cache.
-    """
-    url = "https://stats.nba.com/stats/leaguedashplayerstats"
-    params = {
-        "College":"",
-        "Conference":"",
-        "Country":"",
-        "DateFrom":"",
-        "DateTo":"",
-        "Division":"",
-        "DraftPick":"",
-        "DraftYear":"",
-        "GameScope":"",
-        "GameSegment":"",
-        "Height":"",
-        "LastNGames":"0",
-        "LeagueID":"00",
-        "Location":"",
-        "MeasureType":"Base",
-        "Month":"0",
-        "OpponentTeamID":"0",
-        "Outcome":"",
-        "PORound":"0",
-        "PaceAdjust":"N",
-        "PerMode":"PerGame",
-        "Period":"0",
-        "PlayerExperience":"",
-        "PlayerPosition":"",
-        "PlusMinus":"N",
-        "Rank":"N",
-        "Season":season,
-        "SeasonSegment":"",
-        "SeasonType":SEASON_TYPE,
-        "ShotClockRange":"",
-        "StarterBench":"",
-        "TeamID":"0",
-        "TwoWay":"0",
-        "VsConference":"",
-        "VsDivision":"",
-        "Weight":""
-    }
-    data = _get_json(url, params)
-    if data:
-        rs = data["resultSets"][0]
-        df = pd.DataFrame(rs["rowSet"], columns=rs["headers"])
-        return df
-    # fallback to cache on disk if exists
-    p = CACHE_DIR / f"leaders_{season}.parquet"
-    if p.exists():
-        return pd.read_parquet(p)
-    # else empty
-    return pd.DataFrame()
+    <style>
+      .small {font-size: 0.8rem; color: #888;}
+      .ok {color:#16a34a;font-weight:600}
+      .warn {color:#b45309;font-weight:600}
+      .bad {color:#dc2626;font-weight:600}
+      .metric-card {padding:.75rem 1rem;border:1px solid #e5e7eb;border-radius:10px;background:#fff}
+      .pill {padding:.15rem .5rem;border:1px solid #e5e7eb;border-radius:999px;background:#f9fafb;font-size:.75rem}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-@st.cache_data(ttl=24*3600, show_spinner=False)
-def fetch_player_logs(pid:int, season:str) -> pd.DataFrame:
-    """
-    Direct call to playergamelogs (Base). Cache each season separately; fall back to disk.
-    """
-    disk = CACHE_DIR / f"logs_{pid}_{season}.parquet"
-    url = "https://stats.nba.com/stats/playergamelogs"
-    params = {"PlayerID":str(pid), "Season":season, "SeasonType":SEASON_TYPE, "MeasureType":"Base"}
-    data = _get_json(url, params)
-    if data:
+# --------------------------- Utilities ---------------------------
+
+HEADERS = {
+    # nba.com headers needed to avoid 403s/blocks
+    "Accept": "application/json, text/plain, */*",
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.nba.com/",
+    "Connection": "keep-alive",
+}
+
+def _retry_nba_api(func, *args, tries=3, sleep=1.25, **kwargs):
+    last_exc = None
+    for i in range(tries):
         try:
-            rs = data["resultSets"][0]
-            df = pd.DataFrame(rs["rowSet"], columns=rs["headers"])
-            if not df.empty:
-                df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-                df.sort_values("GAME_DATE", ascending=False, inplace=True)
-                df.to_parquet(disk, index=False)
-                return df
-        except Exception:
-            pass
-    if disk.exists():
-        return pd.read_parquet(disk)
-    return pd.DataFrame()
+            return func(*args, headers=HEADERS, **kwargs)
+        except Exception as e:
+            last_exc = e
+            time.sleep(sleep * (i + 1))
+    if last_exc:
+        raise last_exc
 
-# ---------- ML (Ridge) + fallback WMA ----------
-try:
-    from sklearn.linear_model import Ridge
-    from sklearn.model_selection import train_test_split
-    SKLEARN_OK = True
-except Exception:
-    SKLEARN_OK = False
-
-def _add_feats(df:pd.DataFrame, stat:str) -> pd.DataFrame:
-    df = df.copy().sort_values("GAME_DATE")
-    s = pd.to_numeric(df[stat], errors="coerce")
-    df[f"{stat}_lag1"] = s.shift(1)
-    df[f"{stat}_ema3"] = s.ewm(span=3, adjust=False).mean().shift(1)
-    df[f"{stat}_ema5"] = s.ewm(span=5, adjust=False).mean().shift(1)
-    df[f"{stat}_ma5"]  = s.rolling(5).mean().shift(1)
-    df[f"{stat}_ma10"] = s.rolling(10).mean().shift(1)
-    df[f"{stat}_ma20"] = s.rolling(20).mean().shift(1)
+@st.cache_data(show_spinner=False, ttl=60*30)  # 30 mins
+def get_players_df() -> pd.DataFrame:
+    plist = static_players.get_players()
+    df = pd.DataFrame(plist)
     return df
 
-def _ridge(df:pd.DataFrame, stat:str) -> Optional[Ridge]:
-    if not SKLEARN_OK: return None
-    use = _add_feats(df, stat)
-    cols = [c for c in use.columns if any(t in c for t in [f"{stat}_lag1", f"{stat}_ema", f"{stat}_ma"])]
-    use = use.dropna(subset=cols+[stat])
-    if len(use) < 30: return None
-    X = use[cols].values; y = pd.to_numeric(use[stat], errors="coerce").values
-    try:
-        Xtr,Xte,ytr,yte = train_test_split(X,y,test_size=0.2,random_state=42)
-        m = Ridge(alpha=0.6).fit(Xtr,ytr); return m
-    except Exception:
+@st.cache_data(show_spinner=False, ttl=60*30)
+def get_teams_df() -> pd.DataFrame:
+    tlist = static_teams.get_teams()
+    return pd.DataFrame(tlist)
+
+def to_season_string(date: dt.date) -> str:
+    # NBA seasons like "2024-25"
+    year = date.year
+    # Season typically starts Oct — if before August, it's prior season end
+    if date.month >= 8:
+        start = year
+        end = (year + 1) % 100
+    else:
+        start = year - 1
+        end = year % 100
+    return f"{start}-{end:02d}"
+
+@st.cache_data(show_spinner=False, ttl=60*10)
+def get_player_info(player_id: int) -> Dict:
+    res = _retry_nba_api(commonplayerinfo.CommonPlayerInfo, player_id=player_id)
+    df = res.get_data_frames()[0]
+    return df.iloc[0].to_dict()
+
+@st.cache_data(show_spinner=False, ttl=60*10)
+def get_player_game_logs(player_id: int, season: str, last_n_games: Optional[int]=None) -> pd.DataFrame:
+    gl = _retry_nba_api(
+        playergamelogs.PlayerGameLogs,
+        player_id_nullable=str(player_id),
+        season_nullable=season,
+        season_type_nullable="Regular Season",
+    )
+    df = gl.get_data_frames()[0]
+    if last_n_games:
+        return df.sort_values("GAME_DATE", ascending=False).head(last_n_games).reset_index(drop=True)
+    return df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
+
+@st.cache_data(show_spinner=False, ttl=60*10)
+def get_player_last_season_logs(player_id: int, current_season: str) -> pd.DataFrame:
+    # current_season like "2024-25" -> last season "2023-24"
+    base = int(current_season.split("-")[0])
+    last_season = f"{base-1}-{(base-1+1)%100:02d}"
+    return get_player_game_logs(player_id, last_season)
+
+@st.cache_data(show_spinner=False, ttl=60*10)
+def get_league_team_defense(season: str) -> pd.DataFrame:
+    # Opponent defensive proxy: Team defensive rating + opponent-allowed stats
+    # Using leaguedashteamstats with Opponent stats split
+    dash = _retry_nba_api(
+        leaguedashteamstats.LeagueDashTeamStats,
+        season=season,
+        measure_type_detailed_defense="Opponent",
+        per_mode_detailed="PerGame",
+        season_type_all_star="Regular Season",
+    )
+    df = dash.get_data_frames()[0]
+    # Keep helpful opponent-allow per game cols
+    cols_keep = ["TEAM_ID", "TEAM_NAME", "OPP_PTS", "OPP_FG3M", "OPP_AST", "OPP_REB"]
+    return df[cols_keep].rename(columns={
+        "OPP_PTS":"OPP_ALLOW_PTS",
+        "OPP_FG3M":"OPP_ALLOW_3PM",
+        "OPP_AST":"OPP_ALLOW_AST",
+        "OPP_REB":"OPP_ALLOW_REB"
+    })
+
+@st.cache_data(show_spinner=False, ttl=60*10)
+def get_scoreboard(target_date: dt.date) -> pd.DataFrame:
+    sb = _retry_nba_api(scoreboardv2.ScoreboardV2, game_date=target_date.strftime("%Y-%m-%d"))
+    games = sb.get_data_frames()[0]
+    return games
+
+def find_next_opponent_team_id(player_info: Dict, season: str) -> Optional[int]:
+    """Try to find the player's next opponent in the next 7 days via Scoreboard."""
+    team_id = player_info.get("TEAM_ID")
+    if not team_id or pd.isna(team_id):
         return None
-
-def _wma(arr:np.ndarray) -> float:
-    if len(arr)==0: return float("nan")
-    w = np.array([5,3,2,1])[:len(arr)][::-1]
-    return float(np.average(arr[-len(w):], weights=w))
-
-def predict_next(df:pd.DataFrame) -> Dict[str,float]:
-    out={}
-    for stat in PREDICT_STATS:
+    today = dt.date.today()
+    for d in range(0, 8):
+        day = today + dt.timedelta(days=d)
         try:
-            m = _ridge(df, stat)
-            if m is not None:
-                last = _add_feats(df, stat).iloc[-1:]
-                cols = [c for c in last.columns if any(t in c for t in [f"{stat}_lag1", f"{stat}_ema", f"{stat}_ma"])]
-                x = last[cols].fillna(method="ffill").fillna(0.0).values
-                out[stat] = max(0.0, float(m.predict(x)[0]))
-            else:
-                arr = pd.to_numeric(df[stat], errors="coerce").tail(10).values
-                out[stat] = _wma(arr)
+            df = get_scoreboard(day)
         except Exception:
-            arr = pd.to_numeric(df[stat], errors="coerce").tail(10).values
-            out[stat] = _wma(arr)
+            continue
+        # Games dataframe has columns: "GAME_ID","GAMECODE","HOME_TEAM_ID","VISITOR_TEAM_ID", ...
+        if df.empty:
+            continue
+        # If player's team is home or away, opponent is the other side
+        mask = (df["HOME_TEAM_ID"] == team_id) | (df["VISITOR_TEAM_ID"] == team_id)
+        if mask.any():
+            row = df[mask].iloc[0]
+            if row["HOME_TEAM_ID"] == team_id:
+                return int(row["VISITOR_TEAM_ID"])
+            else:
+                return int(row["HOME_TEAM_ID"])
+    return None
+
+def h2h_subset(df_logs: pd.DataFrame, opp_team_id: Optional[int]) -> pd.DataFrame:
+    if opp_team_id is None or df_logs is None or df_logs.empty:
+        return pd.DataFrame()
+    # GAME_MATCHUP sample: "LAL @ GSW" — extract opponent by name not id; map id->abbrev
+    # We'll approximate: use TEAM_ABBREVIATION and OPPONENT_TEAM_ID if present
+    cols = [c.upper() for c in df_logs.columns]
+    # nba_api PlayerGameLogs already includes OPPONENT_TEAM_ID
+    if "OPPONENT_TEAM_ID" in df_logs.columns:
+        return df_logs[df_logs["OPPONENT_TEAM_ID"] == opp_team_id].copy()
+    return pd.DataFrame()  # fallback if schema changes
+
+def safe_mean(s: pd.Series) -> float:
+    vals = pd.to_numeric(s, errors="coerce").dropna()
+    return float(vals.mean()) if len(vals) else 0.0
+
+def var_aware_weight(n: int, variance: float, cap_low=1e-6) -> float:
+    # Larger n and lower variance -> more weight
+    v = max(variance, cap_low)
+    return n / (v + 1.0)
+
+def james_stein_shrink(player_mean: float, league_mean: float, n: int, var: float) -> float:
+    # Classic shrinkage factor toward league mean to reduce overfit for small samples
+    # k ~ variance / (variance + n)
+    var = max(var, 1e-6)
+    k = var / (var + max(n, 1))
+    return (1 - k) * player_mean + k * league_mean
+
+def recent_windows(df: pd.DataFrame, windows=(5,10,20)) -> Dict[int, Dict[str, float]]:
+    out = {}
+    for w in windows:
+        sub = df.head(w)  # df is sorted DESC by GAME_DATE
+        if sub.empty:
+            out[w] = {"PTS":0,"REB":0,"AST":0,"FG3M":0,"N":0,"VAR_PTS":1,"VAR_REB":1,"VAR_AST":1,"VAR_3PM":1}
+        else:
+            out[w] = {
+                "PTS": safe_mean(sub["PTS"]),
+                "REB": safe_mean(sub["REB"]),
+                "AST": safe_mean(sub["AST"]),
+                "FG3M": safe_mean(sub["FG3M"]),
+                "N": len(sub),
+                "VAR_PTS": float(np.var(pd.to_numeric(sub["PTS"], errors="coerce").dropna(), ddof=1)) if len(sub)>1 else 1.0,
+                "VAR_REB": float(np.var(pd.to_numeric(sub["REB"], errors="coerce").dropna(), ddof=1)) if len(sub)>1 else 1.0,
+                "VAR_AST": float(np.var(pd.to_numeric(sub["AST"], errors="coerce").dropna(), ddof=1)) if len(sub)>1 else 1.0,
+                "VAR_3PM": float(np.var(pd.to_numeric(sub["FG3M"], errors="coerce").dropna(), ddof=1)) if len(sub)>1 else 1.0,
+            }
     return out
 
-# ---------- Image helpers ----------
-def _fetch_img(url:str, size:Tuple[int,int]=(520,360)) -> Image.Image:
-    try:
-        r = sess().get(url, timeout=10)
-        if r.ok:
-            im = Image.open(io.BytesIO(r.content)).convert("RGBA")
-            return im.resize(size)
-    except Exception:
-        pass
-    return Image.new("RGBA", size, (16,16,22,255))
+def league_baselines(season_team_opp: pd.DataFrame) -> Dict[str, float]:
+    # League means of opponent-allowed categories (proxy for neutral baseline)
+    if season_team_opp is None or season_team_opp.empty:
+        return {"PTS": 112.0, "REB": 43.0, "AST": 25.0, "FG3M": 12.0}  # generic fallbacks
+    return {
+        "PTS": safe_mean(season_team_opp["OPP_ALLOW_PTS"]),
+        "REB": safe_mean(season_team_opp["OPP_ALLOW_REB"]),
+        "AST": safe_mean(season_team_opp["OPP_ALLOW_AST"]),
+        "FG3M": safe_mean(season_team_opp["OPP_ALLOW_3PM"]),
+    }
 
-def make_card_png(title:str, player_img:Image.Image, metrics:Dict[str,float]) -> bytes:
-    W,H=980,620
-    im = Image.new("RGBA",(W,H),(10,10,14,255))
-    d = ImageDraw.Draw(im)
-    try:
-        fBig = ImageFont.truetype("DejaVuSans-Bold.ttf",42)
-        fSm  = ImageFont.truetype("DejaVuSans.ttf",28)
-    except Exception:
-        fBig = ImageFont.load_default(); fSm = ImageFont.load_default()
-    # Topps frame
-    d.rectangle([12,12,W-12,H-12], outline=(245,211,110,255), width=6)
-    d.rectangle([26,26,W-26,H-26], outline=(28,22,0,255), width=8)
-    d.text((40,36), title, fill=(255,240,240,255), font=fBig)
-    im.paste(player_img.resize((460,340)), (40,100))
-    x0=540; y=128
-    d.text((x0,y-18), "Predicted Next Game (ML)", fill=(255,178,178,255), font=fSm)
-    for k,v in metrics.items():
-        d.rectangle([x0-8,y-6,x0+340,y+32], outline=(36,36,46,255), width=2)
-        d.text((x0, y), f"{k}", fill=(245,245,255,255), font=fSm)
-        d.text((x0+220, y), f"{v:.2f}", fill=(105,220,140,255), font=fSm)
-        y += 48
-    bio=io.BytesIO(); im.save(bio, format="PNG"); return bio.getvalue()
+def opponent_adjustment(opp_row: Optional[pd.Series]) -> Dict[str, float]:
+    # Convert opponent allowed per game into an adjustment multiplier around ~1.0
+    # Lower allowed -> tougher -> <1 multiplier; higher allowed -> easier -> >1
+    if opp_row is None or len(opp_row)==0:
+        return {"PTS":1.0,"REB":1.0,"AST":1.0,"FG3M":1.0}
+    # Calibrate around league-ish anchors
+    anchors = {"PTS":112.0,"REB":43.0,"AST":25.0,"FG3M":12.0}
+    adj = {}
+    for k, col in [("PTS","OPP_ALLOW_PTS"),("REB","OPP_ALLOW_REB"),("AST","OPP_ALLOW_AST"),("FG3M","OPP_ALLOW_3PM")]:
+        val = float(opp_row[col]) if col in opp_row else anchors[k]
+        adj[k] = max(0.85, min(1.15, val / anchors[k]))  # clamp effect ±15%
+    return adj
 
-# ---------- Sidebar ----------
-def init_state():
-    st.session_state.setdefault("favorites", {})  # {pid: name}
-init_state()
+def ensemble_projection(
+    df_cur: pd.DataFrame,
+    df_last_season: pd.DataFrame,
+    df_h2h: pd.DataFrame,
+    season_opp_df: pd.DataFrame,
+    opp_team_id: Optional[int],
+) -> Dict[str, float]:
+    """
+    Progressive, regression-resistant blend:
+    - Recency windows: L5/L10/L20 (variance-aware)
+    - Current season average
+    - Last season average
+    - H2H vs upcoming opponent (small weight unless sample > 3)
+    - James-Stein shrinkage toward league baselines
+    - Opponent defensive adjustment (opponent-allowed stats)
+    """
+    # Sort cur df once
+    cur = df_cur.copy()
+    if cur.empty:
+        return {"PTS":0,"REB":0,"AST":0,"FG3M":0}
 
-def sidebar() -> Optional[int]:
-    with st.sidebar:
-        st.markdown("### 🔎 Search player")
-        ppl = players_df()
-        q = st.text_input("Type player name", "")
-        pid=None
-        if q.strip():
-            sub = ppl[ppl["full_name_lower"].str.contains(q.strip().lower())].head(25)
-            opts=[f'{r.full_name}  (id:{r.id})' for _,r in sub.iterrows()]
-            sel = st.selectbox("Matches", ["-- pick --"]+opts, index=0)
-            if sel != "-- pick --":
-                m=re.search(r"id:(\d+)\)$", sel);  pid=int(m.group(1)) if m else None
+    # Windows
+    wins = recent_windows(cur, (5,10,20))
 
-        st.markdown("---")
-        st.markdown("### ⭐ Favorites")
-        favs = st.session_state["favorites"]
-        if not favs: st.caption("No favorites yet.")
-        else:
-            for k,v in list(favs.items()):
-                c1,c2=st.columns([0.8,0.2])
-                with c1: st.link_button(v, url=f"?player_id={k}", use_container_width=True)
-                with c2:
-                    if st.button("✕", key=f"del_{k}"):
-                        favs.pop(k,None); st.session_state["favorites"]=favs; st.rerun()
-        st.markdown("---")
-        st.link_button("🏠 Home", url=".", use_container_width=True)
-        st.link_button("📌 Favorites page", url="?page=favorites", use_container_width=True)
-    return pid
+    # Season means
+    cur_pts = safe_mean(cur["PTS"]); cur_reb = safe_mean(cur["REB"])
+    cur_ast = safe_mean(cur["AST"]); cur_3pm = safe_mean(cur["FG3M"])
+    cur_var = {
+        "PTS": float(np.var(pd.to_numeric(cur["PTS"], errors="coerce").dropna(), ddof=1)) if len(cur)>1 else 1.0,
+        "REB": float(np.var(pd.to_numeric(cur["REB"], errors="coerce").dropna(), ddof=1)) if len(cur)>1 else 1.0,
+        "AST": float(np.var(pd.to_numeric(cur["AST"], errors="coerce").dropna(), ddof=1)) if len(cur)>1 else 1.0,
+        "FG3M": float(np.var(pd.to_numeric(cur["FG3M"], errors="coerce").dropna(), ddof=1)) if len(cur)>1 else 1.0,
+    }
 
-# ---------- Pages ----------
-def page_home():
-    st.markdown("## 🏠 Home")
-    st.caption("Hint: use the sidebar to search any player by name. Add ⭐ to build your Favorites board.")
-    df = fetch_leaders(SEASON)
-    if df.empty:
-        st.warning("Leaders unavailable right now. Showing nothing until cache warms.")
-        return
-    cols = st.columns(4)
-    mapping = [("PTS","Points"),("REB","Rebounds"),("AST","Assists"),("FG3M","3-Pointers")]
-    for (stat,label),col in zip(mapping, cols):
-        with col:
-            try:
-                top = df.sort_values(stat, ascending=False).iloc[0]
-                pid = int(top["PLAYER_ID"]); name=str(top["PLAYER_NAME"]); team=str(top["TEAM_ABBREVIATION"]); val=float(top[stat])
-                st.markdown(f"#### {label}")
-                st.markdown(f"""
-<div class="leader">
-  <img src="{headshot_url(pid)}" />
-  <div>
-    <div class="name"><a href="?player_id={pid}">{name}</a></div>
-    <div style="color:#b9bbbe">{team}</div>
-    <div style="margin-top:6px">Avg: <b>{val:.2f}</b> ({SEASON})</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"{label} leader unavailable: {e}")
-
-def _metrics_row(title:str, df:pd.DataFrame, cols_list:List[str]):
-    st.markdown(f"### {title}")
-    cs = st.columns(len(cols_list))
-    for c, col in zip(cols_list, cs):
-        with col:
-            try:
-                if title.startswith("Last Game"):
-                    v = float(df[c].values[0])
-                else:
-                    v = float(pd.to_numeric(df[c], errors="coerce").mean())
-                st.metric(c, f"{v:.2f}")
-            except Exception:
-                st.metric(c, "N/A")
-
-def _bars_expander(label:str, df:pd.DataFrame):
-    with st.expander(label, expanded=False):
-        cols = st.columns(4)
-        for k, col in zip(PREDICT_STATS, cols):
-            with col:
-                try:
-                    long = df[["GAME_DATE", k]].tail(10).rename(columns={k:"Value"}).sort_values("GAME_DATE")
-                    st.bar_chart(long, x="GAME_DATE", y="Value", width='stretch', height=220)
-                except Exception:
-                    st.empty()
-
-def page_player(pid:int):
-    ppl = players_df(); row = ppl[ppl["id"]==pid]
-    name = row["full_name"].iloc[0] if not row.empty else "Player"
-    st.markdown(f"## {name}")
-    if str(pid) not in st.session_state["favorites"]:
-        if st.button("⭐ Add to Favorites"): st.session_state["favorites"][str(pid)] = name; st.rerun()
-
-    # Pull two seasons with caching; if live blocked, we'll still render from disk.
-    now  = fetch_player_logs(pid, SEASON)
-    prev = fetch_player_logs(pid, LAST_SEASON)
-
-    if now.empty and prev.empty:
-        st.error("No data available (temporary block or first-time fetch). Try again later to warm the cache.")
-        return
-
-    # Image
-    st.image(_fetch_img(headshot_url(pid), size=(520,360)), use_container_width=False)
-
-    # Numbers
-    if not now.empty:
-        _metrics_row("Current Season Averages", now, ["PTS","REB","AST","FG3M","MIN"])
-        _metrics_row("Last Game", now.iloc[0:1], ["PTS","REB","AST","FG3M","MIN"])
-        _metrics_row("Last 5 Games Averages", now.head(5), ["PTS","REB","AST","FG3M","MIN"])
-
-        # ML prediction (forced when sklearn is present)
-        pred = predict_next(now)
-        c1,c2,c3,c4 = st.columns(4)
-        for (k,v), col in zip(pred.items(), [c1,c2,c3,c4]):
-            with col: st.metric(f"{k} (ML)", f"{v:.2f}")
-
-        # Expanders
-        _bars_expander("📈 Form (Last 5)", now.head(5))
-        _bars_expander("📈 Form (Last 10)", now.head(10))
-        _bars_expander("📈 Form (Last 20)", now.head(20))
-        _bars_expander(f"📈 Season {SEASON}", now)
-        if not prev.empty: _bars_expander(f"📈 Last Season ({LAST_SEASON})", prev)
-
-        # PNG card
-        png = make_card_png(f"{name} — Hot Shot Props", _fetch_img(headshot_url(pid), (520,360)), pred)
-        st.download_button("⬇️ Download as PNG card", data=png, file_name=f"{name.replace(' ','_')}_card.png", mime="image/png")
+    # Last season mean
+    if df_last_season is not None and not df_last_season.empty:
+        ls_pts = safe_mean(df_last_season["PTS"]); ls_reb = safe_mean(df_last_season["REB"])
+        ls_ast = safe_mean(df_last_season["AST"]); ls_3pm = safe_mean(df_last_season["FG3M"])
+        n_ls = len(df_last_season)
+        ls_var = {
+            "PTS": float(np.var(pd.to_numeric(df_last_season["PTS"], errors="coerce").dropna(), ddof=1)) if n_ls>1 else 1.0,
+            "REB": float(np.var(pd.to_numeric(df_last_season["REB"], errors="coerce").dropna(), ddof=1)) if n_ls>1 else 1.0,
+            "AST": float(np.var(pd.to_numeric(df_last_season["AST"], errors="coerce").dropna(), ddof=1)) if n_ls>1 else 1.0,
+            "FG3M": float(np.var(pd.to_numeric(df_last_season["FG3M"], errors="coerce").dropna(), ddof=1)) if n_ls>1 else 1.0,
+        }
     else:
-        st.warning(f"Season {SEASON} logs not cached yet. Open again in a bit to warm cache.")
+        ls_pts=ls_reb=ls_ast=ls_3pm=0.0
+        n_ls=0
+        ls_var={"PTS":1,"REB":1,"AST":1,"FG3M":1}
 
-def page_favorites():
-    st.markdown("## 📌 Favorites — ML Projections")
-    favs:Dict[str,str] = st.session_state["favorites"]
-    if not favs: st.caption("No favorites yet."); return
+    # H2H (very small weight unless >= 4)
+    if df_h2h is not None and not df_h2h.empty:
+        h_pts = safe_mean(df_h2h["PTS"]); h_reb = safe_mean(df_h2h["REB"])
+        h_ast = safe_mean(df_h2h["AST"]); h_3pm = safe_mean(df_h2h["FG3M"])
+        n_h = len(df_h2h)
+        h_var = {
+            "PTS": float(np.var(pd.to_numeric(df_h2h["PTS"], errors="coerce").dropna(), ddof=1)) if n_h>1 else 1.0,
+            "REB": float(np.var(pd.to_numeric(df_h2h["REB"], errors="coerce").dropna(), ddof=1)) if n_h>1 else 1.0,
+            "AST": float(np.var(pd.to_numeric(df_h2h["AST"], errors="coerce").dropna(), ddof=1)) if n_h>1 else 1.0,
+            "FG3M": float(np.var(pd.to_numeric(df_h2h["FG3M"], errors="coerce").dropna(), ddof=1)) if n_h>1 else 1.0,
+        }
+    else:
+        h_pts=h_reb=h_ast=h_3pm=0.0
+        n_h=0
+        h_var={"PTS":1,"REB":1,"AST":1,"FG3M":1}
 
-    rows=[]
-    for pid,name in favs.items():
-        pid_i=int(pid)
-        df = fetch_player_logs(pid_i, SEASON)
-        if df.empty:
-            rows.append({"PLAYER":name, **{k: np.nan for k in PREDICT_STATS}, "LINK": f"?player_id={pid}"})
-            continue
-        for c in PREDICT_STATS+["MIN"]:
-            if c in df.columns: df[c]=pd.to_numeric(df[c], errors="coerce")
-        pred=predict_next(df)
-        rows.append({"PLAYER":name, **pred, "LINK": f"?player_id={pid}"})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    # League baselines & opponent adj
+    league_means = league_baselines(season_opp_df)
 
-# ---------- Router ----------
-def main():
-    st.session_state.setdefault("favorites", {})
-    pid = st.query_params.get("player_id", [None])[0]
-    pid = int(pid) if pid and pid.isdigit() else None
-    page = st.query_params.get("page", ["home"])[0]
+    opp_row = None
+    if opp_team_id is not None and season_opp_df is not None and not season_opp_df.empty:
+        row = season_opp_df[season_opp_df["TEAM_ID"] == opp_team_id]
+        opp_row = row.iloc[0] if not row.empty else None
+    opp_adj = opponent_adjustment(opp_row)
 
-    _ = sidebar()
+    out = {}
+    for k, col in [("PTS","PTS"),("REB","REB"),("AST","AST"),("FG3M","FG3M")]:
+        # Gather candidates
+        cands = []
+        # Recency first: L5 highest base weight, then L10, L20 with slight decay
+        for w, base_w in [(5, 1.0), (10, 0.7), (20, 0.5)]:
+            mean_k = wins[w][k]
+            n = wins[w]["N"]
+            var_k = wins[w][f"VAR_{'3PM' if k=='FG3M' else k}"] if f"VAR_{'3PM' if k=='FG3M' else k}" in wins[w] else 1.0
+            wgt = base_w * var_aware_weight(n, var_k)
+            if n > 0:
+                cands.append((mean_k, wgt))
 
-    if pid:              page_player(pid)
-    elif page=="favorites": page_favorites()
-    else:                page_home()
+        # Current season
+        var_kc = cur_var[k if k!="FG3M" else "FG3M"]
+        cands.append(((cur_pts if k=="PTS" else cur_reb if k=="REB" else cur_ast if k=="AST" else cur_3pm),
+                      0.6 * var_aware_weight(len(cur), var_kc)))
 
-if __name__ == "__main__": main()
+        # Last season (smaller weight)
+        if n_ls > 0:
+            var_kls = ls_var[k if k!="FG3M" else "FG3M"]
+            cands.append(((ls_pts if k=="PTS" else ls_reb if k=="REB" else ls_ast if k=="AST" else ls_3pm),
+                          0.35 * var_aware_weight(n_ls, var_kls)))
+
+        # H2H tiny unless >=4
+        if n_h >= 1:
+            base = 0.15 if n_h < 4 else 0.35
+            var_kh = h_var[k if k!="FG3M" else "FG3M"]
+            cands.append(((h_pts if k=="PTS" else h_reb if k=="REB" else h_ast if k=="AST" else h_3pm),
+                          base * var_aware_weight(n_h, var_kh)))
+
+        # Weighted blend
+        if not cands:
+            blended = 0.0
+        else:
+            num = sum(m * w for (m, w) in cands)
+            den = sum(w for (_, w) in cands)
+            blended = num / den if den > 0 else 0.0
+
+        # James-Stein shrinkage to league mean (stabilizes extremes)
+        # Use approximate variance from current season (fallback 1.0)
+        var_for_shrink = max(var_kc, 1e-6)
+        n_eff = min(int(sum(w for (_, w) in cands)), 82)  # cap
+        shrunk = james_stein_shrink(blended, league_means[k if k!="FG3M" else "FG3M"], n_eff, var_for_shrink)
+
+        # Opponent adjustment
+        adj = shrunk * opp_adj[k if k!="FG3M" else "FG3M"]
+
+        # Final sensible rounding
+        out[k if k!="FG3M" else "3PM"] = float(np.round(adj, 2))
+
+    return out
+
+def result_pill(val: float, good: Tuple[float,float]) -> str:
+    lo, hi = good
+    if val >= hi:
+        cls = "ok"
+    elif val >= lo:
+        cls = "warn"
+    else:
+        cls = "bad"
+    return f'<span class="pill {cls}">{val:.2f}</span>'
+
+# --------------------------- Sidebar ---------------------------
+
+st.sidebar.title("🏀 NBA Live Dashboard")
+st.sidebar.caption("Pick a player, get live stats + next-game projections.")
+
+players_df = get_players_df()
+teams_df = get_teams_df()
+
+# Player search
+name_query = st.sidebar.text_input("Search player", placeholder="e.g., LeBron James")
+if name_query:
+    cand = players_df[players_df["full_name"].str.contains(name_query, case=False, na=False)]
+else:
+    cand = players_df
+
+player = st.sidebar.selectbox(
+    "Select player",
+    sorted(cand["full_name"].tolist()),
+    index=0 if not cand.empty else None
+)
+
+# --------------------------- Main ---------------------------
+
+if not player:
+    st.info("Search and select a player in the sidebar to begin.")
+    st.stop()
+
+player_row = players_df[players_df["full_name"] == player].iloc[0]
+player_id = int(player_row["id"])
+
+colA, colB = st.columns([1, 2], vertical_alignment="center")
+with colA:
+    try:
+        info = get_player_info(player_id)
+        team_name = info.get("TEAM_NAME", "—")
+        jersey = info.get("JERSEY", "—")
+        pos = info.get("POSITION", "—")
+    except Exception:
+        team_name = "—"; jersey = "—"; pos = "—"
+
+    st.subheader(player)
+    st.caption(f"{team_name} • #{jersey} • {pos}")
+
+with colB:
+    st.markdown("### Next-Game Projection (progressive, regression-proof)")
+
+# Current season string
+today = dt.date.today()
+season_str = to_season_string(today)
+
+# Load logs
+with st.spinner("Fetching recent logs..."):
+    try:
+        logs_cur = get_player_game_logs(player_id, season_str)
+    except Exception as e:
+        st.error(f"Could not fetch game logs for {player}: {e}")
+        st.stop()
+
+with st.spinner("Fetching last season & league context..."):
+    try:
+        logs_last = get_player_last_season_logs(player_id, season_str)
+    except Exception:
+        logs_last = pd.DataFrame()
+
+    try:
+        opp_df = get_league_team_defense(season_str)
+    except Exception:
+        opp_df = pd.DataFrame()
+
+# Opponent for next game
+with st.spinner("Finding next opponent..."):
+    try:
+        pinfo = get_player_info(player_id)
+        opp_team_id = find_next_opponent_team_id(pinfo, season_str)
+        if opp_team_id:
+            opp_name = teams_df.loc[teams_df["id"]==opp_team_id, "full_name"]
+            opp_name = opp_name.iloc[0] if not opp_name.empty else "Upcoming Opponent"
+        else:
+            opp_name = "Upcoming Opponent"
+    except Exception:
+        opp_team_id = None
+        opp_name = "Upcoming Opponent"
+
+# H2H slice from current + last season combined
+combined = pd.concat([logs_cur, logs_last], ignore_index=True) if not logs_last.empty else logs_cur.copy()
+df_h2h = h2h_subset(combined, opp_team_id)
+
+# Projection
+projs = ensemble_projection(logs_cur, logs_last, df_h2h, opp_df, opp_team_id)
+
+# Display Projections
+m1, m2, m3, m4 = st.columns(4)
+m1.markdown(f"""<div class="metric-card"><div class="small">Points</div>
+<h2 style="margin:.25rem 0">{projs.get('PTS',0):.2f}</h2>
+<div class="small">{opp_name}</div></div>""", unsafe_allow_html=True)
+m2.markdown(f"""<div class="metric-card"><div class="small">Rebounds</div>
+<h2 style="margin:.25rem 0">{projs.get('REB',0):.2f}</h2>
+<div class="small">{opp_name}</div></div>""", unsafe_allow_html=True)
+m3.markdown(f"""<div class="metric-card"><div class="small">Assists</div>
+<h2 style="margin:.25rem 0">{projs.get('AST',0):.2f}</h2>
+<div class="small">{opp_name}</div></div>""", unsafe_allow_html=True)
+m4.markdown(f"""<div class="metric-card"><div class="small">3PM</div>
+<h2 style="margin:.25rem 0">{projs.get('3PM',0):.2f}</h2>
+<div class="small">{opp_name}</div></div>""", unsafe_allow_html=True)
+
+st.divider()
+
+# --------------------------- Recent Form Sections ---------------------------
+
+st.markdown("## Recent Form & Splits")
+
+def show_form_section(title: str, df: pd.DataFrame):
+    if df is None or df.empty:
+        with st.expander(title, expanded=False):
+            st.write("No data.")
+        return
+    with st.expander(title, expanded=False):
+        # Table
+        show_cols = ["GAME_DATE","MATCHUP","WL","MIN","PTS","REB","AST","FG3M","FGA","FGM","PLUS_MINUS"]
+        show_cols = [c for c in show_cols if c in df.columns]
+        st.dataframe(df[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        # Chart (PTS/REB/AST/3PM)
+        melt_cols = [c for c in ["PTS","REB","AST","FG3M"] if c in df.columns]
+        if melt_cols:
+            tidy = df[["GAME_DATE"] + melt_cols].copy()
+            tidy["GAME_DATE"] = pd.to_datetime(tidy["GAME_DATE"])
+            tidy = tidy.sort_values("GAME_DATE")
+            tidy = tidy.melt("GAME_DATE", var_name="Stat", value_name="Value")
+            ch = (
+                alt.Chart(tidy)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("GAME_DATE:T", title="Game Date"),
+                    y=alt.Y("Value:Q"),
+                    tooltip=["GAME_DATE:T","Stat","Value:Q"]
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(ch, use_container_width=True)
+
+# L5 / L10 / L20 (from current season logs sorted desc)
+for n in [5, 10, 20]:
+    sub = logs_cur.head(n).copy()
+    show_form_section(f"Last {n} (current season)", sub)
+
+# Current season block
+show_form_section(f"Current Season ({season_str})", logs_cur)
+
+# Last season block
+if not logs_last.empty:
+    last_season_str = f"{int(season_str.split('-')[0])-1}-{int(season_str.split('-')[0])%100:02d}"
+    show_form_section(f"Last Season ({last_season_str})", logs_last)
+
+# Head-to-head block
+if df_h2h is not None and not df_h2h.empty:
+    opp_team_name = teams_df.loc[teams_df["id"]==opp_team_id, "full_name"]
+    opp_team_name = opp_team_name.iloc[0] if not opp_team_name.empty else "Opponent"
+    show_form_section(f"Head-to-Head vs {opp_team_name}", df_h2h)
+
+# --------------------------- Notes ---------------------------
+with st.expander("Model Notes", expanded=False):
+    st.markdown(
+        """
+        **Projection recipe (designed to be “regression-proof”):**
+        - Recency windows **L5 / L10 / L20**, each **variance-aware weighted** (more weight for stable, bigger samples).
+        - Adds **current season** + **last season** means (smaller weight for last season).
+        - **Head-to-head** gets a tiny weight unless 4+ games of sample.
+        - Performs **James–Stein shrinkage** toward league baselines (reduces extreme over/under-shoot for small samples).
+        - Applies **opponent difficulty adjustment** via **opponent-allowed** PTS/REB/AST/3PM (clamped ±15%).
+        - Final output rounded to 2 decimals for **PTS, REB, AST, 3PM**.
+        """
+    )
+    st.caption("Tip: Use the Recent Form sections to sanity-check momentum vs projection.")
+
+st.caption("Built with ❤️ for Hot Shot Props · Streamlit + nba_api")

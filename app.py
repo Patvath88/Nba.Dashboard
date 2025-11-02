@@ -1,200 +1,125 @@
-# app.py — Hot Shot Props | NBA Player Projections (Reliable Version)
-# - Adds retry + fallback to data.nba.com
-# - Fully deployable on Streamlit Cloud
+# app.py — Hot Shot Props | NBA Player Projections (Fast Version)
+# Uses balldontlie.io instead of stats.nba.com (instant, no rate limits)
 
-import os
-import time
-import datetime as dt
-import json
-import urllib3
-import requests
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
+import requests
+import datetime as dt
 import altair as alt
 
-from nba_api.stats.static import players as static_players, teams as static_teams
-from nba_api.stats.endpoints import (
-    playergamelogs, playercareerstats, commonplayerinfo,
-    leaguegamelog, scoreboardv2, leaguedashteamstats
-)
+# ---------------------- Page Config ----------------------
+st.set_page_config(page_title="NBA Player Projections — Hot Shot Props", page_icon="🏀", layout="wide")
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# ---------------------- API Helpers ----------------------
+BASE_URL = "https://api.balldontlie.io/v1"
 
-# --------------------------- Streamlit Config ---------------------------
-st.set_page_config(
-    page_title="NBA Live Player Projections — Hot Shot Props",
-    page_icon="🏀",
-    layout="wide",
-)
+@st.cache_data(ttl=60*30)
+def get_players():
+    players = []
+    page = 1
+    while True:
+        res = requests.get(f"{BASE_URL}/players", params={"per_page": 100, "page": page})
+        if res.status_code != 200:
+            break
+        data = res.json()["data"]
+        if not data:
+            break
+        players.extend(data)
+        page += 1
+    return pd.DataFrame(players)
 
-HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.nba.com/",
-    "Connection": "keep-alive",
-}
-
-# --------------------------- Retry + Fallback ---------------------------
-def _retry_nba_api(func, *args, tries=5, sleep=2.0, **kwargs):
-    """Retries NBA API calls with timeout and fallback logic."""
-    last_exc = None
-    for i in range(tries):
-        try:
-            res = func(*args, headers=HEADERS, timeout=60, **kwargs)
-            return res
-        except Exception as e:
-            last_exc = e
-            time.sleep(sleep * (i + 1))
-
-    st.warning(f"NBA API timeout after {tries} tries: {last_exc}")
-    return None
-
-def fallback_player_game_logs(player_id: int) -> pd.DataFrame:
-    """Fallback to data.nba.com (faster, public JSON endpoint)"""
-    try:
-        url = f"https://data.nba.com/data/v2015/json/mobile_teams/nba/2024/players/player_{player_id}_gamelog.json"
-        r = requests.get(url, timeout=20)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        j = r.json()
-        if "gamelog" not in j:
-            return pd.DataFrame()
-        games = j["gamelog"]["game"]
-        df = pd.DataFrame(games)
-        # Normalize keys
-        df.rename(columns={
-            "pts": "PTS", "reb": "REB", "ast": "AST", "fg3m": "FG3M",
-            "game_date": "GAME_DATE", "matchup": "MATCHUP"
-        }, inplace=True)
-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
-        df.sort_values("GAME_DATE", ascending=False, inplace=True)
-        return df
-    except Exception:
+@st.cache_data(ttl=60*30)
+def get_player_stats(player_id: int, last_n=20):
+    today = dt.date.today()
+    start = today - dt.timedelta(days=90)
+    url = f"{BASE_URL}/stats"
+    res = requests.get(url, params={"player_ids[]": player_id, "per_page": 100, "start_date": start, "end_date": today})
+    if res.status_code != 200:
         return pd.DataFrame()
+    df = pd.json_normalize(res.json()["data"])
+    if df.empty:
+        return pd.DataFrame()
+    df["game_date"] = pd.to_datetime(df["game.date"])
+    df = df.sort_values("game_date", ascending=False).head(last_n)
+    df["PTS"] = df["pts"]; df["REB"] = df["reb"]; df["AST"] = df["ast"]; df["3PM"] = df["fg3m"]
+    return df[["game_date","PTS","REB","AST","3PM"]]
 
-# --------------------------- Cache Helpers ---------------------------
-@st.cache_data(ttl=60 * 30)
-def get_players_df():
-    return pd.DataFrame(static_players.get_players())
+# ---------------------- Model ----------------------
+def james_stein(mean, league_mean, n, var):
+    var = max(var, 1e-6)
+    k = var / (var + max(n,1))
+    return (1 - k)*mean + k*league_mean
 
-@st.cache_data(ttl=60 * 30)
-def get_teams_df():
-    return pd.DataFrame(static_teams.get_teams())
+def ensemble_projection(df):
+    if df.empty:
+        return {"PTS":0,"REB":0,"AST":0,"3PM":0}
 
-@st.cache_data(ttl=60 * 15)
-def get_player_info(player_id: int):
-    res = _retry_nba_api(commonplayerinfo.CommonPlayerInfo, player_id=player_id)
-    if res is None:
-        return {}
-    df = res.get_data_frames()[0]
-    return df.iloc[0].to_dict()
+    out = {}
+    league_avg = df[["PTS","REB","AST","3PM"]].mean().to_dict()
+    for stat in ["PTS","REB","AST","3PM"]:
+        vals = pd.to_numeric(df[stat], errors="coerce").dropna()
+        if vals.empty:
+            out[stat] = 0
+            continue
+        # Recency windows
+        samples = []
+        for w, wgt in [(5,1.0),(10,0.8),(20,0.6)]:
+            sub = vals.head(w)
+            if not sub.empty:
+                samples.append((sub.mean(), wgt/(sub.var(ddof=1)+1)))
+        num = sum(m*w for m,w in samples)
+        den = sum(w for _,w in samples)
+        base = num/den if den>0 else 0
+        var = vals.var(ddof=1)
+        out[stat] = round(james_stein(base, league_avg[stat], len(vals), var), 2)
+    return out
 
-@st.cache_data(ttl=60 * 15)
-def get_player_game_logs(player_id: int, season: str):
-    gl = _retry_nba_api(
-        playergamelogs.PlayerGameLogs,
-        player_id_nullable=str(player_id),
-        season_nullable=season,
-        season_type_nullable="Regular Season",
-    )
-    if gl is None:
-        # fallback
-        return fallback_player_game_logs(player_id)
-    return gl.get_data_frames()[0] if gl.get_data_frames() else pd.DataFrame()
+# ---------------------- Sidebar ----------------------
+st.sidebar.title("🏀 NBA Dashboard (Fast Mode)")
+players_df = get_players()
 
-# --------------------------- Helper Functions ---------------------------
-def to_season_string(date: dt.date) -> str:
-    year = date.year
-    if date.month >= 8:
-        start = year
-        end = (year + 1) % 100
-    else:
-        start = year - 1
-        end = year % 100
-    return f"{start}-{end:02d}"
+query = st.sidebar.text_input("Search player", placeholder="e.g., Jayson Tatum")
+filtered = players_df[players_df["first_name"].str.contains(query, case=False, na=False) | 
+                      players_df["last_name"].str.contains(query, case=False, na=False)] if query else players_df
 
-def safe_mean(s):
-    s = pd.to_numeric(s, errors="coerce").dropna()
-    return s.mean() if len(s) else 0.0
-
-def recent_mean(df, col, n=5):
-    if df.empty or col not in df.columns:
-        return 0.0
-    return safe_mean(df.head(n)[col])
-
-# --------------------------- Sidebar ---------------------------
-st.sidebar.title("🏀 NBA Live Dashboard")
-st.sidebar.caption("Pick a player, get live stats + projections")
-
-players_df = get_players_df()
-teams_df = get_teams_df()
-
-query = st.sidebar.text_input("Search player", placeholder="e.g., Luka Doncic")
-if query:
-    matches = players_df[players_df["full_name"].str.contains(query, case=False, na=False)]
-else:
-    matches = players_df
-
-player = st.sidebar.selectbox(
-    "Select player",
-    sorted(matches["full_name"].tolist()),
-    index=0 if not matches.empty else None,
-)
-
-if not player:
+if filtered.empty:
+    st.warning("No players found.")
     st.stop()
 
-# --------------------------- Player Info ---------------------------
-player_id = int(players_df.loc[players_df["full_name"] == player, "id"].iloc[0])
-info = get_player_info(player_id)
-team_name = info.get("TEAM_NAME", "—")
+player = st.sidebar.selectbox("Select Player", sorted(filtered["first_name"] + " " + filtered["last_name"]))
+player_id = int(filtered.loc[(filtered["first_name"] + " " + filtered["last_name"]) == player, "id"].iloc[0])
 
+# ---------------------- Main ----------------------
 st.header(player)
-st.caption(f"{team_name}")
-
-# --------------------------- Game Logs ---------------------------
-season_str = to_season_string(dt.date.today())
-logs = get_player_game_logs(player_id, season_str)
+with st.spinner("Fetching data..."):
+    logs = get_player_stats(player_id)
 
 if logs.empty:
-    st.error("Could not fetch recent games (timeout or no data). Try another player.")
+    st.error("No recent games found for this player.")
     st.stop()
 
-logs = logs.sort_values("GAME_DATE", ascending=False)
-show_cols = [c for c in ["GAME_DATE","MATCHUP","PTS","REB","AST","FG3M","MIN"] if c in logs.columns]
-st.dataframe(logs[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-
-# --------------------------- Simple Projection ---------------------------
-pts = recent_mean(logs, "PTS", 5)
-reb = recent_mean(logs, "REB", 5)
-ast = recent_mean(logs, "AST", 5)
-fg3 = recent_mean(logs, "FG3M", 5)
-
-st.subheader("Next Game Projection (based on recent form)")
+proj = ensemble_projection(logs)
+st.subheader("Next Game Projection (Regression-Proof Model)")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Points", round(pts, 2))
-col2.metric("Rebounds", round(reb, 2))
-col3.metric("Assists", round(ast, 2))
-col4.metric("3PM", round(fg3, 2))
+col1.metric("Points", proj["PTS"])
+col2.metric("Rebounds", proj["REB"])
+col3.metric("Assists", proj["AST"])
+col4.metric("3PM", proj["3PM"])
 
-# --------------------------- Chart ---------------------------
-tidy = logs.melt("GAME_DATE", value_vars=["PTS","REB","AST","FG3M"], var_name="Stat", value_name="Value")
+# ---------------------- Chart ----------------------
+melted = logs.melt("game_date", value_vars=["PTS","REB","AST","3PM"], var_name="Stat", value_name="Value")
 chart = (
-    alt.Chart(tidy)
+    alt.Chart(melted)
     .mark_line(point=True)
     .encode(
-        x="GAME_DATE:T",
+        x="game_date:T",
         y="Value:Q",
         color="Stat:N",
-        tooltip=["GAME_DATE:T","Stat","Value:Q"]
+        tooltip=["game_date:T","Stat","Value:Q"]
     )
     .properties(height=300)
 )
 st.altair_chart(chart, use_container_width=True)
 
-st.caption("Built with ❤️ for Hot Shot Props — Streamlit + nba_api")
+st.caption("Fast API version — built for Hot Shot Props ⚡")

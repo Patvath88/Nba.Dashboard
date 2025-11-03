@@ -105,6 +105,7 @@ def enrich_stats(df):
     if df.empty: return df
     df["P+R"] = df["PTS"] + df["REB"]
     df["P+A"] = df["PTS"] + df["AST"]
+    df["R+A"] = df["REB"] + df["AST"]
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
@@ -116,24 +117,28 @@ def prepare_features(df):
     if df.empty: return df
     df = df.copy()
     for w in [5,10,20]:
-        for s in ["PTS","REB","AST","FG3M"]:
+        for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"]:
             df[f"{s}_avg_{w}"] = df[s].rolling(w).mean()
             df[f"{s}_std_{w}"] = df[s].rolling(w).std()
     df = df.dropna().reset_index(drop=True)
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
+    df["P+R"] = df["PTS"] + df["REB"]
+    df["P+A"] = df["PTS"] + df["AST"]
+    df["R+A"] = df["REB"] + df["AST"]
     return df
 
 def train_player_model(df):
     if df.empty: return None, {}
     df = prepare_features(df)
-    target_stats = ["PTS","REB","AST","FG3M","PRA"]
+    target_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","P+R","P+A","R+A","PRA"]
     models, scores = {}, {}
     features = [c for c in df.columns if "avg_" in c or "std_" in c]
     for stat in target_stats:
+        if stat not in df.columns: continue
         X, y = df[features], df[stat]
         if len(X) < 8: continue
         Xtr,Xte,Ytr,Yte = train_test_split(X,y,test_size=0.2,random_state=42)
-        model = RandomForestRegressor(n_estimators=300,max_depth=8,random_state=42)
+        model = RandomForestRegressor(n_estimators=250,max_depth=8,random_state=42)
         model.fit(Xtr,Ytr)
         preds = model.predict(Xte)
         mae = round(mean_absolute_error(Yte,preds),2)
@@ -150,11 +155,10 @@ def predict_next_game(df, models):
     preds = {}
     for stat,model in models.items():
         preds[stat] = round(float(model.predict(latest[features])[0]),1)
-    preds["PRA"]=round(preds.get("PTS",0)+preds.get("REB",0)+preds.get("AST",0),1)
     return preds
 
 # -------------------------------------------------
-# METRICS + VISUALS
+# METRIC RENDER
 # -------------------------------------------------
 def render_metric_cards(avg_dict, key_suffix=""):
     html = "<div class='metric-grid'>"
@@ -175,27 +179,15 @@ def render_expander(title, df):
     avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","MIN"] if s in df.columns}
     avg.update({"P+R":round((df["PTS"]+df["REB"]).mean(),1),
                 "P+A":round((df["PTS"]+df["AST"]).mean(),1),
+                "R+A":round((df["REB"]+df["AST"]).mean(),1),
                 "PRA":round((df["PTS"]+df["REB"]+df["AST"]).mean(),1)})
     render_metric_cards(avg, key_suffix=title)
-    metric_choice = st.selectbox(f"Select metric ({title})",
-                                 ["PTS","REB","AST","FG3M","PRA"], key=f"sel_{title}")
-    if "GAME_DATE" in df.columns:
-        x = df["GAME_DATE"].iloc[::-1]
-        y = df[metric_choice].iloc[::-1]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=x,y=y,name=metric_choice,marker_color="#E50914",opacity=.6))
-        fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",
-                                 line=dict(color="#29B6F6",width=2)))
-        fig.update_layout(title=f"{metric_choice} Trend — {title}",
-                          paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",
-                          font_color="#F5F5F5",margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig, use_container_width=True, key=f"chart_{title}_{metric_choice}")
 
 # -------------------------------------------------
-# MAIN
+# MAIN DASHBOARD
 # -------------------------------------------------
 st.title("Hot Shot Props — NBA AI Dashboard")
-st.caption("AI-driven player form analysis and model performance tracker.")
+st.caption("AI-driven player form and next-game projection model.")
 
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
@@ -234,53 +226,35 @@ with col2:
     if logo: st.image(logo, width=100)
     st.markdown(f"## {selected_player} ({team_abbr})")
 
-# ---- MODEL ----
+# --- MODEL + PROJECTIONS ---
 models, scores = train_player_model(games_current)
 preds = predict_next_game(games_current, models)
 
 st.markdown("---")
-st.subheader("📊 Recent Game vs. Model Prediction")
+st.subheader("📊 Most Recent Game vs. AI Projection")
 
 if not games_current.empty:
     last = games_current.iloc[0]
-    actual = {"PTS":round(last["PTS"],1),"REB":round(last["REB"],1),
-              "AST":round(last["AST"],1),"3PM":round(last["FG3M"],1),
+    actual = {"PTS":round(last["PTS"],1),"REB":round(last["REB"],1),"AST":round(last["AST"],1),
+              "3PM":round(last["FG3M"],1),"STL":round(last["STL"],1),"BLK":round(last["BLK"],1),
+              "TOV":round(last["TOV"],1),"P+R":round(last["PTS"]+last["REB"],1),
+              "P+A":round(last["PTS"]+last["AST"],1),"R+A":round(last["REB"]+last["AST"],1),
               "PRA":round(last["PTS"]+last["REB"]+last["AST"],1)}
     st.markdown("### 🔥 Most Recent Game (Actual)")
     render_metric_cards(actual,"actual")
-    st.markdown("### 🧠 Model Predictions (Next Game)")
+
+    st.markdown("### 🤖 AI Predicted Next Game Stats")
     render_metric_cards(preds,"preds")
 
-    # Comparison
     stats = list(actual.keys())
+    actual_vals = [actual[s] for s in stats]
+    pred_vals = [preds.get(s, 0) for s in stats]
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=stats,y=[actual[s] for s in stats],name="Actual",marker_color="#E50914",opacity=.7))
-    fig.add_trace(go.Bar(x=stats,y=[preds.get(s,0) for s in stats],name="Predicted",marker_color="#29B6F6",opacity=.7))
-    fig.update_layout(barmode="group",title="Actual vs Predicted",paper_bgcolor="#0d0d0d",
-                      plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
+    fig.add_trace(go.Bar(x=stats,y=actual_vals,name="Actual",marker_color="#E50914",opacity=.7))
+    fig.add_trace(go.Bar(x=stats,y=pred_vals,name="Predicted",marker_color="#29B6F6",opacity=.7))
+    fig.update_layout(barmode="group",title="Actual vs Predicted — Key Stats",
+                      paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
     st.plotly_chart(fig,use_container_width=True)
-
-    # Error trend
-    if len(games_current)>10 and "PTS" in games_current:
-        trend_df = prepare_features(games_current.copy())
-        preds_hist=[]
-        features=[c for c in trend_df.columns if "avg_" in c or "std_" in c]
-        for i in range(5,len(trend_df)):
-            x=trend_df.iloc[i:i+1][features]
-            row={k:models[k].predict(x)[0] for k in models}
-            row["GAME_DATE"]=trend_df.iloc[i]["GAME_DATE"]
-            row["PTS_ACTUAL"]=trend_df.iloc[i]["PTS"]
-            preds_hist.append(row)
-        trend=pd.DataFrame(preds_hist)
-        if not trend.empty:
-            trend["Error"]=(trend["PTS_ACTUAL"]-trend["PTS"]).abs()
-            fig2=go.Figure()
-            fig2.add_trace(go.Scatter(x=trend["GAME_DATE"],y=trend["Error"],
-                                      mode="lines+markers",line=dict(color="#FFD700",width=3)))
-            fig2.update_layout(title="Model Error Over Time (PTS)",paper_bgcolor="#0d0d0d",
-                               plot_bgcolor="#0d0d0d",font_color="#F5F5F5",
-                               yaxis_title="Absolute Error")
-            st.plotly_chart(fig2,use_container_width=True)
 
 st.markdown("---")
 

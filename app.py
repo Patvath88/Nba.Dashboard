@@ -1,5 +1,5 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA RETRO AI DASHBOARD
+# HOT SHOT PROPS — NBA AI RETRO VALIDATION DASHBOARD
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog, playercareerstats
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error
 from PIL import Image
 import requests
 from io import BytesIO
@@ -26,22 +26,27 @@ CURRENT_SEASON = "2025-26"
 LAST_SEASON = "2024-25"
 PRESEASON = "2025 Preseason"
 ASSETS_DIR = "assets"
-PLAYER_PHOTO_DIR = os.path.join(ASSETS_DIR, "player_photos")
-TEAM_LOGO_DIR = os.path.join(ASSETS_DIR, "team_logos")
-os.makedirs(PLAYER_PHOTO_DIR, exist_ok=True)
-os.makedirs(TEAM_LOGO_DIR, exist_ok=True)
+os.makedirs(ASSETS_DIR, exist_ok=True)
 
 # -------------------------------------------------
-# STYLE
+# STYLE (animated NBA logo + arrows)
 # -------------------------------------------------
 st.markdown("""
 <style>
 body {
-    background: radial-gradient(circle at top, #141414 0%, #0b0b0b 60%, #000 100%) fixed;
-    background-image: url('https://i.imgur.com/8AqXbzk.png');
-    background-size: cover;
+    background: radial-gradient(circle at center, #0b0b0b 0%, #000 90%);
+    background-image: url("https://upload.wikimedia.org/wikipedia/en/0/03/National_Basketball_Association_logo.svg");
+    background-repeat: no-repeat;
+    background-position: center center;
+    background-attachment: fixed;
+    background-size: 800px;
+    animation: spinbg 60s linear infinite;
     color: #F5F5F5;
-    font-family:'Roboto',sans-serif;
+    font-family: 'Roboto', sans-serif;
+}
+@keyframes spinbg {
+    from {background-position: center center; transform: rotate(0deg);}
+    to   {background-position: center center; transform: rotate(360deg);}
 }
 h1,h2,h3,h4 {
     font-family:'Oswald',sans-serif;
@@ -71,46 +76,19 @@ h1,h2,h3,h4 {
     font-weight:700;
 }
 .metric-label{
-    font-size:.8em;
-    color:#bbb;
+    font-size:.8em;color:#bbb;
 }
-@media(max-width:600px){
-    .metric-grid{grid-template-columns:repeat(2,1fr);}
-}
+.arrow-up {color:#00FF80;animation:pulseUp 1.2s infinite;}
+.arrow-down {color:#FF5555;animation:pulseDown 1.2s infinite;}
+@keyframes pulseUp {0%{opacity:.6;}50%{opacity:1;}100%{opacity:.6;}}
+@keyframes pulseDown {0%{opacity:.6;}50%{opacity:1;}100%{opacity:.6;}}
+@media(max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # HELPERS
 # -------------------------------------------------
-@st.cache_data(ttl=3600)
-def get_player_photo(player_name, player_id=None):
-    safe = player_name.replace(" ", "_").lower()
-    path = os.path.join(PLAYER_PHOTO_DIR, f"{safe}.png")
-    if os.path.exists(path): return path
-    try:
-        url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            Image.open(BytesIO(r.content)).save(path)
-            return path
-    except Exception: pass
-    return None
-
-@st.cache_data(ttl=3600)
-def get_team_logo(team_abbr):
-    safe = team_abbr.lower()
-    path = os.path.join(TEAM_LOGO_DIR, f"{safe}.png")
-    if os.path.exists(path): return path
-    try:
-        url = f"https://loodibee.com/wp-content/uploads/nba-{safe}-logo.png"
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            Image.open(BytesIO(r.content)).save(path)
-            return path
-    except Exception: pass
-    return None
-
 @st.cache_data(ttl=900)
 def get_games(player_id, season):
     try:
@@ -119,15 +97,7 @@ def get_games(player_id, season):
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=900)
-def get_career(player_id):
-    try:
-        career = playercareerstats.PlayerCareerStats(player_id=player_id)
-        return career.get_data_frames()[0]
-    except Exception:
-        return pd.DataFrame()
-
-def enrich_stats(df):
+def enrich(df):
     if df.empty: return df
     df["P+R"] = df["PTS"] + df["REB"]
     df["P+A"] = df["PTS"] + df["AST"]
@@ -136,173 +106,134 @@ def enrich_stats(df):
     return df
 
 # -------------------------------------------------
-# MODEL ENGINE
+# MODELING
 # -------------------------------------------------
-@st.cache_data(ttl=900)
-def prepare_features(df):
+def prepare(df):
     if df.empty: return df
-    df = df.copy()
     for w in [5,10,20]:
         for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"]:
-            df[f"{s}_avg_{w}"] = df[s].rolling(w).mean()
-            df[f"{s}_std_{w}"] = df[s].rolling(w).std()
-    df = df.dropna().reset_index(drop=True)
-    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
-    df["P+R"] = df["PTS"] + df["REB"]
-    df["P+A"] = df["PTS"] + df["AST"]
-    df["R+A"] = df["REB"] + df["AST"]
+            df[f"{s}_avg_{w}"]=df[s].rolling(w).mean()
+            df[f"{s}_std_{w}"]=df[s].rolling(w).std()
+    df=df.dropna().reset_index(drop=True)
     return df
 
-def train_player_model(df):
-    if df.empty: return None, {}
-    df = prepare_features(df)
-    target_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","P+R","P+A","R+A","PRA"]
-    models, scores = {}, {}
-    features = [c for c in df.columns if "avg_" in c or "std_" in c]
-    for stat in target_stats:
-        if stat not in df.columns: continue
-        X, y = df[features], df[stat]
-        if len(X) < 5: continue
-        Xtr,Xte,Ytr,Yte = train_test_split(X,y,test_size=0.2,random_state=42)
-        model = RandomForestRegressor(n_estimators=250,max_depth=8,random_state=42)
-        model.fit(Xtr,Ytr)
-        preds = model.predict(Xte)
-        mae = round(mean_absolute_error(Yte,preds),2)
-        r2 = round(r2_score(Yte,preds),2)
-        models[stat]=model
-        scores[stat]={"MAE":mae,"R2":r2}
-    return models,scores
+def train_model(df):
+    df=prepare(df)
+    feats=[c for c in df.columns if "avg" in c or "std" in c]
+    stats=["PTS","REB","AST","FG3M","STL","BLK","TOV","P+R","P+A","R+A","PRA"]
+    models={}
+    for s in stats:
+        if s not in df: continue
+        X,y=df[feats],df[s]
+        if len(X)<6: continue
+        Xtr,Xte,Ytr,Yte=train_test_split(X,y,test_size=.2,random_state=42)
+        m=RandomForestRegressor(n_estimators=200,max_depth=8,random_state=42)
+        m.fit(Xtr,Ytr); models[s]=m
+    return models
 
-def predict_next_game(df, models):
-    if not models or df.empty: return {}
-    df = prepare_features(df)
-    latest = df.iloc[-1:]
-    features = [c for c in df.columns if "avg_" in c or "std_" in c]
-    preds = {}
-    for stat,model in models.items():
-        preds[stat] = round(float(model.predict(latest[features])[0]),1)
-    return preds
+def predict_all(df,models):
+    if not models or df.empty: return df
+    df=prepare(df)
+    feats=[c for c in df.columns if "avg" in c or "std" in c]
+    for s,m in models.items():
+        df[f"pred_{s}"]=m.predict(df[feats])
+    return df
 
 # -------------------------------------------------
-# METRIC DISPLAY WITH TREND ARROWS
+# DISPLAY
 # -------------------------------------------------
-def render_metric_cards(avg_dict, season_avg=None):
-    html = "<div class='metric-grid'>"
-    for stat,val in avg_dict.items():
-        if season_avg and stat in season_avg:
-            if val > season_avg[stat]: arrow = "▲"; color = "#00FF80"
-            elif val < season_avg[stat]: arrow = "▼"; color = "#FF5555"
-            else: arrow = "■"; color = "#FFA500"
-        else:
-            arrow, color = "", "#00FF80"
-        html += f"""
-        <div class='metric-card'>
-            <div class='metric-value' style='color:{color};'>{val} {arrow}</div>
-            <div class='metric-label'>{stat}</div>
-        </div>"""
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
+def metric_cards(stats,season=None):
+    html="<div class='metric-grid'>"
+    for k,v in stats.items():
+        arrow=""
+        if season and k in season:
+            if v>season[k]: arrow=f"<span class='arrow-up'>▲</span>"
+            elif v<season[k]: arrow=f"<span class='arrow-down'>▼</span>"
+        html+=f"<div class='metric-card'><div class='metric-value'>{v} {arrow}</div><div class='metric-label'>{k}</div></div>"
+    html+="</div>"
+    st.markdown(html,unsafe_allow_html=True)
 
-# colored bar chart
-def render_avg_bar(df, title, season_avg=None):
-    if df.empty: return
-    avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in df.columns}
-    avg["PRA"] = round(df["PTS"].mean() + df["REB"].mean() + df["AST"].mean(),1)
-    st.markdown(f"### {title}")
-    render_metric_cards(avg, season_avg)
-    bar_colors = ["#ff6f00","#ff1744","#00e676","#2979ff","#fdd835","#9c27b0","#29b6f6","#e53935"]
-    fig = go.Figure([go.Bar(x=list(avg.keys()), y=list(avg.values()),
-                            marker_color=[choice(bar_colors) for _ in avg],
-                            text=list(avg.values()), textposition="outside")])
-    fig.update_layout(title=f"{title} — Averages",paper_bgcolor="#111",
+def bar_compare(actual,pred,title):
+    stats=list(actual.keys())
+    a_vals=[actual[s] for s in stats]
+    p_vals=[pred.get(s,0) for s in stats]
+    colors=["#ff6f00","#ff1744","#00e676","#2979ff","#fdd835","#9c27b0","#29b6f6","#e53935"]
+    fig=go.Figure()
+    fig.add_bar(x=stats,y=a_vals,name="Actual",marker_color=colors)
+    fig.add_bar(x=stats,y=p_vals,name="Predicted",marker_color="#00bcd4",opacity=.7)
+    fig.update_layout(title=title,barmode="group",paper_bgcolor="#111",
                       plot_bgcolor="#111",font_color="#F5F5F5")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig,use_container_width=True)
 
 # -------------------------------------------------
-# MAIN DASHBOARD
+# MAIN
 # -------------------------------------------------
-st.title("🏀 Hot Shot Props — Retro NBA AI Dashboard")
-st.caption("AI projections, player form, and trend tracking with a retro hoops vibe.")
+st.title("🏀 Hot Shot Props — AI Validation Dashboard")
+st.caption("AI model trains on historical data and compares its predictions to real game results.")
 
-nba_players = players.get_active_players()
-nba_teams = teams.get_teams()
-team_lookup = {t["id"]:t for t in nba_teams}
-team_map = {}
-for p in nba_players:
-    tid = p.get("team_id")
-    abbr = team_lookup[tid]["abbreviation"] if tid in team_lookup else "FA"
-    team_map.setdefault(abbr,[]).append(p["full_name"])
-team_options=[]
-for t,plist in sorted(team_map.items()):
-    team_options.append(f"=== {t} ===")
-    team_options.extend(sorted(plist))
+nba_players=players.get_active_players()
+nba_teams=teams.get_teams()
+lookup={t["id"]:t for t in nba_teams}
 
-selected_player = st.selectbox("Search or Browse by Team ↓", team_options,
-                               index=None, placeholder="Select player")
-if not selected_player or selected_player.startswith("==="):
+player_list=sorted([p["full_name"] for p in nba_players])
+player=st.selectbox("Select a Player",player_list)
+
+if not player: st.stop()
+
+pid=next(p["id"] for p in nba_players if p["full_name"]==player)
+team_abbr=lookup[next(p["team_id"] for p in nba_players if p["full_name"]==player)]["abbreviation"]
+
+# --- gather data across seasons ---
+cur=enrich(get_games(pid,CURRENT_SEASON))
+pre=enrich(get_games(pid,PRESEASON))
+last=enrich(get_games(pid,LAST_SEASON))
+data=pd.concat([cur,pre,last]).drop_duplicates(subset="Game_ID",keep="first")
+
+if data.empty:
+    st.error("No data found for this player.")
     st.stop()
 
-pinfo = next((p for p in nba_players if p["full_name"]==selected_player), None)
-player_id = pinfo["id"]
-team_abbr = team_lookup[pinfo["team_id"]]["abbreviation"] if pinfo.get("team_id") in team_lookup else "FA"
-photo = get_player_photo(selected_player, player_id)
-logo = get_team_logo(team_abbr)
+# --- model train and predict every game ---
+models=train_model(data)
+data_pred=predict_all(data,models)
 
-# --- Combine seasons intelligently ---
-games_current = enrich_stats(get_games(player_id, CURRENT_SEASON))
-if len(games_current) < 8:
-    games_pre = enrich_stats(get_games(player_id, PRESEASON))
-    games_last = enrich_stats(get_games(player_id, LAST_SEASON))
-    combined = pd.concat([games_current, games_pre, games_last]).drop_duplicates(subset="Game_ID", keep="first")
-    games_current = combined
+# --- most recent game actuals ---
+latest=data_pred.head(1)
+actual={s:round(latest[s].iloc[0],1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
+predicted={s:round(latest[f"pred_{s}"].iloc[0],1) for s in actual if f"pred_{s}" in latest.columns}
 
-career_df = get_career(player_id)
+st.markdown("## 🔥 Most Recent Game (Actual)")
+metric_cards(actual)
 
-col1,col2 = st.columns([1,3])
-with col1:
-    if photo: st.image(photo, use_container_width=True)
-with col2:
-    if logo: st.image(logo, width=100)
-    st.markdown(f"## {selected_player} ({team_abbr})")
+st.markdown("## 🤖 Model Prediction for Same Game")
+metric_cards(predicted)
 
-# --- MODEL TRAINING & PREDICTION ---
-models, scores = train_player_model(games_current)
-preds = predict_next_game(games_current, models)
+bar_compare(actual,predicted,"Most Recent Game — Actual vs Predicted")
+
+# --- season averages for trend ---
+season_avg={s:round(data[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in data}
+
+# --- AI prediction for next game (latest trained model) ---
+pred_next={s:round(float(m.predict(prepare(data).iloc[[-1]][[c for c in prepare(data).columns if 'avg' in c or 'std' in c]]))[0],1) for s,m in models.items() if s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
+st.markdown("---")
+st.markdown("## 🧠 AI Predicted Next Game Stats")
+metric_cards(pred_next,season_avg)
+
+# --- recent form summaries ---
+def avg_block(df,title):
+    if df.empty: return
+    avg={s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
+    st.markdown(f"### {title}")
+    metric_cards(avg,season_avg)
+    colors=["#ff6f00","#ff1744","#00e676","#2979ff","#fdd835","#9c27b0","#29b6f6","#e53935"]
+    fig=go.Figure([go.Bar(x=list(avg.keys()),y=list(avg.values()),marker_color=[choice(colors) for _ in avg])])
+    fig.update_layout(title=f"{title} Averages",paper_bgcolor="#111",plot_bgcolor="#111",font_color="#fff")
+    st.plotly_chart(fig,use_container_width=True)
+
+avg_block(data.head(5),"Last 5 Games")
+if len(data)>10: avg_block(data.head(10),"Last 10 Games")
+if len(data)>20: avg_block(data.head(20),"Last 20 Games")
+avg_block(data,"Current Season Averages")
 
 st.markdown("---")
-with st.expander("🤖 AI Model Projections — Next Game", expanded=True):
-    if not preds:
-        st.error("Not enough data to generate predictions yet.")
-    else:
-        render_metric_cards(preds)
-
-st.markdown("---")
-
-# ---- RECENT FORM SECTIONS ----
-if not games_current.empty:
-    season_avg = {s:round(games_current[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in games_current.columns}
-
-    recent = games_current.head(1)
-    render_avg_bar(recent, "🔥 Most Recent Game", season_avg)
-
-    if len(games_current) >= 5:
-        render_avg_bar(games_current.head(5), "📅 Last 5 Games", season_avg)
-    if len(games_current) >= 10:
-        render_avg_bar(games_current.head(10), "📅 Last 10 Games", season_avg)
-    if len(games_current) >= 20:
-        render_avg_bar(games_current.head(20), "📅 Last 20 Games", season_avg)
-
-    render_avg_bar(games_current, "📊 Current Season Averages", season_avg)
-
-# ---- Career Totals ----
-if not career_df.empty:
-    totals = career_df[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].sum()
-    st.markdown("🏀 **Career Totals**")
-    render_metric_cards({
-        "PTS":int(totals["PTS"]),"REB":int(totals["REB"]),"AST":int(totals["AST"]),
-        "3PM":int(totals["FG3M"]),"STL":int(totals["STL"]),"BLK":int(totals["BLK"]),
-        "TOV":int(totals["TOV"]),"MIN":int(totals["MIN"])
-    })
-
-st.markdown("---")
-st.caption("🧠 Powered by NBA API and Hot Shot Props AI Engine © 2025")
+st.caption("⚡ Hot Shot Props AI Model — trained, tested, and validated automatically © 2025")

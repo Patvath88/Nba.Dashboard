@@ -237,15 +237,57 @@ def render_recent_wins_section():
 # METRIC ROWS + VISUALS
 # -------------------------------------------------
 def render_metric_cards(avg_dict, key_suffix=""):
-    """Horizontal metric card row with color cues."""
-    html = "<div class='scroll-row'>"
+    """Render compact metric cards in a responsive 4-column grid."""
+    st.markdown("""
+    <style>
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 10px;
+        margin-bottom: 10px;
+        justify-items: center;
+    }
+    .metric-card {
+        width: 100%;
+        max-width: 150px;
+        background: linear-gradient(145deg, #1b1b1b, #121212);
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        padding: 10px;
+        text-align: center;
+        transition: all 0.3s ease;
+        box-shadow: 0 0 6px rgba(229,9,20,0.3);
+    }
+    .metric-card:hover {
+        transform: scale(1.03);
+        box-shadow: 0 0 12px rgba(229,9,20,0.6);
+    }
+    .metric-value {
+        font-size: 1.1em;
+        font-weight: 700;
+    }
+    .metric-label {
+        font-size: 0.8em;
+        color: #bbb;
+    }
+    @media (max-width: 600px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    html = "<div class='metric-grid'>"
     for stat, val in avg_dict.items():
-        color = "#00FF80" if isinstance(val,(int,float)) and val>0 else "#FF5555"
+        # color coding for hot/cold
+        color = "#00FF80" if isinstance(val, (int, float)) and val > 0 else "#FF5555"
         html += f"""
         <div class='metric-card' style='border:1px solid {color};'>
             <div class='metric-value' style='color:{color};'>{val}</div>
             <div class='metric-label'>{stat}</div>
-        </div>"""
+        </div>
+        """
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 

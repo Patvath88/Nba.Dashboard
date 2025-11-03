@@ -13,7 +13,9 @@ import requests, io
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
-import random
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "matplotlib"], check=True)
+
 
 # -------------------------------------------------
 # CONFIG

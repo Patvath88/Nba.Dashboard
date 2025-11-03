@@ -11,7 +11,6 @@ from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog, playercareerstats
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
 from PIL import Image
 import requests
 from io import BytesIO
@@ -37,23 +36,42 @@ st.markdown("""
 <style>
 body {background-color:#0b0b0b;color:#F5F5F5;font-family:'Roboto',sans-serif;}
 h1,h2,h3,h4 {font-family:'Oswald',sans-serif;color:#E50914;}
-.scroll-row {display:flex;overflow-x:auto;gap:10px;padding-bottom:6px;scrollbar-width:thin;}
-.scroll-row::-webkit-scrollbar {height:6px;}
-.scroll-row::-webkit-scrollbar-thumb {background:#333;border-radius:4px;}
-.metric-card {
-    flex:0 0 auto;width:110px;background:linear-gradient(145deg,#1b1b1b,#121212);
-    border:1px solid #2a2a2a;border-radius:10px;padding:8px;text-align:center;
-    transition:all 0.3s ease;box-shadow:0 0 6px rgba(229,9,20,0.3);
+.metric-grid {
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+    gap:10px;
+    margin-bottom:10px;
+    justify-items:center;
 }
-.metric-card:hover {transform:scale(1.03);box-shadow:0 0 12px rgba(229,9,20,0.6);}
+.metric-card {
+    width:100%;
+    max-width:150px;
+    background:linear-gradient(145deg,#1b1b1b,#121212);
+    border:1px solid #2a2a2a;
+    border-radius:10px;
+    padding:10px;
+    text-align:center;
+    transition:all 0.3s ease;
+    box-shadow:0 0 6px rgba(229,9,20,0.3);
+}
+.metric-card:hover {
+    transform:scale(1.03);
+    box-shadow:0 0 12px rgba(229,9,20,0.6);
+}
 .metric-value {font-size:1.1em;font-weight:700;}
-.metric-label {font-size:0.75em;color:#bbb;}
+.metric-label {font-size:0.8em;color:#bbb;}
 .value-bet-card {
     background:linear-gradient(160deg,#1c1c1c,#151515);
-    border:1px solid #333;border-radius:18px;padding:14px;text-align:center;
+    border:1px solid #333;
+    border-radius:18px;
+    padding:14px;
+    text-align:center;
     transition:transform 0.25s ease,box-shadow 0.25s ease;
 }
 .value-bet-card:hover {transform:scale(1.05);box-shadow:0 0 20px rgba(0,255,128,0.6);}
+@media (max-width:600px){
+    .metric-grid{grid-template-columns:repeat(2,1fr);}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,28 +82,32 @@ h1,h2,h3,h4 {font-family:'Oswald',sans-serif;color:#E50914;}
 def get_player_photo(player_name, player_id=None):
     safe = player_name.replace(" ", "_").lower()
     path = os.path.join(PLAYER_PHOTO_DIR, f"{safe}.png")
-    if os.path.exists(path): return path
+    if os.path.exists(path):
+        return path
     try:
         url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             Image.open(BytesIO(r.content)).save(path)
             return path
-    except Exception: pass
+    except Exception:
+        pass
     return None
 
 @st.cache_data(ttl=3600)
 def get_team_logo(team_abbr):
     safe = team_abbr.lower()
     path = os.path.join(TEAM_LOGO_DIR, f"{safe}.png")
-    if os.path.exists(path): return path
+    if os.path.exists(path):
+        return path
     try:
         url = f"https://loodibee.com/wp-content/uploads/nba-{safe}-logo.png"
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             Image.open(BytesIO(r.content)).save(path)
             return path
-    except Exception: pass
+    except Exception:
+        pass
     return None
 
 @st.cache_data(ttl=900)
@@ -93,17 +115,20 @@ def get_games(player_id, season):
     try:
         log = playergamelog.PlayerGameLog(player_id=player_id, season=season)
         return log.get_data_frames()[0]
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=900)
 def get_career(player_id):
     try:
         career = playercareerstats.PlayerCareerStats(player_id=player_id)
         return career.get_data_frames()[0]
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 def enrich_stats(df):
-    if df.empty: return df
+    if df.empty:
+        return df
     df["P+R"] = df["PTS"] + df["REB"]
     df["P+A"] = df["PTS"] + df["AST"]
     df["R+A"] = df["REB"] + df["AST"]
@@ -111,18 +136,17 @@ def enrich_stats(df):
     return df
 
 # -------------------------------------------------
-# ODDSAPI + ML ENGINE
+# ODDS + MODEL
 # -------------------------------------------------
 @st.cache_data(ttl=600)
 def get_odds_data():
-    """Fetch NBA player prop odds from OddsAPI (10-min cache)."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {
-        "regions": "us",
-        "markets": "player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
-        "oddsFormat": "american",
-        "include": "all",
-        "apiKey": ODDS_API_KEY,
+        "regions":"us",
+        "markets":"player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
+        "oddsFormat":"american",
+        "include":"all",
+        "apiKey":ODDS_API_KEY
     }
     try:
         r = requests.get(url, params=params, timeout=10)
@@ -146,13 +170,12 @@ def extract_best_line(player_name, odds_json):
                         line = outcome.get("point")
                         price = outcome.get("price")
                         if line is not None:
-                            best = {"market": market.get("key"),
-                                    "book": book["title"],
-                                    "line": line, "price": price}
+                            best = {"market":market.get("key"),"book":book["title"],"line":line,"price":price}
     return best
 
 def prepare_features(df):
-    if df.empty: return df
+    if df.empty:
+        return df
     df = df.copy()
     for w in [5,10,20]:
         for s in ["PTS","REB","AST","PRA"]:
@@ -160,9 +183,11 @@ def prepare_features(df):
     return df.dropna().reset_index(drop=True)
 
 def predict_prop_value(df, target_stat):
-    if df.empty or target_stat not in df.columns: return None
+    if df.empty or target_stat not in df.columns:
+        return None
     df = prepare_features(df)
-    if len(df) < 8: return round(df[target_stat].mean(),1)
+    if len(df) < 8:
+        return round(df[target_stat].mean(),1)
     feature_cols = [c for c in df.columns if any(x in c for x in ["PTS","REB","AST","PRA"]) and c != target_stat]
     X, y = df[feature_cols], df[target_stat]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -171,7 +196,8 @@ def predict_prop_value(df, target_stat):
     return round(model.predict([X.iloc[-1]])[0],1)
 
 def compute_edge(model_pred, book_line):
-    if not book_line: return 0, "N/A"
+    if not book_line:
+        return 0, "N/A"
     diff = model_pred - book_line
     edge = (diff / book_line) * 100 if book_line != 0 else 0
     return round(edge,1), "Over" if diff > 0 else "Under"
@@ -214,16 +240,16 @@ def render_hot_value_bets(player_id, player_name, team_abbr, odds_json, games_df
         return
     edge, direction = compute_edge(model_pred, best_line["line"])
     st.session_state["latest_model"] = {f"{target_stat} Pred":model_pred,"Line":best_line["line"],"Edge%":edge}
-    st.markdown("### 🤖 Model Projection")
+    st.markdown("### Model Projection")
     render_metric_cards(st.session_state["latest_model"], key_suffix="proj")
     if edge >= 10:
-        st.markdown("## 🔥 Hot Value Bet")
+        st.markdown("## Hot Value Bet")
         render_value_bet_card(player_name, team_abbr, player_id, target_stat, model_pred,
                               best_line["line"], best_line["book"], edge, direction)
 
 def render_recent_wins_section():
     wins = get_recent_wins()
-    st.markdown("### 🏆 Recent Model Wins")
+    st.markdown("### Recent Model Wins")
     if wins.empty:
         st.caption("No wins recorded yet.")
         return
@@ -234,60 +260,17 @@ def render_recent_wins_section():
         c.markdown(f"<div class='value-bet-card' style='border:1px solid {color};box-shadow:0 0 15px {color};'><b>{row['player']}</b><br>{row['stat']} | Pred {row['pred']} | Actual {row['actual']}<br><span style='color:{color};'>{row['direction']} ✓</span></div>", unsafe_allow_html=True)
 
 # -------------------------------------------------
-# METRIC ROWS + VISUALS
+# METRIC CARDS + VISUALS
 # -------------------------------------------------
 def render_metric_cards(avg_dict, key_suffix=""):
-    """Render compact metric cards in a responsive 4-column grid."""
-    st.markdown("""
-    <style>
-    .metric-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-        gap: 10px;
-        margin-bottom: 10px;
-        justify-items: center;
-    }
-    .metric-card {
-        width: 100%;
-        max-width: 150px;
-        background: linear-gradient(145deg, #1b1b1b, #121212);
-        border: 1px solid #2a2a2a;
-        border-radius: 10px;
-        padding: 10px;
-        text-align: center;
-        transition: all 0.3s ease;
-        box-shadow: 0 0 6px rgba(229,9,20,0.3);
-    }
-    .metric-card:hover {
-        transform: scale(1.03);
-        box-shadow: 0 0 12px rgba(229,9,20,0.6);
-    }
-    .metric-value {
-        font-size: 1.1em;
-        font-weight: 700;
-    }
-    .metric-label {
-        font-size: 0.8em;
-        color: #bbb;
-    }
-    @media (max-width: 600px) {
-        .metric-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
     html = "<div class='metric-grid'>"
     for stat, val in avg_dict.items():
-        # color coding for hot/cold
-        color = "#00FF80" if isinstance(val, (int, float)) and val > 0 else "#FF5555"
+        color = "#00FF80" if isinstance(val,(int,float)) and val>0 else "#FF5555"
         html += f"""
         <div class='metric-card' style='border:1px solid {color};'>
             <div class='metric-value' style='color:{color};'>{val}</div>
             <div class='metric-label'>{stat}</div>
-        </div>
-        """
+        </div>"""
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
@@ -297,7 +280,7 @@ def render_recent_game_section(df, model_dict=None):
         return
     last = df.iloc[0]
     metrics = {"PTS":last["PTS"],"REB":last["REB"],"AST":last["AST"],"3PM":last["FG3M"]}
-    st.markdown("### 🕹️ Most Recent Game")
+    st.markdown("### Most Recent Game")
     render_metric_cards({k:round(v,1) for k,v in metrics.items()}, key_suffix="recent")
     fig = go.Figure()
     fig.add_trace(go.Bar(x=list(metrics.keys()), y=list(metrics.values()),
@@ -305,9 +288,9 @@ def render_recent_game_section(df, model_dict=None):
     fig.update_layout(title="Performance Breakdown", paper_bgcolor="#0d0d0d",
                       plot_bgcolor="#0d0d0d", font_color="#F5F5F5",
                       margin=dict(l=10,r=10,t=30,b=10))
-    st.plotly_chart(fig, width="stretch", key="recent_chart")
+    st.plotly_chart(fig, use_container_width=True, key="recent_chart")
     if model_dict:
-        st.markdown("### 🤖 Model Projection")
+        st.markdown("### Model Projection")
         render_metric_cards(model_dict, key_suffix="model")
 
 def render_expander(title, df):
@@ -324,16 +307,15 @@ def render_expander(title, df):
         x, y = df["GAME_DATE"].iloc[::-1], df[metric_choice].iloc[::-1]
         fig = go.Figure()
         fig.add_trace(go.Bar(x=x, y=y, name=metric_choice, marker_color="#E50914", opacity=0.6))
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
-                                 line=dict(color="#29B6F6", width=2)))
+        fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers", line=dict(color="#29B6F6", width=2)))
         fig.update_layout(title=f"{metric_choice} Trend — {title}", paper_bgcolor="#0d0d0d",
                           plot_bgcolor="#0d0d0d", font_color="#F5F5F5", margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig, width="stretch", key=f"chart_{title}_{metric_choice}")
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{title}_{metric_choice}")
 
 # -------------------------------------------------
 # MAIN LAYOUT
 # -------------------------------------------------
-st.title("🏀 Hot Shot Props — NBA AI Dashboard")
+st.title("Hot Shot Props — NBA AI Dashboard")
 st.caption("Live player projections, sportsbook odds, and AI-driven value edges.")
 
 nba_players = players.get_active_players()
@@ -350,7 +332,9 @@ for t,plist in sorted(team_map.items()):
     team_options.extend(sorted(plist))
 
 selected_player = st.selectbox("Search or Browse by Team ↓", options=team_options, index=None, placeholder="Select player")
-if not selected_player or selected_player.startswith("==="): st.stop()
+if not selected_player or selected_player.startswith("==="):
+    st.stop()
+
 pinfo = next((p for p in nba_players if p["full_name"]==selected_player), None)
 player_id = pinfo["id"]
 team_abbr = team_lookup[pinfo["team_id"]]["abbreviation"] if pinfo.get("team_id") in team_lookup else "FA"
@@ -358,16 +342,19 @@ photo = get_player_photo(selected_player, player_id)
 logo = get_team_logo(team_abbr)
 
 games_current = enrich_stats(get_games(player_id, CURRENT_SEASON))
-if games_current.empty: games_current = enrich_stats(get_games(player_id, LAST_SEASON))
+if games_current.empty:
+    games_current = enrich_stats(get_games(player_id, LAST_SEASON))
 games_last = enrich_stats(get_games(player_id, LAST_SEASON))
 career_df = get_career(player_id)
 odds_json = get_odds_data()
 
 col1, col2 = st.columns([1,3])
 with col1:
-    if photo: st.image(photo, width="stretch")
+    if photo:
+        st.image(photo, use_container_width=True)
 with col2:
-    if logo: st.image(logo, width=100)
+    if logo:
+        st.image(logo, width=100)
     st.markdown(f"## {selected_player} ({team_abbr})")
 
 st.markdown("---")
@@ -377,15 +364,16 @@ render_recent_wins_section()
 st.markdown("---")
 render_recent_game_section(games_current, st.session_state.get("latest_model"))
 
-with st.expander(" Last 5 Games", expanded=False): render_expander("last5", games_current.head(5))
-with st.expander(" Last 10 Games", expanded=False): render_expander("last10", games_current.head(10))
-with st.expander("with st.expander(" Last 20 Games", expanded=False):
+with st.expander("Last 5 Games", expanded=False):
+    render_expander("last5", games_current.head(5))
+with st.expander("Last 10 Games", expanded=False):
+    render_expander("last10", games_current.head(10))
+with st.expander("Last 20 Games", expanded=False):
     df20 = games_current.copy()
     if len(df20) < 20 and not games_last.empty:
         df20 = pd.concat([df20, games_last.head(20 - len(df20))])
     render_expander("last20", df20)
-
-with st.expander(" Season Averages", expanded=False):
+with st.expander("Season Averages", expanded=False):
     if not games_current.empty:
         season_avg = games_current.mean(numeric_only=True)
         render_metric_cards({
@@ -399,8 +387,7 @@ with st.expander(" Season Averages", expanded=False):
             "MIN": round(season_avg["MIN"], 1),
             "PRA": round(season_avg["PTS"] + season_avg["REB"] + season_avg["AST"], 1)
         }, key_suffix="season")
-
-with st.expander(" Career Averages", expanded=False):
+with st.expander("Career Averages", expanded=False):
     if not career_df.empty:
         career_avg = career_df.groupby("SEASON_ID")[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].mean().mean()
         render_metric_cards({
@@ -414,7 +401,5 @@ with st.expander(" Career Averages", expanded=False):
             "MIN": round(career_avg["MIN"], 1),
         }, key_suffix="career")
 
-# ----- Footer -----
 st.markdown("---")
-st.caption("⚡ Powered by NBA API, OddsAPI, and Hot Shot Props AI Engine © 2025")
-
+st.caption("Powered by NBA API, OddsAPI, and Hot Shot Props AI Engine © 2025")

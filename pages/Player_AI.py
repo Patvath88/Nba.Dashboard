@@ -92,13 +92,16 @@ else:
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render stats in 4-column grid with dark gray background and red text."""
+    """Render stats in a 4-column grid with dark gray background and red text."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         acc_str = ""
         if accuracy and predictions:
             acc_val = accuracy.get(key, 0)
             acc_str = f"<div style='font-size:13px; color:gray; font-style:italic;'>(Accuracy: {acc_val}%)</div>"
+
+        # Fix: explicitly convert val to text, not HTML
+        val_str = str(val)
 
         card_html = f"""
         <div style="
@@ -109,11 +112,10 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
             text-align:center;
             color:{color};
             box-shadow: 0px 0px 10px {color};
-            transition: all 0.3s ease;
         ">
             <h4 style='margin-bottom:2px;'>{key}</h4>
             {acc_str}
-            <div style='font-size:30px;font-weight:bold;margin-top:6px;'>{val}</div>
+            <div style='font-size:30px;font-weight:bold;margin-top:6px;'>{val_str}</div>
         </div>
         """
         with cols[i % 4]:

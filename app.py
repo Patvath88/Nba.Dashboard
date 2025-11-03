@@ -1,5 +1,5 @@
 # -------------------------------------------------
-# HOT SHOT PROPS – NBA PLAYER DASHBOARD (FINAL PATCH)
+# HOT SHOT PROPS – NBA PLAYER DASHBOARD (FUTURISTIC PATCH)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
@@ -28,13 +28,47 @@ os.makedirs(PLAYER_PHOTO_DIR, exist_ok=True)
 os.makedirs(TEAM_LOGO_DIR, exist_ok=True)
 
 # -------------------------------------------------
-# STYLE
+# STYLE (FUTURISTIC)
 # -------------------------------------------------
 st.markdown("""
 <style>
-body {background-color:#121212;color:#F5F5F5;font-family:'Roboto',sans-serif;}
-h1,h2,h3,h4{font-family:'Oswald',sans-serif;color:#E50914;}
-.metric-card{background:#1e1e1e;border-radius:10px;padding:8px;text-align:center;}
+body {
+    background-color:#0d0d0d;
+    color:#F5F5F5;
+    font-family:'Roboto',sans-serif;
+}
+h1,h2,h3,h4 {
+    font-family:'Oswald',sans-serif;
+    color:#E50914;
+}
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 15px;
+    margin-bottom: 15px;
+}
+.metric-card {
+    background: linear-gradient(145deg, #1b1b1b, #121212);
+    border: 1px solid #2a2a2a;
+    border-radius: 15px;
+    padding: 12px;
+    text-align: center;
+    transition: all 0.3s ease;
+    box-shadow: 0 0 10px rgba(229,9,20,0.3);
+}
+.metric-card:hover {
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 0 20px rgba(229,9,20,0.6);
+}
+.metric-value {
+    font-size: 1.6em;
+    color: #ffffff;
+    font-weight: bold;
+}
+.metric-label {
+    font-size: 0.9em;
+    color: #aaa;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -188,38 +222,48 @@ with col2:
         )
 
 # -------------------------------------------------
-# EXPANDER RENDERING
+# EXPANDER RENDERING (WITH SELECTOR + FUTURISTIC CARDS)
 # -------------------------------------------------
 def render_expander(title, df):
     if df.empty:
         st.warning(f"No data available for {title}")
         return
-    avg = compute_avg(df)
-    cols = st.columns(6)
-    stats = list(avg.keys())
-    for i, stat in enumerate(stats):
-        with cols[i % 6]:
-            st.metric(stat, avg[stat])
 
-    # Charts: only if GAME_DATE exists
-    if "GAME_DATE" in df.columns:
-        chart_stats = [("PTS","#E50914"),("REB","#00E676"),
-                       ("AST","#29B6F6"),("FG3M","#FFD700")]
+    avg = compute_avg(df)
+
+    # Futuristic metric cards
+    st.markdown("<div class='metric-grid'>", unsafe_allow_html=True)
+    for stat, val in avg.items():
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-value'>{val}</div>
+            <div class='metric-label'>{stat}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Dropdown metric selector
+    selectable_stats = [s for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","MIN","P+R","P+A","R+A","PRA"] if s in df.columns]
+    metric_choice = st.selectbox("📊 Choose a metric to visualize:", selectable_stats, key=f"metric_select_{title}")
+
+    if "GAME_DATE" in df.columns and metric_choice in df.columns:
         x = df["GAME_DATE"].iloc[::-1]
+        y = df[metric_choice].iloc[::-1]
         fig = go.Figure()
-        for s, c in chart_stats:
-            if s in df.columns:
-                y = df[s].iloc[::-1]
-                fig.add_trace(go.Bar(x=x, y=y, name=s, marker_color=c, opacity=0.6))
-                fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=f"{s} trend",
-                                         line=dict(color=c, width=2)))
+        fig.add_trace(go.Bar(x=x, y=y, name=metric_choice, marker_color="#E50914", opacity=0.6))
+        fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
+                                 line=dict(color="#29B6F6", width=3),
+                                 marker=dict(size=8)))
         fig.update_layout(
-            paper_bgcolor="#121212", plot_bgcolor="#121212", font_color="#F5F5F5",
+            paper_bgcolor="#0d0d0d",
+            plot_bgcolor="#0d0d0d",
+            font_color="#F5F5F5",
+            title=f"{metric_choice} Trend — {title.title()}",
+            yaxis_title=metric_choice,
+            margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(orientation="h", yanchor="bottom"),
-            margin=dict(l=10,r=10,t=30,b=10),
-            yaxis_title="Stat Value"
         )
-        st.plotly_chart(fig, width="stretch", key=f"chart_{title}")
+        st.plotly_chart(fig, width="stretch", key=f"chart_{title}_{metric_choice}")
     else:
         st.caption("No game-level data available to chart for this section.")
 

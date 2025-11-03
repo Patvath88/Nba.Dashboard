@@ -109,7 +109,7 @@ def enrich_stats(df):
     return df
 
 # -------------------------------------------------
-# MODEL ENGINE (multi-stat predictor)
+# MODEL ENGINE
 # -------------------------------------------------
 @st.cache_data(ttl=900)
 def prepare_features(df):
@@ -154,7 +154,7 @@ def predict_next_game(df, models):
     return preds
 
 # -------------------------------------------------
-# METRIC CARDS + VISUALS
+# METRICS + VISUALS
 # -------------------------------------------------
 def render_metric_cards(avg_dict, key_suffix=""):
     html = "<div class='metric-grid'>"
@@ -168,8 +168,31 @@ def render_metric_cards(avg_dict, key_suffix=""):
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
+def render_expander(title, df):
+    if df.empty:
+        st.warning(f"No data for {title}")
+        return
+    avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","MIN"] if s in df.columns}
+    avg.update({"P+R":round((df["PTS"]+df["REB"]).mean(),1),
+                "P+A":round((df["PTS"]+df["AST"]).mean(),1),
+                "PRA":round((df["PTS"]+df["REB"]+df["AST"]).mean(),1)})
+    render_metric_cards(avg, key_suffix=title)
+    metric_choice = st.selectbox(f"Select metric ({title})",
+                                 ["PTS","REB","AST","FG3M","PRA"], key=f"sel_{title}")
+    if "GAME_DATE" in df.columns:
+        x = df["GAME_DATE"].iloc[::-1]
+        y = df[metric_choice].iloc[::-1]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=x,y=y,name=metric_choice,marker_color="#E50914",opacity=.6))
+        fig.add_trace(go.Scatter(x=x,y=y,mode="lines+markers",
+                                 line=dict(color="#29B6F6",width=2)))
+        fig.update_layout(title=f"{metric_choice} Trend — {title}",
+                          paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",
+                          font_color="#F5F5F5",margin=dict(l=10,r=10,t=40,b=10))
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{title}_{metric_choice}")
+
 # -------------------------------------------------
-# MAIN DASHBOARD
+# MAIN
 # -------------------------------------------------
 st.title("Hot Shot Props — NBA AI Dashboard")
 st.caption("AI-driven player form analysis and model performance tracker.")
@@ -187,7 +210,7 @@ for t,plist in sorted(team_map.items()):
     team_options.append(f"=== {t} ===")
     team_options.extend(sorted(plist))
 
-selected_player = st.selectbox("Search or Browse by Team ↓", options=team_options,
+selected_player = st.selectbox("Search or Browse by Team ↓", team_options,
                                index=None, placeholder="Select player")
 if not selected_player or selected_player.startswith("==="):
     st.stop()
@@ -211,65 +234,83 @@ with col2:
     if logo: st.image(logo, width=100)
     st.markdown(f"## {selected_player} ({team_abbr})")
 
-# --- Train + Predict ---
+# ---- MODEL ----
 models, scores = train_player_model(games_current)
 preds = predict_next_game(games_current, models)
 
 st.markdown("---")
 st.subheader("📊 Recent Game vs. Model Prediction")
 
-if games_current.empty:
-    st.info("No recent game data available.")
-else:
+if not games_current.empty:
     last = games_current.iloc[0]
-    actual = {
-        "PTS": round(last["PTS"], 1),
-        "REB": round(last["REB"], 1),
-        "AST": round(last["AST"], 1),
-        "3PM": round(last["FG3M"], 1),
-        "PRA": round(last["PTS"] + last["REB"] + last["AST"], 1)
-    }
-
+    actual = {"PTS":round(last["PTS"],1),"REB":round(last["REB"],1),
+              "AST":round(last["AST"],1),"3PM":round(last["FG3M"],1),
+              "PRA":round(last["PTS"]+last["REB"]+last["AST"],1)}
     st.markdown("### 🔥 Most Recent Game (Actual)")
-    render_metric_cards(actual, key_suffix="actual")
-
+    render_metric_cards(actual,"actual")
     st.markdown("### 🧠 Model Predictions (Next Game)")
-    render_metric_cards(preds, key_suffix="preds")
+    render_metric_cards(preds,"preds")
 
+    # Comparison
     stats = list(actual.keys())
-    actual_vals = [actual[s] for s in stats]
-    pred_vals = [preds.get(s, 0) for s in stats]
-
-    # Comparison chart
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=stats, y=actual_vals, name="Actual", marker_color="#E50914", opacity=0.7))
-    fig.add_trace(go.Bar(x=stats, y=pred_vals, name="Predicted", marker_color="#29B6F6", opacity=0.7))
-    fig.update_layout(barmode="group", title="Actual vs Predicted — Key Stats",
-                      paper_bgcolor="#0d0d0d", plot_bgcolor="#0d0d0d",
-                      font_color="#F5F5F5", legend=dict(orientation="h", yanchor="bottom", y=1.02))
-    st.plotly_chart(fig, use_container_width=True, key="compare_chart")
+    fig.add_trace(go.Bar(x=stats,y=[actual[s] for s in stats],name="Actual",marker_color="#E50914",opacity=.7))
+    fig.add_trace(go.Bar(x=stats,y=[preds.get(s,0) for s in stats],name="Predicted",marker_color="#29B6F6",opacity=.7))
+    fig.update_layout(barmode="group",title="Actual vs Predicted",paper_bgcolor="#0d0d0d",
+                      plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
+    st.plotly_chart(fig,use_container_width=True)
 
-    # --- Accuracy over time ---
-    if len(games_current) > 10 and "PTS" in games_current:
+    # Error trend
+    if len(games_current)>10 and "PTS" in games_current:
         trend_df = prepare_features(games_current.copy())
-        trend_preds = []
-        features = [c for c in trend_df.columns if "avg_" in c or "std_" in c]
-        for i in range(5, len(trend_df)):
-            x = trend_df.iloc[i:i+1][features]
-            preds_loop = {k: models[k].predict(x)[0] for k in models.keys()}
-            preds_loop["GAME_DATE"] = trend_df.iloc[i]["GAME_DATE"]
-            preds_loop["PTS_ACTUAL"] = trend_df.iloc[i]["PTS"]
-            trend_preds.append(preds_loop)
-        trend = pd.DataFrame(trend_preds)
+        preds_hist=[]
+        features=[c for c in trend_df.columns if "avg_" in c or "std_" in c]
+        for i in range(5,len(trend_df)):
+            x=trend_df.iloc[i:i+1][features]
+            row={k:models[k].predict(x)[0] for k in models}
+            row["GAME_DATE"]=trend_df.iloc[i]["GAME_DATE"]
+            row["PTS_ACTUAL"]=trend_df.iloc[i]["PTS"]
+            preds_hist.append(row)
+        trend=pd.DataFrame(preds_hist)
         if not trend.empty:
-            trend["Error"] = (trend["PTS_ACTUAL"] - trend["PTS"]).abs()
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=trend["GAME_DATE"], y=trend["Error"], mode="lines+markers",
-                                      line=dict(color="#FFD700", width=3)))
-            fig2.update_layout(title="Model Error Over Last 10 Games (PTS)",
-                               paper_bgcolor="#0d0d0d", plot_bgcolor="#0d0d0d",
-                               font_color="#F5F5F5", yaxis_title="Absolute Error")
-            st.plotly_chart(fig2, use_container_width=True, key="trend_chart")
+            trend["Error"]=(trend["PTS_ACTUAL"]-trend["PTS"]).abs()
+            fig2=go.Figure()
+            fig2.add_trace(go.Scatter(x=trend["GAME_DATE"],y=trend["Error"],
+                                      mode="lines+markers",line=dict(color="#FFD700",width=3)))
+            fig2.update_layout(title="Model Error Over Time (PTS)",paper_bgcolor="#0d0d0d",
+                               plot_bgcolor="#0d0d0d",font_color="#F5F5F5",
+                               yaxis_title="Absolute Error")
+            st.plotly_chart(fig2,use_container_width=True)
+
+st.markdown("---")
+
+# ---- EXPANDERS ----
+with st.expander("📅 Last 5 Games", expanded=False):
+    render_expander("last5", games_current.head(5))
+with st.expander("📅 Last 10 Games", expanded=False):
+    render_expander("last10", games_current.head(10))
+with st.expander("📅 Last 20 Games", expanded=False):
+    df20 = games_current.copy()
+    if len(df20)<20 and not games_last.empty:
+        df20 = pd.concat([df20, games_last.head(20-len(df20))])
+    render_expander("last20", df20)
+with st.expander("📊 Season Averages", expanded=False):
+    if not games_current.empty:
+        s=games_current.mean(numeric_only=True)
+        render_metric_cards({
+            "PTS":round(s["PTS"],1),"REB":round(s["REB"],1),"AST":round(s["AST"],1),
+            "3PM":round(s["FG3M"],1),"STL":round(s["STL"],1),"BLK":round(s["BLK"],1),
+            "TOV":round(s["TOV"],1),"MIN":round(s["MIN"],1),
+            "PRA":round(s["PTS"]+s["REB"]+s["AST"],1)
+        },"season")
+with st.expander("🏀 Career Averages", expanded=False):
+    if not career_df.empty:
+        c = career_df.groupby("SEASON_ID")[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].mean().mean()
+        render_metric_cards({
+            "PTS":round(c["PTS"],1),"REB":round(c["REB"],1),"AST":round(c["AST"],1),
+            "3PM":round(c["FG3M"],1),"STL":round(c["STL"],1),"BLK":round(c["BLK"],1),
+            "TOV":round(c["TOV"],1),"MIN":round(c["MIN"],1)
+        },"career")
 
 st.markdown("---")
 st.caption("⚡ Powered by NBA API and Hot Shot Props AI Engine © 2025")

@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog, playercareerstats
+from nba_api.stats.endpoints import playergamelog
 from sklearn.ensemble import RandomForestRegressor
 from PIL import Image
 import requests
@@ -12,21 +12,23 @@ from io import BytesIO
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
-st.markdown(
-    "<style>body{background-color:black;color:white;}</style>",
-    unsafe_allow_html=True,
-)
+st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
 team_color = "#E50914"
 
 # ---------------------- UTILITIES ----------------------
 @st.cache_data(show_spinner=False)
 def get_games(player_id, season):
-    gl = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
-    gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-    gl = gl.sort_values("GAME_DATE")
-    return gl
+    try:
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
+        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
+        gl = gl.sort_values("GAME_DATE")
+        return gl
+    except:
+        return pd.DataFrame()
 
 def enrich(df):
+    if df.empty:
+        return df
     df["P+R"] = df["PTS"] + df["REB"]
     df["P+A"] = df["PTS"] + df["AST"]
     df["R+A"] = df["REB"] + df["AST"]
@@ -64,20 +66,28 @@ last = enrich(get_games(pid, PREVIOUS_SEASON))
 blended = pd.concat([current, last], ignore_index=True)
 
 # ---------------------- MODEL ----------------------
-def prepare(df):
-    return df[["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA", "P+R", "P+A", "R+A"]]
-
 def train_model(df):
-    if len(df) < 8:
+    if df is None or len(df) < 5:
         return None
     X = np.arange(len(df)).reshape(-1, 1)
     m = RandomForestRegressor(n_estimators=150, random_state=42)
     m.fit(X, df.values)
     return m
 
-models = {c: train_model(current[c]) for c in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]}
-next_index = np.array([[len(current)]])
-pred_next = {c: round(float(models[c].predict(next_index)) if models[c] else 0, 1) for c in models}
+def predict_next(df):
+    if df is None or len(df) < 3:
+        return 0
+    X_pred = np.array([[len(df)]])
+    m = train_model(df)
+    return round(float(m.predict(X_pred)), 1) if m else 0
+
+pred_next = {}
+if not current.empty:
+    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+        pred_next[stat] = predict_next(current[stat])
+else:
+    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+        pred_next[stat] = 0
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
@@ -89,24 +99,22 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
             acc_val = accuracy.get(key, 0)
             acc_str = f"<div style='font-size:13px; color:gray; font-style:italic; margin-top:-2px;'>(Accuracy: {acc_val}%)</div>"
         with cols[i % 4]:
-            st.markdown(
-                f"""
-                <div style="
-                    border: 2px solid {color};
-                    border-radius: 10px;
-                    background: rgba(25,25,25,0.85);
-                    padding: 12px;
-                    text-align:center;
-                    box-shadow: 0px 0px 10px {color};
-                    transition: all 0.3s ease;
-                ">
-                    <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
-                    {acc_str}
-                    <div style='font-size:30px;color:{color};margin-top:6px;font-weight:bold;'>{val}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            html = f"""
+            <div style="
+                border: 2px solid {color};
+                border-radius: 10px;
+                background: rgba(25,25,25,0.85);
+                padding: 12px;
+                text-align:center;
+                box-shadow: 0px 0px 10px {color};
+                transition: all 0.3s ease;
+            ">
+                <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
+                {acc_str}
+                <div style='font-size:30px;color:{color};margin-top:6px;font-weight:bold;'>{val}</div>
+            </div>
+            """
+            st.markdown(html, unsafe_allow_html=True)
 
 # ---------------------- BAR CHART ----------------------
 def bar_chart_recent(title, df):

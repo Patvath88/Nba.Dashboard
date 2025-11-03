@@ -76,22 +76,47 @@ with col2:
         st.cache_data.clear(); st.experimental_rerun()
 
 # ---------- SEASON LEADERS ----------
-st.markdown("## 🏀 Top Performers")
+# ---------- SEASON LEADERS ----------
+st.markdown("## 🏀 Top Performers (Per Game Averages)")
 
-df=get_leaders()
-cats={"Points":"PTS","Rebounds":"REB","Assists":"AST","3PT Made":"FG3M","PRA":"PRA"}
+df = get_leaders()
 
-for cat,key in cats.items():
-    leader=df.loc[df[key].idxmax()]
-    photo=player_photo(leader["PLAYER"])
-    url=f"?player={leader['PLAYER'].replace(' ','%20')}"
-    st.markdown(
-        f"<div class='section leader'>"
-        f"<a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
-        f"<img src='{photo}'></a>"
-        f"<div><a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
-        f"<b>{leader['PLAYER']}</b></a><br>{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
-        unsafe_allow_html=True)
+# Compute per-game averages instead of totals
+if not df.empty:
+    # Convert totals into per-game averages (NBA API already provides GP column)
+    df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
+    df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
+    df["AST_Avg"] = (df["AST"] / df["GP"]).round(1)
+    df["FG3M_Avg"] = (df["FG3M"] / df["GP"]).round(1)
+    df["BLK_Avg"] = (df["BLK"] / df["GP"]).round(1)
+    df["STL_Avg"] = (df["STL"] / df["GP"]).round(1)
+    df["TOV_Avg"] = (df["TOV"] / df["GP"]).round(1)
+
+    categories = {
+        "Points": "PTS_Avg",
+        "Rebounds": "REB_Avg",
+        "Assists": "AST_Avg",
+        "3PT Field Goals Made": "FG3M_Avg",
+        "Blocks": "BLK_Avg",
+        "Steals": "STL_Avg",
+        "Turnovers": "TOV_Avg"
+    }
+
+    for cat, key in categories.items():
+        leader = df.loc[df[key].idxmax()]
+        photo = player_photo(leader["PLAYER"])
+        st.markdown(
+            f"<div class='section leader'>"
+            f"<a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
+            f"<img src='{photo}'></a>"
+            f"<div><a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
+            f"<b>{leader['PLAYER']}</b></a><br>"
+            f"{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
+            unsafe_allow_html=True
+        )
+else:
+    st.info("Leader data not available.")
+
 
 # ---------- GAMES TONIGHT ----------
 st.markdown("## 📅 Games Tonight")

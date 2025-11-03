@@ -180,8 +180,18 @@ player=st.selectbox("Select a Player",player_list)
 
 if not player: st.stop()
 
-pid=next(p["id"] for p in nba_players if p["full_name"]==player)
-team_abbr=lookup[next(p["team_id"] for p in nba_players if p["full_name"]==player)]["abbreviation"]
+# --- Get player ID safely ---
+pid = next(p["id"] for p in nba_players if p["full_name"] == player)
+
+# --- Try to infer team from latest game data ---
+try:
+    latest_game = get_games(pid, CURRENT_SEASON)
+    if latest_game.empty:
+        latest_game = get_games(pid, LAST_SEASON)
+    team_abbr = latest_game["MATCHUP"].iloc[0].split(" ")[0]
+except Exception:
+    team_abbr = "N/A"
+
 
 # --- gather data across seasons ---
 cur=enrich(get_games(pid,CURRENT_SEASON))

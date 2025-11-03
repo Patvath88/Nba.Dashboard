@@ -199,8 +199,19 @@ with col2:
 # CHART
 # -------------------------------------------------
 st.markdown("### Recent Performance (last 5 games)")
+
+# map display name to the correct dataframe column
+col_map = {
+    "Points": "PTS",
+    "Rebounds": "REB",
+    "Assists": "AST",
+    "PRA": "PRA"
+}
+col_name = col_map.get(metric, "PTS")
+
 x = recent["GAME_DATE"].iloc[::-1]
-y_actual = recent[metric[:3].upper()].iloc[::-1]
+y_actual = recent[col_name].iloc[::-1]
+
 fig = go.Figure()
 fig.add_trace(go.Bar(x=x, y=y_actual, name="Actual", marker_color="#E50914"))
 

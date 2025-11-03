@@ -90,36 +90,31 @@ else:
     for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
         pred_next[stat] = 0
 
-# ---------------------- METRIC CARDS ----------------------
+# ---------------------- METRIC CARDS (reverted to working version) ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render stats in a 4-column grid with dark gray background and red text."""
+    """Render metrics cleanly using Streamlit native metric API (no escaped HTML)."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
-        acc_str = ""
-        if accuracy and predictions:
-            acc_val = accuracy.get(key, 0)
-            acc_str = f"<div style='font-size:13px; color:gray; font-style:italic;'>(Accuracy: {acc_val}%)</div>"
-
-        # Fix: explicitly convert val to text, not HTML
-        val_str = str(val)
-
-        card_html = f"""
-        <div style="
-            border: 2px solid {color};
-            border-radius: 10px;
-            background-color: #1e1e1e;
-            padding: 14px;
-            text-align:center;
-            color:{color};
-            box-shadow: 0px 0px 10px {color};
-        ">
-            <h4 style='margin-bottom:2px;'>{key}</h4>
-            {acc_str}
-            <div style='font-size:30px;font-weight:bold;margin-top:6px;'>{val_str}</div>
-        </div>
-        """
         with cols[i % 4]:
-            st.markdown(card_html, unsafe_allow_html=True)
+            # Add native metric style (clean rendering)
+            st.markdown(
+                f"""
+                <div style="
+                    border:2px solid {color};
+                    border-radius:10px;
+                    background-color:#1e1e1e;
+                    padding:12px;
+                    text-align:center;
+                    color:{color};
+                    font-weight:bold;
+                    box-shadow:0px 0px 10px {color};
+                ">
+                    <div style='font-size:22px;margin-bottom:5px;'>{key}</div>
+                    <div style='font-size:32px;margin-top:5px;'>{val}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
 # ---------------------- BAR CHART ----------------------
 def bar_chart_recent(title, df):
@@ -137,7 +132,7 @@ def bar_chart_recent(title, df):
         height=300,
         margin=dict(l=30, r=30, t=40, b=30),
     )
-    st.plotly_chart(fig, use_container_width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------- LAYOUT ----------------------
 photo = get_player_photo(player)
@@ -152,7 +147,7 @@ st.markdown("---")
 
 # ---------------------- AI PREDICTION ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
-metric_cards(pred_next, team_color, predictions=True)
+metric_cards(pred_next, team_color)
 bar_chart_recent("AI Prediction vs. Season Average", current)
 
 # ---------------------- MOST RECENT GAME ----------------------
@@ -215,3 +210,4 @@ if timeframe:
         bar_chart_recent(f"{title} — Performance Overview", df)
     else:
         st.info("No data available for this timeframe.")
+

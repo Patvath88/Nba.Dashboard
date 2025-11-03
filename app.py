@@ -45,7 +45,7 @@ h1,h2,h3,h4{font-family:'Oswald',sans-serif;color:#E50914;}
 def load_predictions():
     if os.path.exists("predictions.csv"):
         return pd.read_csv("predictions.csv")
-    # Fallback sample data
+    # fallback sample
     return pd.DataFrame({
         "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic"],
         "team":["BOS","CLE","DAL"],
@@ -60,12 +60,12 @@ def load_predictions():
 
 @st.cache_data(ttl=3600)
 def get_player_photo(player_name):
-    safe_name = player_name.replace(" ", "_").lower()
-    local_path = os.path.join(PLAYER_PHOTO_DIR, f"{safe_name}.jpg")
+    safe = player_name.replace(" ", "_").lower()
+    local_path = os.path.join(PLAYER_PHOTO_DIR, f"{safe}.jpg")
     if os.path.exists(local_path):
         return local_path
     try:
-        url = f"https://nba-players.herokuapp.com/players/{safe_name.split('_')[-1]}/{safe_name.split('_')[0]}"
+        url = f"https://nba-players.herokuapp.com/players/{safe.split('_')[-1]}/{safe.split('_')[0]}"
         img = Image.open(BytesIO(requests.get(url, timeout=5).content))
         img.save(local_path)
         return local_path
@@ -88,7 +88,6 @@ def get_team_logo(team_abbr):
 
 @st.cache_data(ttl=900)
 def get_recent_games(player_id):
-    """Get last 5 games for player"""
     try:
         gamelog = playergamelog.PlayerGameLog(player_id=player_id, season='2024-25')
         df = gamelog.get_data_frames()[0]
@@ -103,7 +102,7 @@ preds = load_predictions()
 nba_players = players.get_active_players()
 nba_teams = {t["abbreviation"]: t for t in teams.get_teams()}
 
-# Build team-player mapping
+# team-player map
 team_map = {}
 for p in nba_players:
     team_id = p.get("team_id")
@@ -111,11 +110,11 @@ for p in nba_players:
     if team_abbr:
         team_map.setdefault(team_abbr, []).append(p["full_name"])
 
-# Flatten for selectbox
+# flatten for selectbox
 team_options = []
 for team, plist in sorted(team_map.items()):
     team_options.append(f"=== {team} ===")
-    team_options.extend(plist)
+    team_options.extend(sorted(plist))
 
 # -------------------------------------------------
 # HEADER
@@ -124,30 +123,28 @@ st.title("🏀 Hot Shot Props — NBA ESPN-Style Dashboard")
 st.subheader("AI-Powered Player Prop Insights with Live NBA Data")
 
 # -------------------------------------------------
-# PLAYER SEARCH / SELECT
-# -------------------------------------------------
-# -------------------------------------------------
-# PLAYER SEARCH / SELECT
+# PLAYER SEARCH / SELECT (patched)
 # -------------------------------------------------
 selected_player = st.selectbox(
     "Search or Browse by Team ↓",
     options=team_options,
-    index=None,              # no default, user must choose
+    index=None,
     placeholder="Select an NBA player"
 )
 
-# If nothing chosen yet, stop execution
-if not selected_player:
+# Stop until a player is chosen
+if selected_player is None or selected_player == "":
     st.stop()
 
-# Prevent selecting a header line
-if selected_player.startswith("==="):
+# Guard against team header lines
+if isinstance(selected_player, str) and selected_player.startswith("==="):
     st.warning("Please select an actual player from the list.")
     st.stop()
 
+metric = st.selectbox("Select Metric", ["Points","Rebounds","Assists","PRA"])
 
 # -------------------------------------------------
-# DATA FETCH
+# FETCH DATA
 # -------------------------------------------------
 pinfo = next((p for p in nba_players if p["full_name"] == selected_player), None)
 if not pinfo:
@@ -160,7 +157,6 @@ if recent.empty:
     st.warning("No recent game data available.")
     st.stop()
 
-# Compute PRA
 recent["PRA"] = recent["PTS"] + recent["REB"] + recent["AST"]
 
 # -------------------------------------------------
@@ -172,12 +168,14 @@ if not model_row.empty:
     row = model_row.iloc[0]
     if row["prop_type"].lower() == metric.lower():
         model_val = row["projection"]
+else:
+    row = {}
 
 # -------------------------------------------------
 # VISUALS
 # -------------------------------------------------
 photo = get_player_photo(selected_player)
-team_logo = get_team_logo(row["team"] if not model_row.empty else "nba")
+team_logo = get_team_logo(row.get("team","nba") if row else "nba")
 
 col1, col2 = st.columns([1,2])
 with col1:
@@ -202,7 +200,8 @@ fig = go.Figure()
 fig.add_trace(go.Bar(x=x, y=y_actual, name="Actual", marker_color="#E50914"))
 
 if model_val:
-    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x), name="Model Projection",
+    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x),
+                             name="Model Projection",
                              mode="lines", line=dict(color="#00E676", dash="dash")))
 
 fig.update_layout(paper_bgcolor="#121212", plot_bgcolor="#121212",

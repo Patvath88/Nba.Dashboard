@@ -24,6 +24,7 @@ st.set_page_config(page_title="Hot Shot Props | NBA AI Dashboard",
 
 CURRENT_SEASON = "2025-26"
 LAST_SEASON = "2024-25"
+PRESEASON = "2025 Preseason"
 ASSETS_DIR = "assets"
 PLAYER_PHOTO_DIR = os.path.join(ASSETS_DIR, "player_photos")
 TEAM_LOGO_DIR = os.path.join(ASSETS_DIR, "team_logos")
@@ -136,7 +137,7 @@ def train_player_model(df):
     for stat in target_stats:
         if stat not in df.columns: continue
         X, y = df[features], df[stat]
-        if len(X) < 8: continue
+        if len(X) < 5: continue
         Xtr,Xte,Ytr,Yte = train_test_split(X,y,test_size=0.2,random_state=42)
         model = RandomForestRegressor(n_estimators=250,max_depth=8,random_state=42)
         model.fit(Xtr,Ytr)
@@ -160,7 +161,7 @@ def predict_next_game(df, models):
 # -------------------------------------------------
 # METRIC RENDER
 # -------------------------------------------------
-def render_metric_cards(avg_dict, key_suffix=""):
+def render_metric_cards(avg_dict):
     html = "<div class='metric-grid'>"
     for stat,val in avg_dict.items():
         color = "#00FF80" if isinstance(val,(int,float)) and val>0 else "#FF5555"
@@ -172,22 +173,21 @@ def render_metric_cards(avg_dict, key_suffix=""):
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
-def render_expander(title, df):
-    if df.empty:
-        st.warning(f"No data for {title}")
-        return
-    avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","MIN"] if s in df.columns}
-    avg.update({"P+R":round((df["PTS"]+df["REB"]).mean(),1),
-                "P+A":round((df["PTS"]+df["AST"]).mean(),1),
-                "R+A":round((df["REB"]+df["AST"]).mean(),1),
-                "PRA":round((df["PTS"]+df["REB"]+df["AST"]).mean(),1)})
-    render_metric_cards(avg, key_suffix=title)
+def render_avg_bar(df, title):
+    if df.empty: return
+    avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in df.columns}
+    avg["PRA"] = round(df["PTS"].mean() + df["REB"].mean() + df["AST"].mean(),1)
+    st.markdown(f"### {title}")
+    render_metric_cards(avg)
+    fig = go.Figure([go.Bar(x=list(avg.keys()), y=list(avg.values()), marker_color="#E50914")])
+    fig.update_layout(title=f"{title} — Averages",paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
+    st.plotly_chart(fig, use_container_width=True)
 
 # -------------------------------------------------
 # MAIN DASHBOARD
 # -------------------------------------------------
 st.title("Hot Shot Props — NBA AI Dashboard")
-st.caption("AI-driven player form and model analytics.")
+st.caption("AI-driven player form and projection model with extended historical learning.")
 
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
@@ -213,10 +213,14 @@ team_abbr = team_lookup[pinfo["team_id"]]["abbreviation"] if pinfo.get("team_id"
 photo = get_player_photo(selected_player, player_id)
 logo = get_team_logo(team_abbr)
 
+# --- Combine seasons intelligently ---
 games_current = enrich_stats(get_games(player_id, CURRENT_SEASON))
-if games_current.empty:
-    games_current = enrich_stats(get_games(player_id, LAST_SEASON))
-games_last = enrich_stats(get_games(player_id, LAST_SEASON))
+if len(games_current) < 8:
+    games_pre = enrich_stats(get_games(player_id, PRESEASON))
+    games_last = enrich_stats(get_games(player_id, LAST_SEASON))
+    combined = pd.concat([games_current, games_pre, games_last]).drop_duplicates(subset="Game_ID", keep="first")
+    games_current = combined
+
 career_df = get_career(player_id)
 
 col1,col2 = st.columns([1,3])
@@ -226,79 +230,43 @@ with col2:
     if logo: st.image(logo, width=100)
     st.markdown(f"## {selected_player} ({team_abbr})")
 
-# --- MODEL + PREDICTIONS ---
+# --- MODEL TRAINING & PREDICTION ---
 models, scores = train_player_model(games_current)
 preds = predict_next_game(games_current, models)
 
 st.markdown("---")
-st.subheader("📊 Most Recent Game vs. Model Prediction (Same Game)")
-
-if not games_current.empty:
-    last = games_current.iloc[0]
-    actual = {"PTS":round(last["PTS"],1),"REB":round(last["REB"],1),"AST":round(last["AST"],1),
-              "3PM":round(last["FG3M"],1),"STL":round(last["STL"],1),"BLK":round(last["BLK"],1),
-              "TOV":round(last["TOV"],1),"P+R":round(last["PTS"]+last["REB"],1),
-              "P+A":round(last["PTS"]+last["AST"],1),"R+A":round(last["REB"]+last["AST"],1),
-              "PRA":round(last["PTS"]+last["REB"]+last["AST"],1)}
-    st.markdown("### 🔥 Most Recent Game (Actual)")
-    render_metric_cards(actual,"actual")
-
-    # Predict that same game’s stats (model vs real)
-    df_for_pred = prepare_features(games_current.copy())
-    features = [c for c in df_for_pred.columns if "avg_" in c or "std_" in c]
-    if len(df_for_pred) > 0:
-        row = df_for_pred.iloc[-1:][features]
-        model_same_preds = {}
-        for stat, model in models.items():
-            model_same_preds[stat] = round(float(model.predict(row)[0]), 1)
-        st.markdown("### 🧠 Model Prediction for Last Game")
-        render_metric_cards(model_same_preds, "model_last")
-
-        # side-by-side comparison
-        stats = list(actual.keys())
-        actual_vals = [actual[s] for s in stats]
-        pred_vals = [model_same_preds.get(s, 0) for s in stats]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=stats,y=actual_vals,name="Actual",marker_color="#E50914",opacity=.7))
-        fig.add_trace(go.Bar(x=stats,y=pred_vals,name="Predicted",marker_color="#29B6F6",opacity=.7))
-        fig.update_layout(barmode="group",title="Actual vs Predicted — Last Game",
-                          paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
-        st.plotly_chart(fig,use_container_width=True)
-
-# ---- NEW EXPANDER: AI Projections ----
-with st.expander("🤖 AI Model Projections — Next Game", expanded=False):
-    st.markdown("The AI model projects the following for the upcoming game:")
-    render_metric_cards(preds,"next_preds")
+with st.expander("🤖 AI Model Projections — Next Game", expanded=True):
+    if not preds:
+        st.error("Not enough data to generate predictions yet.")
+    else:
+        render_metric_cards(preds)
 
 st.markdown("---")
 
-# ---- EXPANDERS ----
-with st.expander("📅 Last 5 Games", expanded=False):
-    render_expander("last5", games_current.head(5))
-with st.expander("📅 Last 10 Games", expanded=False):
-    render_expander("last10", games_current.head(10))
-with st.expander("📅 Last 20 Games", expanded=False):
-    df20 = games_current.copy()
-    if len(df20)<20 and not games_last.empty:
-        df20 = pd.concat([df20, games_last.head(20-len(df20))])
-    render_expander("last20", df20)
-with st.expander("📊 Season Averages", expanded=False):
-    if not games_current.empty:
-        s=games_current.mean(numeric_only=True)
-        render_metric_cards({
-            "PTS":round(s["PTS"],1),"REB":round(s["REB"],1),"AST":round(s["AST"],1),
-            "3PM":round(s["FG3M"],1),"STL":round(s["STL"],1),"BLK":round(s["BLK"],1),
-            "TOV":round(s["TOV"],1),"MIN":round(s["MIN"],1),
-            "PRA":round(s["PTS"]+s["REB"]+s["AST"],1)
-        },"season")
-with st.expander("🏀 Career Totals", expanded=False):
-    if not career_df.empty:
-        c = career_df[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].sum()
-        render_metric_cards({
-            "PTS":int(c["PTS"]),"REB":int(c["REB"]),"AST":int(c["AST"]),
-            "3PM":int(c["FG3M"]),"STL":int(c["STL"]),"BLK":int(c["BLK"]),
-            "TOV":int(c["TOV"]),"MIN":int(c["MIN"])
-        },"career")
+# ---- RECENT FORM SECTIONS (no expanders) ----
+if not games_current.empty:
+    recent = games_current.head(1)
+    render_avg_bar(recent, "🔥 Most Recent Game")
+
+    if len(games_current) >= 5:
+        render_avg_bar(games_current.head(5), "📅 Last 5 Games")
+    if len(games_current) >= 10:
+        render_avg_bar(games_current.head(10), "📅 Last 10 Games")
+    if len(games_current) >= 20:
+        render_avg_bar(games_current.head(20), "📅 Last 20 Games")
+
+    # Season Averages
+    render_avg_bar(games_current, "📊 Current Season Averages")
+
+# ---- Career Totals ----
+if not career_df.empty:
+    totals = career_df[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].sum()
+    st.markdown("🏀 **Career Totals**")
+    render_metric_cards({
+        "PTS":int(totals["PTS"]),"REB":int(totals["REB"]),"AST":int(totals["AST"]),
+        "3PM":int(totals["FG3M"]),"STL":int(totals["STL"]),"BLK":int(totals["BLK"]),
+        "TOV":int(totals["TOV"]),"MIN":int(totals["MIN"])
+    })
 
 st.markdown("---")
 st.caption("⚡ Powered by NBA API and Hot Shot Props AI Engine © 2025")

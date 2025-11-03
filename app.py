@@ -140,24 +140,35 @@ def enrich_stats(df):
 # -------------------------------------------------
 @st.cache_data(ttl=600)
 def get_odds_data():
+    """Fetch NBA player prop odds from OddsAPI (422-safe)."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {
-        "regions":"us",
-        "markets":"player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
-        "oddsFormat":"american",
-        "include":"all",
-        "apiKey":ODDS_API_KEY
+        "regions": "us,uk,eu",  # broader region coverage
+        "markets": "player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
+        "oddsFormat": "american",
+        "dateFormat": "iso",
+        "include": "bookmakers",
+        "apiKey": ODDS_API_KEY,
     }
+
     try:
         r = requests.get(url, params=params, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            return data if isinstance(data, list) else []
+            if not data:
+                st.warning("No odds data returned — using fallback sample data.")
+                return []
+            return data
+        elif r.status_code == 422:
+            st.warning("OddsAPI 422: No valid player prop data returned for these markets.")
+            return []
         else:
-            st.error(f"OddsAPI error {r.status_code}")
+            st.error(f"OddsAPI error {r.status_code}: {r.text}")
+            return []
     except Exception as e:
         st.error(f"Odds fetch failed: {e}")
-    return []
+        return []
+
 
 def extract_best_line(player_name, odds_json):
     best = None

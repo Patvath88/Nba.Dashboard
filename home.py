@@ -65,13 +65,9 @@ def team_logo(abbr):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
 
-col1,col2=st.columns([1,1])
-with col1:
-    if st.button("📊 Go to Player AI Dashboard"):
-        st.switch_page("pages/Player_AI.py")
-with col2:
-    if st.button("🔄 Refresh Data"):
-        st.cache_data.clear(); st.experimental_rerun()
+# Only one button left: Player AI Dashboard
+if st.button("📊 Go to Player AI Dashboard"):
+    st.switch_page("pages/Player_AI.py")
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")

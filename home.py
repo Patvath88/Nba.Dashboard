@@ -78,7 +78,6 @@ st.markdown("## 🏀 Top Performers (Per Game Averages)")
 
 df = get_leaders()
 
-# Compute per-game averages instead of totals
 if not df.empty:
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
     df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
@@ -125,13 +124,13 @@ try:
               f"<img src='{team_logo(g['HOME_TEAM_ID'])}' width='40'> "
               f"<b>{g['HOME_TEAM_NAME']}</b> — <i>{g['GAME_STATUS_TEXT']}</i></div>",
               unsafe_allow_html=True)
-    else: st.info("No games tonight.")
-except Exception: st.warning("Couldn't load schedule.")
+except Exception:
+    st.warning("Couldn't load schedule.")
 
 # ---------- INJURY REPORT ----------
 st.markdown("## 💀 Injury Report")
 st.markdown("[🔗 ESPN NBA Injury Report](https://www.espn.com/nba/injuries)")
-st.markdown("[🔗 NBA Injury Report (X Page)](https://x.com/search?q=NBA%20injury%20report&src=typed_query)")
+st.markdown("[🔗 Underdog NBA Updates/Injuries](https://underdognetwork.com/basketball/news/nba)")
 
 inj=get_injuries()
 if not inj.empty:
@@ -143,7 +142,6 @@ if not inj.empty:
           f"<div class='section'><b>{r['player']}</b> — {r['team']}<br>"
           f"<span class='{scls}'>{r['status']}</span> — {r.get('description','')}</div>",
           unsafe_allow_html=True)
-else: st.info("No injury data currently available.")
 
 # ---------- STANDINGS ----------
 st.markdown("## 🏆 NBA Standings")

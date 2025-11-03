@@ -12,7 +12,8 @@ from io import BytesIO
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
 st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
-team_color = "#E50914"
+team_color = "#E50914"   # red accent
+contrast_color = "#00FFFF"  # neon blue for comparison
 
 # ---------------------- UTILITIES ----------------------
 @st.cache_data(show_spinner=False)
@@ -102,7 +103,7 @@ else:
         pred_next[stat] = 0
 
 # ---------------------- METRIC CARDS ----------------------
-def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
+def metric_cards(stats: dict, color: str):
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         with cols[i % 4]:
@@ -126,20 +127,26 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
             )
 
 # ---------------------- BAR CHART ----------------------
-def bar_chart_recent(title, df):
-    if df.empty:
+def bar_chart_comparison(title, pred_dict, season_df):
+    """Dual-color bar chart comparing AI predictions vs season averages."""
+    if season_df.empty:
         return
-    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
-    avg = df[stats].mean(numeric_only=True)
+    stats = list(pred_dict.keys())
+    ai_vals = [pred_dict[s] for s in stats]
+    avg_vals = [round(season_df[s].mean(), 1) if s in season_df.columns else 0 for s in stats]
+
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=avg.index, y=avg.values, marker_color=team_color))
+    fig.add_trace(go.Bar(x=stats, y=ai_vals, name="AI Prediction", marker_color=team_color))
+    fig.add_trace(go.Bar(x=stats, y=avg_vals, name="Season Avg", marker_color=contrast_color))
     fig.update_layout(
         title=title,
+        barmode="group",
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="white"),
-        height=300,
+        height=350,
         margin=dict(l=30, r=30, t=40, b=30),
+        legend=dict(font=dict(color="white"))
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -156,7 +163,7 @@ st.markdown("---")
 # ---------------------- AI PREDICTION ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred_next, team_color)
-bar_chart_recent("AI Prediction vs. Season Average", current)
+bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current)
 
 # ---------------------- MOST RECENT GAME ----------------------
 if not current.empty:
@@ -169,7 +176,21 @@ if not current.empty:
         "P+R": int(recent.get("P+R", 0)), "P+A": int(recent.get("P+A", 0)), "R+A": int(recent.get("R+A", 0))
     }
     metric_cards(stats_recent, team_color)
-    bar_chart_recent("Most Recent Game Breakdown", pd.DataFrame([recent]))
+    # keep the existing breakdown bar for recent game
+    avg_df = pd.DataFrame([recent])
+    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+    avg = avg_df[stats].mean(numeric_only=True)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=avg.index, y=avg.values, marker_color=team_color))
+    fig.update_layout(
+        title="Most Recent Game Breakdown",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="white"),
+        height=300,
+        margin=dict(l=30, r=30, t=40, b=30),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No recent game data available.")
 
@@ -215,6 +236,19 @@ if timeframe:
             "STL": avg.get("STL", 0), "BLK": avg.get("BLK", 0),
             "TOV": avg.get("TOV", 0), "PRA": avg.get("PRA", 0)
         }, team_color)
-        bar_chart_recent(f"{title} — Performance Overview", df)
+        # show historical bar chart
+        stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+        avg_vals = df[stats].mean(numeric_only=True)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=avg_vals.index, y=avg_vals.values, marker_color=team_color))
+        fig.update_layout(
+            title=f"{title} — Performance Overview",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="white"),
+            height=300,
+            margin=dict(l=30, r=30, t=40, b=30),
+        )
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No data available for this timeframe.")

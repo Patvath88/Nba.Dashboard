@@ -140,77 +140,19 @@ def enrich_stats(df):
 # -------------------------------------------------
 @st.cache_data(ttl=600)
 def get_odds_data():
-    """Fetch NBA player prop odds from OddsAPI (using correct player_props endpoint)."""
-    url = "https://api.the-odds-api.com/v4/sports/basketball_nba/player_props"
-    params = {
-        "regions": "us,uk,eu",
-        "oddsFormat": "american",
-        "markets": "player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
-        "apiKey": ODDS_API_KEY,
-    }
-
+    """Fallback prop odds fetcher using FanDuel public API (no OddsAPI)."""
+    url = "https://sportsbook.fanduel.com/cache/psevent/nba-player-props"
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            if not data:
-                st.warning("No live player prop odds found — will still show model projections.")
-                return []
             return data
-        elif r.status_code == 422:
-            st.warning("OddsAPI 422: Player props temporarily unavailable for NBA.")
-            return []
         else:
-            st.error(f"OddsAPI error {r.status_code}: {r.text}")
-            return []
+            st.error(f"FanDuel odds error {r.status_code}: {r.text}")
     except Exception as e:
         st.error(f"Odds fetch failed: {e}")
-        return []
+    return []
 
-
-
-def extract_best_line(player_name, odds_json):
-    best = None
-    for game in odds_json:
-        for book in game.get("bookmakers", []):
-            for market in book.get("markets", []):
-                for outcome in market.get("outcomes", []):
-                    name = outcome.get("description", "")
-                    if player_name.lower() in name.lower():
-                        line = outcome.get("point")
-                        price = outcome.get("price")
-                        if line is not None:
-                            best = {"market":market.get("key"),"book":book["title"],"line":line,"price":price}
-    return best
-
-def prepare_features(df):
-    if df.empty:
-        return df
-    df = df.copy()
-    for w in [5,10,20]:
-        for s in ["PTS","REB","AST","PRA"]:
-            df[f"{s}_{w}"] = df[s].rolling(w).mean()
-    return df.dropna().reset_index(drop=True)
-
-def predict_prop_value(df, target_stat):
-    if df.empty or target_stat not in df.columns:
-        return None
-    df = prepare_features(df)
-    if len(df) < 8:
-        return round(df[target_stat].mean(),1)
-    feature_cols = [c for c in df.columns if any(x in c for x in ["PTS","REB","AST","PRA"]) and c != target_stat]
-    X, y = df[feature_cols], df[target_stat]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42)
-    model.fit(X_train, y_train)
-    return round(model.predict([X.iloc[-1]])[0],1)
-
-def compute_edge(model_pred, book_line):
-    if not book_line:
-        return 0, "N/A"
-    diff = model_pred - book_line
-    edge = (diff / book_line) * 100 if book_line != 0 else 0
-    return round(edge,1), "Over" if diff > 0 else "Under"
 
 # -------------------------------------------------
 # VALUE BETS + WINS

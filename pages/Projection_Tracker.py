@@ -3,20 +3,21 @@ import pandas as pd
 from nba_api.stats.endpoints import playergamelog
 from nba_api.stats.static import players
 
-# ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Projection Tracker", layout="wide")
 st.markdown("# 🎯 Projection Tracker")
 
-# ---------------------- AUTO REFRESH ----------------------
-# Refresh every 5 minutes (300000 ms)
-st_autorefresh = st.experimental_rerun  # placeholder to keep backward compatibility
-count = st.autorefresh(interval=300000, key="auto_refresh")
+# Auto-refresh every 5 minutes (300000 ms)
+st_autorefresh = st.experimental_rerun if False else None
+st_autorefresh_interval = 300000
+st_autorefresh = st.experimental_rerun
 
-# Manual refresh button
+if "refresh_count" not in st.session_state:
+    st.session_state["refresh_count"] = 0
+
 if st.button("🔄 Refresh Now"):
+    st.session_state["refresh_count"] += 1
     st.experimental_rerun()
 
-# ---------------------- LOAD SAVED PROJECTIONS ----------------------
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
@@ -27,7 +28,6 @@ except FileNotFoundError:
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
 
-# ---------------------- DISPLAY TRACKED PROJECTIONS ----------------------
 for player_name, group in data.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -36,7 +36,6 @@ for player_name, group in data.groupby("player"):
     st.markdown(f"## {player_name}")
     latest_proj = group.iloc[-1].to_dict()
 
-    # --- Get last game stats ---
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         gl = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
@@ -51,10 +50,9 @@ for player_name, group in data.groupby("player"):
             "PRA": gl["PTS"] + gl["REB"] + gl["AST"],
         }
     except Exception:
-        st.info("Live data unavailable for this player.")
+        st.info("Live data unavailable.")
         continue
 
-    # --- Display projection tracking metrics ---
     cols = st.columns(4)
     i = 0
     for stat, proj_val in latest_proj.items():
@@ -62,8 +60,7 @@ for player_name, group in data.groupby("player"):
             continue
         live_val = live_stats.get(stat, 0)
         hit = "✅" if live_val >= proj_val else "❌"
-        delta = f"Proj: {proj_val}"
         with cols[i % 4]:
-            st.metric(f"{stat} {hit}", value=f"{live_val}", delta=delta)
+            st.metric(f"{stat} {hit}", f"{live_val}", f"Proj: {proj_val}")
         i += 1
     st.markdown("---")

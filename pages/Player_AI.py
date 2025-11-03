@@ -41,10 +41,7 @@ def get_player_photo(name):
         if not player:
             return None
 
-        # Get player_id from nba_api (same one used in the stats site)
         player_id = player["id"]
-
-        # Try the official NBA CDN first
         urls = [
             f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
             f"https://stats.nba.com/media/players/headshot/{player_id}.png"
@@ -54,12 +51,9 @@ def get_player_photo(name):
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
                 return Image.open(BytesIO(resp.content))
-
     except Exception as e:
         st.write(f"Image error: {e}")
     return None
-
-
 
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()
@@ -107,13 +101,11 @@ else:
     for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
         pred_next[stat] = 0
 
-# ---------------------- METRIC CARDS (reverted to working version) ----------------------
+# ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render metrics cleanly using Streamlit native metric API (no escaped HTML)."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         with cols[i % 4]:
-            # Add native metric style (clean rendering)
             st.markdown(
                 f"""
                 <div style="
@@ -159,7 +151,6 @@ with col1:
         st.image(photo, width=180)
 with col2:
     st.markdown(f"## **{player}**")
-    st.markdown(f"**Team:** (Auto-detected)")
 st.markdown("---")
 
 # ---------------------- AI PREDICTION ----------------------

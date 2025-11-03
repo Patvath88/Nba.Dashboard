@@ -3,16 +3,14 @@ import pandas as pd
 from nba_api.stats.endpoints import playergamelog
 from nba_api.stats.static import players
 
+# ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Projection Tracker", layout="wide")
 st.markdown("# 🎯 Projection Tracker")
 
-# Auto-refresh every 5 minutes (300000 ms)
-st_autorefresh = st.experimental_data_editor  # placeholder to prevent lint warning
-st_autorefresh_interval = 300000  # 5 minutes
-
-# Proper Streamlit auto-refresh
-count = st.experimental_data_editor if False else None
-st_autorefresh = st.autorefresh(interval=st_autorefresh_interval, key="refresh")
+# ---------------------- AUTO REFRESH ----------------------
+# Refresh every 5 minutes (300000 ms)
+st_autorefresh = st.experimental_rerun  # placeholder to keep backward compatibility
+count = st.autorefresh(interval=300000, key="auto_refresh")
 
 # Manual refresh button
 if st.button("🔄 Refresh Now"):
@@ -53,9 +51,10 @@ for player_name, group in data.groupby("player"):
             "PRA": gl["PTS"] + gl["REB"] + gl["AST"],
         }
     except Exception:
-        st.info("Live data unavailable.")
+        st.info("Live data unavailable for this player.")
         continue
 
+    # --- Display projection tracking metrics ---
     cols = st.columns(4)
     i = 0
     for stat, proj_val in latest_proj.items():
@@ -63,7 +62,8 @@ for player_name, group in data.groupby("player"):
             continue
         live_val = live_stats.get(stat, 0)
         hit = "✅" if live_val >= proj_val else "❌"
+        delta = f"Proj: {proj_val}"
         with cols[i % 4]:
-            st.metric(f"{stat} {hit}", f"{live_val}", f"Proj: {proj_val}")
+            st.metric(f"{stat} {hit}", value=f"{live_val}", delta=delta)
         i += 1
     st.markdown("---")

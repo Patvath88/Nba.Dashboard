@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from nba_api.stats.static import players
+from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
@@ -101,32 +101,53 @@ def bar_chart(title, df):
     fig.update_layout(title=title, barmode="group", height=300, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
+def get_player_photo(player_name):
+    """Return headshot image URL."""
+    base_url = "https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/"
+    player_data = players.find_players_by_full_name(player_name)
+    if player_data and "id" in player_data[0]:
+        pid = player_data[0]["id"]
+        return f"{base_url}{pid}.png"
+    return "https://cdn.nba.com/logos/nba/nba-logoman/2022/1x/logo.png"
+
 # -----------------------
 # Main Page
 # -----------------------
 
-# Fetch all NBA players for dropdown
 nba_players = players.get_players()
 player_names = sorted([p["full_name"] for p in nba_players])
 
 # --- Player Selection ---
 st.markdown("### 🔍 Search or Select an NBA Player")
 selected_player = st.selectbox("Choose a player:", ["-- Select Player --"] + player_names)
-
-# Determine target player
 player_name = selected_player if selected_player != "-- Select Player --" else None
 
 if not player_name:
     st.info("Please select a player to view AI predictions and stats.")
     st.stop()
 
-# Player info lookup
+# Player info
 player_info = next((p for p in nba_players if p["full_name"] == player_name), None)
 if not player_info:
     st.error("Player not found.")
     st.stop()
 
 pid = player_info["id"]
+
+# --- Header Section ---
+photo_url = get_player_photo(player_name)
+player_team = next((t["full_name"] for t in teams.get_teams() if t["id"] == player_info.get("team_id", None)), "NBA")
+
+st.markdown(
+    f"""
+    <div style='text-align:center; margin-top:20px;'>
+        <img src="{photo_url}" width="200" style='border-radius:10px; margin-bottom:10px;'>
+        <h1 style='margin-bottom:0;'>{player_name}</h1>
+        <h3 style='color:#999;'>{player_team}</h3>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # -----------------------
 # Data Loading
@@ -140,11 +161,13 @@ if data.empty:
     st.error("No data found for this player.")
     st.stop()
 
+# Filter for actual NBA regular season for recent stats
+regular_season = current[current["SEASON_TYPE"] == "Regular Season"] if "SEASON_TYPE" in current else current
+
 # -----------------------
 # Model Training
 # -----------------------
 models, feats = model(data, pid)
-
 if not models:
     st.warning("Not enough data for prediction.")
     st.stop()
@@ -155,47 +178,50 @@ if not models:
 latest_feats = prepare(data).iloc[[-1]][feats]
 pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
 
-st.markdown(f"## 🏀 {player_name} — AI Predicted Next Game Stats")
+st.markdown(f"## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred)
 
 # -----------------------
-# Recent Game
+# Most Recent Game
 # -----------------------
-latest = data.iloc[-1]
-recent = {
-    "PTS": latest["PTS"],
-    "REB": latest["REB"],
-    "AST": latest["AST"],
-    "FG3M": latest["FG3M"],
-    "STL": latest["STL"],
-    "BLK": latest["BLK"],
-    "TOV": latest["TOV"],
-    "PRA": latest["PRA"],
-    "P+R": latest["P+R"],
-    "P+A": latest["P+A"],
-    "R+A": latest["R+A"],
-}
+if not regular_season.empty:
+    latest = regular_season.iloc[-1]
+    recent = {
+        "PTS": latest["PTS"],
+        "REB": latest["REB"],
+        "AST": latest["AST"],
+        "FG3M": latest["FG3M"],
+        "STL": latest["STL"],
+        "BLK": latest["BLK"],
+        "TOV": latest["TOV"],
+        "PRA": latest["PRA"],
+        "P+R": latest["P+R"],
+        "P+A": latest["P+A"],
+        "R+A": latest["R+A"],
+    }
 
-st.markdown("### 🔥 Most Recent Game Stats")
-metric_cards(recent)
+    st.markdown("### 🔥 Most Recent Regular Season Game Stats")
+    metric_cards(recent)
+else:
+    st.info("No recent regular season games found.")
 
 # -----------------------
 # Historical Sections
 # -----------------------
 st.markdown("### 📈 Last 5 Games")
-bar_chart("Last 5 Games — Performance", data.tail(5))
+bar_chart("Last 5 Games — Performance", regular_season.tail(5))
 
 st.markdown("### 📈 Last 10 Games")
-bar_chart("Last 10 Games — Performance", data.tail(10))
+bar_chart("Last 10 Games — Performance", regular_season.tail(10))
 
 st.markdown("### 📈 Last 20 Games")
-bar_chart("Last 20 Games — Performance", data.tail(20))
+bar_chart("Last 20 Games — Performance", regular_season.tail(20))
 
 # -----------------------
 # Season and Career
 # -----------------------
 st.markdown("### 📊 This Season Averages")
-season_avg = data.mean(numeric_only=True).round(1)
+season_avg = regular_season.mean(numeric_only=True).round(1)
 metric_cards({
     "PTS": season_avg["PTS"],
     "REB": season_avg["REB"],

@@ -7,6 +7,15 @@ from nba_api.stats.static import players
 st.set_page_config(page_title="Projection Tracker", layout="wide")
 st.markdown("# 🎯 Projection Tracker")
 
+# ---------------------- AUTO REFRESH ----------------------
+# Refresh every 5 minutes (300000 ms)
+st_autorefresh = st.experimental_rerun  # placeholder to keep backward compatibility
+count = st.autorefresh(interval=300000, key="auto_refresh")
+
+# Manual refresh button
+if st.button("🔄 Refresh Now"):
+    st.experimental_rerun()
+
 # ---------------------- LOAD SAVED PROJECTIONS ----------------------
 path = "saved_projections.csv"
 try:
@@ -27,7 +36,7 @@ for player_name, group in data.groupby("player"):
     st.markdown(f"## {player_name}")
     latest_proj = group.iloc[-1].to_dict()
 
-    # --- Get most recent game stats ---
+    # --- Get last game stats ---
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         gl = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
@@ -42,10 +51,10 @@ for player_name, group in data.groupby("player"):
             "PRA": gl["PTS"] + gl["REB"] + gl["AST"],
         }
     except Exception:
-        st.info(f"Live data unavailable for {player_name}.")
+        st.info("Live data unavailable for this player.")
         continue
 
-    # --- Show comparison between projection & result ---
+    # --- Display projection tracking metrics ---
     cols = st.columns(4)
     i = 0
     for stat, proj_val in latest_proj.items():
@@ -58,5 +67,3 @@ for player_name, group in data.groupby("player"):
             st.metric(f"{stat} {hit}", value=f"{live_val}", delta=delta)
         i += 1
     st.markdown("---")
-
-st.caption("Reload this page anytime to check updated results for your saved player projections.")

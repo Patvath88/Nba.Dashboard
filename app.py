@@ -183,7 +183,11 @@ else:
 # VISUALS
 # -------------------------------------------------
 photo = get_player_photo(selected_player)
-team_logo = get_team_logo(row.get("team","nba") if row else "nba")
+team_abbr = "nba"
+if isinstance(row, pd.Series) and "team" in row:
+    team_abbr = str(row["team"])
+team_logo = get_team_logo(team_abbr)
+
 
 col1, col2 = st.columns([1,2])
 with col1:

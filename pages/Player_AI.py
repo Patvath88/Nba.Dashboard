@@ -72,25 +72,26 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
         acc_str = ""
         if accuracy and predictions:
             acc_val = accuracy.get(key, 0)
-            acc_str = f"<p style='font-size:13px; color:gray; font-style:italic; margin-top:-4px;'>(Accuracy: {acc_val}%)</p>"
+            acc_str = f"<div style='font-size:13px; color:gray; font-style:italic; margin-top:-2px;'>(Accuracy: {acc_val}%)</div>"
+
         with cols[i % 4]:
-            st.markdown(
-                f"""
+            card_html = f"""
                 <div style="
                     border: 2px solid {color};
                     border-radius: 10px;
                     background: rgba(25,25,25,0.85);
-                    padding: 10px;
+                    padding: 12px;
                     text-align:center;
                     box-shadow: 0px 0px 10px {color};
                     transition: all 0.3s ease;
                 ">
                     <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
                     {acc_str}
-                    <p style='font-size:30px;color:{color};margin-top:4px;font-weight:bold;'>{val}</p>
+                    <div style='font-size:30px;color:{color};margin-top:6px;font-weight:bold;'>{val}</div>
                 </div>
-                """,
-                unsafe_allow_html=True
+            """
+            st.markdown(card_html, unsafe_allow_html=True)
+
             )
 
 def bar_chart_compare(title, ai_pred, season_avg):

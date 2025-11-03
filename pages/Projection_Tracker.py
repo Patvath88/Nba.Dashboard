@@ -29,24 +29,6 @@ body { background-color: black; color: white; }
     font-size: 32px;
     margin-top: 5px;
 }
-.delete-btn {
-    background-color: #b00020;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-weight: bold;
-    cursor: pointer;
-}
-.archive-btn {
-    background-color: #00b300;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-weight: bold;
-    cursor: pointer;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,11 +80,11 @@ for player_name, group in data.groupby("player"):
         if st.button("💾 Save Projection to Archives", key=f"archive_{player_name}"):
             latest_proj = group.iloc[-1].to_dict()
             save_to_archive(player_name, latest_proj)
-            st.experimental_rerun()
+            st.rerun()
     with col3:
         if st.button("❌ Delete Projection", key=f"delete_{player_name}"):
             delete_projection(player_name)
-            st.experimental_rerun()
+            st.rerun()
 
     latest_proj = group.iloc[-1].to_dict()
 

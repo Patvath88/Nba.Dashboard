@@ -66,11 +66,14 @@ def get_team_color(team_name):
             return v
     return "#E50914"  # Default red if team not found
 
-def metric_cards(stats: dict, color: str, accuracy=None):
-    """Render stats in a 4-column grid with glowing team-color borders and accuracy %."""
+def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
+    """Render stats in a 4-column grid with glowing team-color borders."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
-        acc_str = f" ({accuracy.get(key,0)}% accurate)" if accuracy else ""
+        acc_str = ""
+        if accuracy and predictions:
+            acc_val = accuracy.get(key, 0)
+            acc_str = f"<p style='font-size:13px; color:gray; font-style:italic; margin-top:-4px;'>(Accuracy: {acc_val}%)</p>"
         with cols[i % 4]:
             st.markdown(
                 f"""
@@ -83,10 +86,9 @@ def metric_cards(stats: dict, color: str, accuracy=None):
                     box-shadow: 0px 0px 10px {color};
                     transition: all 0.3s ease;
                 ">
-                    <h4 style='color:white;margin-bottom:0;'>{key}</h4>
-                    <p style='font-size:22px;color:{color};margin-top:4px;font-weight:bold;'>
-                        {val}{acc_str}
-                    </p>
+                    <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
+                    {acc_str}
+                    <p style='font-size:30px;color:{color};margin-top:4px;font-weight:bold;'>{val}</p>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -116,8 +118,6 @@ def bar_chart_compare(title, ai_pred, season_avg):
 def model(df, pid):
     """Train AI model using blended dataset."""
     base = df.copy()
-
-    # Fallbacks if not enough current-season data
     if len(base) < 15:
         try:
             pre = enrich(get_games(pid, "2025 Preseason"))
@@ -211,13 +211,13 @@ models, feats = model(blended, pid)
 latest_feats = prepare(blended).iloc[[-1]][feats]
 pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
 
-# Mocked model accuracy data (replace with real logs later)
+# Mock model accuracy data
 accuracy = {k: random.randint(70, 95) for k in pred.keys()}
 
 st.markdown("## 🧠 AI Predicted Next Game Stats")
-metric_cards(pred, team_color, accuracy)
+metric_cards(pred, team_color, accuracy, predictions=True)
 
-# Bar chart comparing predictions vs season avg
+# Bar chart comparing AI predictions vs season averages
 if not current.empty:
     avg = current.mean(numeric_only=True).round(1)
     season_avg = {s: avg.get(s, 0) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"]}

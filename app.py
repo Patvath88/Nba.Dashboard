@@ -1,27 +1,21 @@
-# app.py — ESPN-style NBA Prediction Dashboard
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests, os
+import os
 from datetime import datetime
-from io import BytesIO
+from nba_api.stats.static import players, teams
+from nba_api.stats.endpoints import playergamelog
 from PIL import Image
+import requests
+from io import BytesIO
 
 # -------------------------------------------------
-# PAGE CONFIG
+# CONFIG
 # -------------------------------------------------
-st.set_page_config(
-    page_title="Hot Shot Props | NBA Dashboard",
-    page_icon="🔥",
-    layout="wide"
-)
+st.set_page_config(page_title="Hot Shot Props | NBA Dashboard", page_icon="🔥", layout="wide")
 
-# -------------------------------------------------
-# SETTINGS / API KEYS
-# -------------------------------------------------
 ODDS_API_KEY = "e11d4159145383afd3a188f99489969e"
-BALL_API = "https://www.balldontlie.io/api/v1"
 ASSETS_DIR = "assets"
 PLAYER_PHOTO_DIR = os.path.join(ASSETS_DIR, "player_photos")
 TEAM_LOGO_DIR = os.path.join(ASSETS_DIR, "team_logos")
@@ -29,61 +23,54 @@ os.makedirs(PLAYER_PHOTO_DIR, exist_ok=True)
 os.makedirs(TEAM_LOGO_DIR, exist_ok=True)
 
 # -------------------------------------------------
-# STYLES
+# STYLE
 # -------------------------------------------------
 st.markdown("""
 <style>
 body {background-color:#121212;color:#F5F5F5;font-family:'Roboto',sans-serif;}
 h1,h2,h3,h4{font-family:'Oswald',sans-serif;color:#E50914;}
-div[data-testid="stHeader"]{background:transparent;}
-.block-container{padding-top:1rem;}
-.player-card{
-  background:linear-gradient(180deg,#1E1E1E 0%,#191919 100%);
+.player-card{background:linear-gradient(180deg,#1E1E1E 0%,#191919 100%);
   border-radius:18px;padding:15px;text-align:center;
-  transition:transform .3s ease,box-shadow .3s ease;
-}
+  transition:transform .3s ease,box-shadow .3s ease;}
 .player-card:hover{transform:scale(1.03);box-shadow:0 0 25px rgba(229,9,20,.4);}
-.metric{font-size:28px;font-weight:700;color:#00E676;margin:10px 0;}
-.badge{background-color:#E50914;border-radius:8px;padding:3px 8px;color:white;font-size:12px;font-weight:600;}
-.trend-up{color:#00E676;}
-.trend-down{color:#FF1744;}
-.chart-box{
-  background:#1C1C1C;padding:20px;border-radius:15px;
-  margin-top:15px;box-shadow:0 0 10px rgba(0,0,0,.3);
-}
-[data-baseweb="tab-list"]{gap:12px;}
+.chart-box{background:#1C1C1C;padding:20px;border-radius:15px;margin-top:15px;
+  box-shadow:0 0 10px rgba(0,0,0,.3);}
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# UTILS
+# UTILITIES
 # -------------------------------------------------
 @st.cache_data(ttl=3600)
-def fetch_json(url):
-    try:
-        return requests.get(url, timeout=10).json()
-    except Exception:
-        return {}
+def load_predictions():
+    if os.path.exists("predictions.csv"):
+        return pd.read_csv("predictions.csv")
+    # Fallback sample data
+    return pd.DataFrame({
+        "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic"],
+        "team":["BOS","CLE","DAL"],
+        "prop_type":["Points","Points","Points"],
+        "line":[27.5,26.5,31.5],
+        "projection":[31.2,28.8,35.1],
+        "ev":[0.14,0.08,0.09],
+        "confidence":[0.87,0.79,0.83],
+        "sportsbook_line":["FanDuel","FanDuel","FanDuel"],
+        "edge_value":[14,8,9]
+    })
 
 @st.cache_data(ttl=3600)
-def get_player_photo(name):
-    safe_name = name.replace(" ", "_").lower()
+def get_player_photo(player_name):
+    safe_name = player_name.replace(" ", "_").lower()
     local_path = os.path.join(PLAYER_PHOTO_DIR, f"{safe_name}.jpg")
     if os.path.exists(local_path):
         return local_path
-    # ESPN CDN format guess
-    search = fetch_json(f"{BALL_API}/players?search={name}")
-    if search.get("data"):
-        player = search["data"][0]
-        espn_id = player["id"]
-        img_url = f"https://a.espncdn.com/i/headshots/nba/players/full/{espn_id}.png"
-        try:
-            img = Image.open(BytesIO(requests.get(img_url, timeout=5).content))
-            img.save(local_path)
-            return local_path
-        except Exception:
-            pass
-    return None
+    try:
+        url = f"https://nba-players.herokuapp.com/players/{safe_name.split('_')[-1]}/{safe_name.split('_')[0]}"
+        img = Image.open(BytesIO(requests.get(url, timeout=5).content))
+        img.save(local_path)
+        return local_path
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
 def get_team_logo(team_abbr):
@@ -100,116 +87,124 @@ def get_team_logo(team_abbr):
         return None
 
 @st.cache_data(ttl=900)
-def load_predictions():
-    if os.path.exists("predictions.csv"):
-        return pd.read_csv("predictions.csv")
-    # Example fallback
-    data = {
-        "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic"],
-        "team":["BOS","CLE","DAL"],
-        "prop_type":["Points","Points","Points"],
-        "line":[27.5,26.5,31.5],
-        "projection":[31.2,28.8,35.1],
-        "ev":[0.14,0.08,0.09],
-        "confidence":[0.87,0.79,0.83],
-        "sportsbook_line":["FanDuel","FanDuel","FanDuel"],
-        "edge_value":[14,8,9]
-    }
-    return pd.DataFrame(data)
+def get_recent_games(player_id):
+    """Get last 5 games for player"""
+    try:
+        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season='2024-25')
+        df = gamelog.get_data_frames()[0]
+        return df.head(5)[["GAME_DATE","PTS","REB","AST"]]
+    except Exception:
+        return pd.DataFrame(columns=["GAME_DATE","PTS","REB","AST"])
 
-@st.cache_data(ttl=900)
-def get_odds():
-    url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?regions=us&markets=player_points&apiKey={ODDS_API_KEY}"
-    return fetch_json(url)
+# -------------------------------------------------
+# LOAD DATA
+# -------------------------------------------------
+preds = load_predictions()
+nba_players = players.get_active_players()
+nba_teams = {t["abbreviation"]: t for t in teams.get_teams()}
+
+# Build team-player mapping
+team_map = {}
+for p in nba_players:
+    team_id = p.get("team_id")
+    team_abbr = next((t["abbreviation"] for t in nba_teams.values() if t.get("id") == team_id), None)
+    if team_abbr:
+        team_map.setdefault(team_abbr, []).append(p["full_name"])
+
+# Flatten for selectbox
+team_options = []
+for team, plist in sorted(team_map.items()):
+    team_options.append(f"=== {team} ===")
+    team_options.extend(plist)
 
 # -------------------------------------------------
 # HEADER
 # -------------------------------------------------
-st.title("🏀 Hot Shot Props — NBA Dashboard")
-st.subheader("ESPN-Style AI-Powered Player Prop Insights")
+st.title("🏀 Hot Shot Props — NBA ESPN-Style Dashboard")
+st.subheader("AI-Powered Player Prop Insights with Live NBA Data")
 
 # -------------------------------------------------
-# DATA
+# PLAYER SEARCH / SELECT
 # -------------------------------------------------
-preds = load_predictions()
+selected_player = st.selectbox("Search or Browse by Team ↓", team_options, index=1)
+if selected_player.startswith("==="):
+    st.warning("Please select an actual player.")
+    st.stop()
 
-# Player list / selection
-player_names = preds["player_name"].unique()
-selected = st.selectbox("Select a Player", player_names)
+metric = st.selectbox("Select Metric", ["Points","Rebounds","Assists","PRA"])
 
-pdata = preds[preds["player_name"] == selected].iloc[0]
-photo_path = get_player_photo(selected)
-team_logo = get_team_logo(pdata["team"])
+# -------------------------------------------------
+# DATA FETCH
+# -------------------------------------------------
+pinfo = next((p for p in nba_players if p["full_name"] == selected_player), None)
+if not pinfo:
+    st.error("Player not found in NBA API.")
+    st.stop()
+
+player_id = pinfo["id"]
+recent = get_recent_games(player_id)
+if recent.empty:
+    st.warning("No recent game data available.")
+    st.stop()
+
+# Compute PRA
+recent["PRA"] = recent["PTS"] + recent["REB"] + recent["AST"]
+
+# -------------------------------------------------
+# MODEL MATCH
+# -------------------------------------------------
+model_row = preds[preds["player_name"].str.lower() == selected_player.lower()]
+model_val = None
+if not model_row.empty:
+    row = model_row.iloc[0]
+    if row["prop_type"].lower() == metric.lower():
+        model_val = row["projection"]
+
+# -------------------------------------------------
+# VISUALS
+# -------------------------------------------------
+photo = get_player_photo(selected_player)
+team_logo = get_team_logo(row["team"] if not model_row.empty else "nba")
 
 col1, col2 = st.columns([1,2])
 with col1:
-    if photo_path:
-        st.image(photo_path, use_column_width=True)
+    if photo: st.image(photo, use_column_width=True)
 with col2:
-    if team_logo:
-        st.image(team_logo, width=80)
-    st.markdown(f"### {selected} ({pdata['team']}) — {pdata['prop_type']}")
-    st.metric("Sportsbook Line", f"{pdata['line']} {pdata['prop_type']}")
-    st.metric("Model Projection", f"{pdata['projection']:.1f}")
-    st.metric("Edge", f"+{pdata['edge_value']}%")
-    st.progress(float(pdata['confidence']))
+    if team_logo: st.image(team_logo, width=90)
+    st.markdown(f"### {selected_player} — {metric}")
+    if model_row.empty:
+        st.markdown("No model data available for this player.")
+    else:
+        st.metric("Model Projection", f"{row['projection']:.1f}")
+        st.metric("Sportsbook Line", f"{row['line']}")
+        st.metric("Edge", f"{row['edge_value']}%")
 
 # -------------------------------------------------
-# TABS
+# CHART
 # -------------------------------------------------
-tabs = st.tabs(["📊 Stats", "🎯 Insights", "📈 Trends"])
+st.markdown("### Recent Performance (last 5 games)")
+x = recent["GAME_DATE"].iloc[::-1]
+y_actual = recent[metric[:3].upper()].iloc[::-1]
+fig = go.Figure()
+fig.add_trace(go.Bar(x=x, y=y_actual, name="Actual", marker_color="#E50914"))
 
-# TAB 1: STATS
-with tabs[0]:
-    st.markdown("### Radar Comparison")
-    radar_fig = go.Figure()
-    cats = ['Line','Projection']
-    vals = [pdata['line'], pdata['projection']]
-    radar_fig.add_trace(go.Scatterpolar(
-        r=vals + [vals[0]],
-        theta=cats + [cats[0]],
-        fill='toself', line_color="#E50914"
-    ))
-    radar_fig.update_layout(
-        polar=dict(bgcolor="#1E1E1E", radialaxis=dict(visible=True,range=[0, max(vals)+10])),
-        paper_bgcolor="#121212", font_color="#F5F5F5"
-    )
-    st.plotly_chart(radar_fig, use_container_width=True)
+if model_val:
+    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x), name="Model Projection",
+                             mode="lines", line=dict(color="#00E676", dash="dash")))
 
-# TAB 2: INSIGHTS
-with tabs[1]:
-    st.markdown("### AI Insights")
-    line = pdata["line"]; proj = pdata["projection"]; edge = pdata["edge_value"]; conf = pdata["confidence"]
-    trend = "🔥 Hot" if proj > line else "🧊 Cold"
-    insight = f"{trend} — Model projects **{proj:.1f} {pdata['prop_type']}** vs line of **{line}** ({edge:+.0f}% edge, confidence {conf*100:.0f}%)"
-    st.info(insight)
+fig.update_layout(paper_bgcolor="#121212", plot_bgcolor="#121212",
+                  font_color="#F5F5F5", legend=dict(orientation="h", yanchor="bottom"),
+                  yaxis_title=metric)
+st.plotly_chart(fig, use_container_width=True)
 
-    gauge = go.Figure(go.Indicator(
-        mode="gauge+number", value=conf*100,
-        title={'text':"Model Confidence %"},
-        gauge={'axis':{'range':[0,100]},'bar':{'color':"#E50914"},
-               'steps':[{'range':[0,50],'color':"#333"},
-                        {'range':[50,75],'color':"#666"},
-                        {'range':[75,100],'color':"#E50914"}]}
-    ))
-    gauge.update_layout(paper_bgcolor="#121212", font_color="#F5F5F5")
-    st.plotly_chart(gauge, use_container_width=True)
-
-# TAB 3: TRENDS
-with tabs[2]:
-    st.markdown("### Simulated Recent Game Log")
-    games = pd.DataFrame({
-        "Game":[f"G{i}" for i in range(1,6)],
-        "Points":np.random.randint(20,40,5),
-        "Rebounds":np.random.randint(3,12,5),
-        "Assists":np.random.randint(2,10,5)
-    })
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=games["Game"], y=games["Points"], name="Points", marker_color="#E50914"))
-    fig.add_trace(go.Scatter(x=games["Game"], y=games["Rebounds"], mode='lines+markers', name="Rebounds", line=dict(color="#00E676")))
-    fig.add_trace(go.Scatter(x=games["Game"], y=games["Assists"], mode='lines+markers', name="Assists", line=dict(color="#29B6F6")))
-    fig.update_layout(paper_bgcolor="#121212", plot_bgcolor="#121212", font_color="#F5F5F5")
-    st.plotly_chart(fig, use_container_width=True)
+# -------------------------------------------------
+# INSIGHT SUMMARY
+# -------------------------------------------------
+if not model_row.empty:
+    line = row["line"]; proj = row["projection"]; edge = row["edge_value"]; conf = row["confidence"]
+    status = "🔥 Over trend" if proj > line else "🧊 Under risk"
+    st.info(f"{status}: projected **{proj:.1f} {metric}** vs line **{line}**  "
+            f"({edge:+.0f}% edge, confidence {conf*100:.0f}%)")
 
 # -------------------------------------------------
 # FOOTER

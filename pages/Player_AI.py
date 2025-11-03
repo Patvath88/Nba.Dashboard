@@ -1,59 +1,75 @@
-# -------------------------------------------------
-# HOT SHOT PROPS — PLAYER AI DASHBOARD
-# -------------------------------------------------
-import streamlit as st, pandas as pd, numpy as np
+import streamlit as st
+import pandas as pd
+import numpy as np
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playergamelog
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Hot Shot Props | Player AI", page_icon="📊", layout="wide")
+st.set_page_config(page_title="NBA Player AI", layout="wide", page_icon="🏀")
 
-st.markdown("""
-<style>
-body{background:#000;color:#EEE;font-family:'Roboto',sans-serif;}
-h1,h2,h3{color:#FF6F00;text-shadow:0 0 10px #FF8C00;}
-.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin:10px 0;}
-.metric{background:#1A1A1A;border:1px solid #FF6F00;border-radius:10px;text-align:center;padding:10px;}
-.metric:hover{box-shadow:0 0 12px #FF6F00;}
-.player-header{display:flex;align-items:center;gap:20px;margin-bottom:20px;}
-.player-img{width:140px;height:140px;border-radius:50%;border:3px solid #FF6F00;object-fit:cover;}
-</style>
-""", unsafe_allow_html=True)
-
-CURRENT="2025-26"; LAST="2024-25"; PRE="2025 Preseason"
-
-@st.cache_data(ttl=600)
-def get_games(pid,season):
-    try:return playergamelog.PlayerGameLog(player_id=pid,season=season).get_data_frames()[0]
-    except:return pd.DataFrame()
+# -----------------------
+# Utility Functions
+# -----------------------
+@st.cache_data(show_spinner=False)
+def get_games(pid, season):
+    """Fetch player game logs for a given season"""
+    try:
+        data = playergamelog.PlayerGameLog(player_id=pid, season=season).get_data_frames()[0]
+        return data
+    except Exception:
+        return pd.DataFrame()
 
 def enrich(df):
-    if df.empty:return df
-    df["PRA"]=df["PTS"]+df["REB"]+df["AST"]
-    df["P+R"]=df["PTS"]+df["REB"]; df["P+A"]=df["PTS"]+df["AST"]; df["R+A"]=df["REB"]+df["AST"]
+    """Clean up and add derived columns."""
+    if df.empty:
+        return df
+    df = df.copy()
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+    df.sort_values("GAME_DATE", inplace=True)
+    df["P+R"] = df["PTS"] + df["REB"]
+    df["P+A"] = df["PTS"] + df["AST"]
+    df["R+A"] = df["REB"] + df["AST"]
+    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
 def prepare(df):
-    for w in [5,10,20]:
-        for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"]:
-            df[f"{s}_avg_{w}"]=df[s].rolling(w).mean()
-    return df.dropna()
+    """Add rolling averages to enhance features."""
+    df = df.copy()
+    for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+        for w in [3,5]:
+            df[f"{s}_avg{w}"] = df[s].rolling(w, min_periods=1).mean()
+    return df
 
-def model(df):
-    df = prepare(df)
-    feats = [c for c in df if "avg" in c]
+def model(df, pid):
+    """Train models using current + preseason + last season if needed."""
+    base = df.copy()
+
+    if len(base) < 15:
+        try:
+            pre = enrich(get_games(pid, "2025 Preseason"))
+            base = pd.concat([base, pre])
+        except:
+            pass
+    if len(base) < 15:
+        try:
+            last = enrich(get_games(pid, "2024-25"))
+            base = pd.concat([base, last])
+        except:
+            pass
+
+    base = prepare(base)
+    feats = [c for c in base if "avg" in c]
     models = {}
 
-    for s in ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA", "P+R", "P+A", "R+A"]:
-        if s not in df:
+    for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+        if s not in base:
             continue
 
-        # Drop NaNs and align X/y properly
-        X = df[feats].dropna()
-        y = df.loc[X.index, s].dropna()
+        X = base[feats].dropna()
+        y = base.loc[X.index, s].dropna()
 
-        # Make sure both have the same length
         min_len = min(len(X), len(y))
         if min_len < 8:
             continue
@@ -67,41 +83,120 @@ def model(df):
     return models, feats
 
 
-def metric_cards(stats):
-    html="<div class='metric-grid'>"
-    for k,v in stats.items():
-        html+=f"<div class='metric'><div style='font-size:1.3em;font-weight:bold'>{v}</div><div>{k}</div></div>"
-    html+="</div>"; st.markdown(html,unsafe_allow_html=True)
+def metric_cards(stats: dict):
+    cols = st.columns(4)
+    keys = list(stats.keys())
+    for i, key in enumerate(keys):
+        with cols[i % 4]:
+            st.metric(label=key, value=stats[key])
 
-if st.button("🏠 Back to Home"): st.switch_page("Home.py")
 
-players_list=players.get_active_players()
-names=sorted([p["full_name"] for p in players_list])
-query=st.experimental_get_query_params().get("player",[None])[0]
-player=st.selectbox("Select a Player",["Select a player..."]+names,index=names.index(query)+1 if query in names else 0)
-if player=="Select a player...": st.stop()
+def bar_chart(title, df):
+    fig = go.Figure()
+    for col in ["PTS","REB","AST","FG3M"]:
+        if col in df:
+            fig.add_trace(go.Bar(x=df["GAME_DATE"], y=df[col], name=col))
+    fig.update_layout(title=title, barmode="group", height=300, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
-pid=next(p["id"] for p in players_list if p["full_name"]==player)
-photo=f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
-st.markdown(f"<div class='player-header'><img src='{photo}' class='player-img'><h2>{player}</h2></div>",unsafe_allow_html=True)
 
-df=pd.concat([enrich(get_games(pid,CURRENT)),enrich(get_games(pid,PRE)),enrich(get_games(pid,LAST))])
-if df.empty: st.error("No data found."); st.stop()
-df=df.sort_values("GAME_DATE",ascending=False).reset_index(drop=True)
+# -----------------------
+# Main Page
+# -----------------------
 
-models,feats=model(df)
-if models:
-    latest=prepare(df).iloc[[-1]][feats]
-    preds={s:round(float(m.predict(latest)[0]),1) for s,m in models.items()}
-    st.subheader("🧠 AI Predicted Next Game Stats"); metric_cards(preds)
+# Fix Streamlit query param deprecation
+params = st.query_params
+player_name = params.get("player", [""])[0] if isinstance(params.get("player"), list) else params.get("player")
 
-last=df.iloc[0]; recent={s:round(last[s],1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
-st.subheader("🔥 Most Recent Game"); metric_cards(recent)
+if not player_name:
+    st.warning("Please select a player from the homepage.")
+    st.stop()
 
-for label,n in [("📅 Last 5 Games",5),("📅 Last 10 Games",10),("📅 Last 20 Games",20)]:
-    sub=df.head(n); avg={s:round(sub[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
-    st.markdown(f"### {label}"); metric_cards(avg)
+nba_players = players.get_players()
+player_info = next((p for p in nba_players if p["full_name"].lower() == player_name.lower()), None)
 
-this=df.head(30); lastS=enrich(get_games(pid,LAST))
-if not this.empty: st.markdown("### 📊 This Season Avg"); metric_cards({s:round(this[s].mean(),1) for s in ["PTS","REB","AST","PRA"]})
-if not lastS.empty: st.markdown("### 📊 Last Season Avg"); metric_cards({s:round(lastS[s].mean(),1) for s in ["PTS","REB","AST","PRA"]})
+if not player_info:
+    st.error("Player not found.")
+    st.stop()
+
+pid = player_info["id"]
+
+# --- Data Load ---
+current = enrich(get_games(pid, "2025-26"))
+pre = enrich(get_games(pid, "2025 Preseason"))
+last = enrich(get_games(pid, "2024-25"))
+data = pd.concat([current, pre, last])
+
+if data.empty:
+    st.error("No data found for this player.")
+    st.stop()
+
+# --- Train Models ---
+models, feats = model(data, pid)
+
+# --- Predict Next Game ---
+if not models:
+    st.warning("Not enough data for prediction.")
+    st.stop()
+
+latest_feats = prepare(data).iloc[[-1]][feats]
+pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
+
+# --- Display ---
+st.markdown(f"## 🏀 {player_name} — AI Predicted Next Game")
+metric_cards(pred)
+
+# --- Recent Game ---
+latest = data.iloc[-1]
+recent = {
+    "PTS": latest["PTS"],
+    "REB": latest["REB"],
+    "AST": latest["AST"],
+    "FG3M": latest["FG3M"],
+    "STL": latest["STL"],
+    "BLK": latest["BLK"],
+    "TOV": latest["TOV"],
+    "PRA": latest["PRA"],
+    "P+R": latest["P+R"],
+    "P+A": latest["P+A"],
+    "R+A": latest["R+A"],
+}
+
+st.markdown("### 🔥 Most Recent Game Stats")
+metric_cards(recent)
+
+# --- Historical Sections ---
+st.markdown("### 📈 Last 5 Games")
+bar_chart("Last 5 Games — Averages", data.tail(5))
+
+st.markdown("### 📈 Last 10 Games")
+bar_chart("Last 10 Games — Averages", data.tail(10))
+
+st.markdown("### 📈 Last 20 Games")
+bar_chart("Last 20 Games — Averages", data.tail(20))
+
+st.markdown("### 📊 This Season Averages")
+season_avg = data.mean(numeric_only=True).round(1)
+metric_cards({
+    "PTS": season_avg["PTS"],
+    "REB": season_avg["REB"],
+    "AST": season_avg["AST"],
+    "FG3M": season_avg["FG3M"],
+    "STL": season_avg["STL"],
+    "BLK": season_avg["BLK"],
+    "TOV": season_avg["TOV"],
+    "PRA": season_avg["PRA"],
+})
+
+st.markdown("### 🏆 Career Totals")
+career_totals = data.sum(numeric_only=True).round(0)
+metric_cards({
+    "PTS": career_totals["PTS"],
+    "REB": career_totals["REB"],
+    "AST": career_totals["AST"],
+    "FG3M": career_totals["FG3M"],
+    "STL": career_totals["STL"],
+    "BLK": career_totals["BLK"],
+    "TOV": career_totals["TOV"],
+    "PRA": career_totals["PRA"],
+})

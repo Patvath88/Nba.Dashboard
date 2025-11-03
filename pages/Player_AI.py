@@ -92,7 +92,7 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
             """
             st.markdown(card_html, unsafe_allow_html=True)
 
-            )
+            
 
 def bar_chart_compare(title, ai_pred, season_avg):
     stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV"]

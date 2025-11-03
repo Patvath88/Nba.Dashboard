@@ -1,12 +1,11 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA AI FORM & MODEL DASHBOARD
+# HOT SHOT PROPS — NBA RETRO AI DASHBOARD
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import os
-from datetime import datetime
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog, playercareerstats
 from sklearn.ensemble import RandomForestRegressor
@@ -15,12 +14,13 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from PIL import Image
 import requests
 from io import BytesIO
+from random import choice
 
 # -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
-st.set_page_config(page_title="Hot Shot Props | NBA AI Dashboard",
-                   page_icon="🔥", layout="wide")
+st.set_page_config(page_title="Hot Shot Props | Retro NBA AI Dashboard",
+                   page_icon="🏀", layout="wide")
 
 CURRENT_SEASON = "2025-26"
 LAST_SEASON = "2024-25"
@@ -36,22 +36,47 @@ os.makedirs(TEAM_LOGO_DIR, exist_ok=True)
 # -------------------------------------------------
 st.markdown("""
 <style>
-body {background:#0b0b0b;color:#F5F5F5;font-family:'Roboto',sans-serif;}
-h1,h2,h3,h4 {font-family:'Oswald',sans-serif;color:#E50914;}
+body {
+    background: radial-gradient(circle at top, #141414 0%, #0b0b0b 60%, #000 100%) fixed;
+    background-image: url('https://i.imgur.com/8AqXbzk.png');
+    background-size: cover;
+    color: #F5F5F5;
+    font-family:'Roboto',sans-serif;
+}
+h1,h2,h3,h4 {
+    font-family:'Oswald',sans-serif;
+    color:#ff6f00;
+    text-shadow:0 0 10px #ff9f43;
+}
 .metric-grid {
     display:grid;
     grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
     gap:10px;margin-bottom:10px;justify-items:center;
 }
 .metric-card {
-    width:100%;max-width:150px;background:linear-gradient(145deg,#1b1b1b,#121212);
-    border:1px solid #2a2a2a;border-radius:10px;padding:10px;text-align:center;
-    transition:all .3s ease;box-shadow:0 0 6px rgba(229,9,20,.3);
+    width:100%;max-width:150px;
+    background:linear-gradient(145deg,#1e1e1e,#121212);
+    border:1px solid rgba(255,111,0,0.4);
+    border-radius:10px;
+    padding:10px;text-align:center;
+    box-shadow:0 0 10px rgba(255,111,0,0.2);
+    transition:all .3s ease;
 }
-.metric-card:hover{transform:scale(1.03);box-shadow:0 0 12px rgba(229,9,20,.6);}
-.metric-value{font-size:1.1em;font-weight:700;}
-.metric-label{font-size:.8em;color:#bbb;}
-@media(max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
+.metric-card:hover{
+    transform:scale(1.04);
+    box-shadow:0 0 16px rgba(255,111,0,0.6);
+}
+.metric-value{
+    font-size:1.1em;
+    font-weight:700;
+}
+.metric-label{
+    font-size:.8em;
+    color:#bbb;
+}
+@media(max-width:600px){
+    .metric-grid{grid-template-columns:repeat(2,1fr);}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,35 +184,45 @@ def predict_next_game(df, models):
     return preds
 
 # -------------------------------------------------
-# METRIC RENDER
+# METRIC DISPLAY WITH TREND ARROWS
 # -------------------------------------------------
-def render_metric_cards(avg_dict):
+def render_metric_cards(avg_dict, season_avg=None):
     html = "<div class='metric-grid'>"
     for stat,val in avg_dict.items():
-        color = "#00FF80" if isinstance(val,(int,float)) and val>0 else "#FF5555"
+        if season_avg and stat in season_avg:
+            if val > season_avg[stat]: arrow = "▲"; color = "#00FF80"
+            elif val < season_avg[stat]: arrow = "▼"; color = "#FF5555"
+            else: arrow = "■"; color = "#FFA500"
+        else:
+            arrow, color = "", "#00FF80"
         html += f"""
-        <div class='metric-card' style='border:1px solid {color};'>
-            <div class='metric-value' style='color:{color};'>{val}</div>
+        <div class='metric-card'>
+            <div class='metric-value' style='color:{color};'>{val} {arrow}</div>
             <div class='metric-label'>{stat}</div>
         </div>"""
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
-def render_avg_bar(df, title):
+# colored bar chart
+def render_avg_bar(df, title, season_avg=None):
     if df.empty: return
     avg = {s:round(df[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in df.columns}
     avg["PRA"] = round(df["PTS"].mean() + df["REB"].mean() + df["AST"].mean(),1)
     st.markdown(f"### {title}")
-    render_metric_cards(avg)
-    fig = go.Figure([go.Bar(x=list(avg.keys()), y=list(avg.values()), marker_color="#E50914")])
-    fig.update_layout(title=f"{title} — Averages",paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
+    render_metric_cards(avg, season_avg)
+    bar_colors = ["#ff6f00","#ff1744","#00e676","#2979ff","#fdd835","#9c27b0","#29b6f6","#e53935"]
+    fig = go.Figure([go.Bar(x=list(avg.keys()), y=list(avg.values()),
+                            marker_color=[choice(bar_colors) for _ in avg],
+                            text=list(avg.values()), textposition="outside")])
+    fig.update_layout(title=f"{title} — Averages",paper_bgcolor="#111",
+                      plot_bgcolor="#111",font_color="#F5F5F5")
     st.plotly_chart(fig, use_container_width=True)
 
 # -------------------------------------------------
 # MAIN DASHBOARD
 # -------------------------------------------------
-st.title("Hot Shot Props — NBA AI Dashboard")
-st.caption("AI-driven player form and projection model with extended historical learning.")
+st.title("🏀 Hot Shot Props — Retro NBA AI Dashboard")
+st.caption("AI projections, player form, and trend tracking with a retro hoops vibe.")
 
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
@@ -243,20 +278,21 @@ with st.expander("🤖 AI Model Projections — Next Game", expanded=True):
 
 st.markdown("---")
 
-# ---- RECENT FORM SECTIONS (no expanders) ----
+# ---- RECENT FORM SECTIONS ----
 if not games_current.empty:
+    season_avg = {s:round(games_current[s].mean(),1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in games_current.columns}
+
     recent = games_current.head(1)
-    render_avg_bar(recent, "🔥 Most Recent Game")
+    render_avg_bar(recent, "🔥 Most Recent Game", season_avg)
 
     if len(games_current) >= 5:
-        render_avg_bar(games_current.head(5), "📅 Last 5 Games")
+        render_avg_bar(games_current.head(5), "📅 Last 5 Games", season_avg)
     if len(games_current) >= 10:
-        render_avg_bar(games_current.head(10), "📅 Last 10 Games")
+        render_avg_bar(games_current.head(10), "📅 Last 10 Games", season_avg)
     if len(games_current) >= 20:
-        render_avg_bar(games_current.head(20), "📅 Last 20 Games")
+        render_avg_bar(games_current.head(20), "📅 Last 20 Games", season_avg)
 
-    # Season Averages
-    render_avg_bar(games_current, "📊 Current Season Averages")
+    render_avg_bar(games_current, "📊 Current Season Averages", season_avg)
 
 # ---- Career Totals ----
 if not career_df.empty:
@@ -269,4 +305,4 @@ if not career_df.empty:
     })
 
 st.markdown("---")
-st.caption("⚡ Powered by NBA API and Hot Shot Props AI Engine © 2025")
+st.caption("🧠 Powered by NBA API and Hot Shot Props AI Engine © 2025")

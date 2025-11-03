@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
+from nba_api.stats.static import players
 import requests
 
 # -------------------------------------------------
@@ -14,7 +15,7 @@ st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
                    page_icon="🏠", layout="wide")
 
 # -------------------------------------------------
-# STYLE (lighter ESPN-style)
+# STYLE (lighter ESPN-style with circular headshots)
 # -------------------------------------------------
 st.markdown("""
 <style>
@@ -34,6 +35,19 @@ h1,h2,h3,h4 {
     padding:15px;
     margin-bottom:20px;
     box-shadow:0 0 12px rgba(255,111,0,0.1);
+}
+.player-row {
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:6px;
+}
+.player-img {
+    width:45px;
+    height:45px;
+    border-radius:50%;
+    border:2px solid #FF6F00;
+    object-fit:cover;
 }
 .btn {
     background:linear-gradient(90deg,#FF6F00,#FF9100);
@@ -73,6 +87,7 @@ def get_games_today():
     games = scoreboardv2.ScoreboardV2(game_date=today)
     return games.get_data_frames()
 
+@st.cache_data(ttl=600)
 def get_injuries():
     try:
         url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
@@ -80,6 +95,18 @@ def get_injuries():
         return pd.DataFrame(data["league"]["injuries"])
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_player_id_map():
+    plist = players.get_active_players()
+    return {p["full_name"]: p["id"] for p in plist}
+
+def player_photo(player_name):
+    pid_map = get_player_id_map()
+    pid = pid_map.get(player_name)
+    if not pid:
+        return "https://cdn-icons-png.flaticon.com/512/847/847969.png"
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
 
 # -------------------------------------------------
 # HEADER / NAVIGATION
@@ -97,7 +124,7 @@ with col2:
         st.experimental_rerun()
 
 # -------------------------------------------------
-# SECTION 1: SEASON LEADERS
+# SECTION 1: SEASON LEADERS (with headshots)
 # -------------------------------------------------
 st.markdown("## 🏀 Season Leaders")
 df = get_leaders()
@@ -118,7 +145,16 @@ if not df.empty:
             else:
                 df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
                 leaders = df.nlargest(10, "PRA")[["PLAYER","TEAM","PTS","REB","AST","PRA"]]
-            st.dataframe(leaders, use_container_width=True)
+
+            for _, row in leaders.iterrows():
+                photo_url = player_photo(row["PLAYER"])
+                st.markdown(
+                    f"<div class='player-row'>"
+                    f"<img src='{photo_url}' class='player-img'>"
+                    f"<div><b>{row['PLAYER']}</b> ({row['TEAM']})<br>"
+                    f"PTS: {row['PTS']} | REB: {row['REB']} | AST: {row['AST']} | 3PM: {row['FG3M']}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True)
 else:
     st.info("Leader data not available.")
 

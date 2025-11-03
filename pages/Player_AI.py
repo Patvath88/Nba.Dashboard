@@ -92,7 +92,7 @@ else:
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render stats in 4-column grid with proper HTML rendering."""
+    """Render stats in 4-column grid with dark gray background and red text."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         acc_str = ""
@@ -104,14 +104,16 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
         <div style="
             border: 2px solid {color};
             border-radius: 10px;
-            background: rgba(25,25,25,0.85);
-            padding: 12px;
+            background-color: #1e1e1e;
+            padding: 14px;
             text-align:center;
+            color:{color};
             box-shadow: 0px 0px 10px {color};
+            transition: all 0.3s ease;
         ">
-            <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
+            <h4 style='margin-bottom:2px;'>{key}</h4>
             {acc_str}
-            <div style='font-size:30px;color:{color};font-weight:bold;'>{val}</div>
+            <div style='font-size:30px;font-weight:bold;margin-top:6px;'>{val}</div>
         </div>
         """
         with cols[i % 4]:

@@ -7,11 +7,12 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="NBA Player AI", layout="wide", page_icon="🏀")
+st.set_page_config(page_title="NBA Player AI Dashboard", layout="wide", page_icon="🏀")
 
 # -----------------------
 # Utility Functions
 # -----------------------
+
 @st.cache_data(show_spinner=False)
 def get_games(pid, season):
     """Fetch player game logs for a given season"""
@@ -22,7 +23,7 @@ def get_games(pid, season):
         return pd.DataFrame()
 
 def enrich(df):
-    """Clean up and add derived columns."""
+    """Add derived combined stats."""
     if df.empty:
         return df
     df = df.copy()
@@ -35,7 +36,7 @@ def enrich(df):
     return df
 
 def prepare(df):
-    """Add rolling averages to enhance features."""
+    """Add rolling average features."""
     df = df.copy()
     for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
         for w in [3,5]:
@@ -43,7 +44,7 @@ def prepare(df):
     return df
 
 def model(df, pid):
-    """Train models using current + preseason + last season if needed."""
+    """Train AI models; fallback to preseason/last season if limited data."""
     base = df.copy()
 
     if len(base) < 15:
@@ -82,46 +83,54 @@ def model(df, pid):
 
     return models, feats
 
-
 def metric_cards(stats: dict):
+    """Render metrics in compact 4-column layout."""
     cols = st.columns(4)
     keys = list(stats.keys())
     for i, key in enumerate(keys):
         with cols[i % 4]:
             st.metric(label=key, value=stats[key])
 
-
 def bar_chart(title, df):
+    """Display grouped bar chart for major stats."""
     fig = go.Figure()
+    colors = {"PTS": "#E50914", "REB": "#00E676", "AST": "#29B6F6", "FG3M": "#FFD700"}
     for col in ["PTS","REB","AST","FG3M"]:
         if col in df:
-            fig.add_trace(go.Bar(x=df["GAME_DATE"], y=df[col], name=col))
+            fig.add_trace(go.Bar(x=df["GAME_DATE"], y=df[col], name=col, marker_color=colors.get(col, "#FFFFFF")))
     fig.update_layout(title=title, barmode="group", height=300, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
-
 
 # -----------------------
 # Main Page
 # -----------------------
 
-# Fix Streamlit query param deprecation
-params = st.query_params
-player_name = params.get("player", [""])[0] if isinstance(params.get("player"), list) else params.get("player")
+# Fetch all NBA players for dropdown
+nba_players = players.get_players()
+player_names = sorted([p["full_name"] for p in nba_players])
+
+# --- Player Selection ---
+st.markdown("### 🔍 Search or Select an NBA Player")
+selected_player = st.selectbox("Choose a player:", ["-- Select Player --"] + player_names)
+
+# Determine target player
+player_name = selected_player if selected_player != "-- Select Player --" else None
 
 if not player_name:
-    st.warning("Please select a player from the homepage.")
+    st.info("Please select a player to view AI predictions and stats.")
     st.stop()
 
-nba_players = players.get_players()
-player_info = next((p for p in nba_players if p["full_name"].lower() == player_name.lower()), None)
-
+# Player info lookup
+player_info = next((p for p in nba_players if p["full_name"] == player_name), None)
 if not player_info:
     st.error("Player not found.")
     st.stop()
 
 pid = player_info["id"]
 
-# --- Data Load ---
+# -----------------------
+# Data Loading
+# -----------------------
 current = enrich(get_games(pid, "2025-26"))
 pre = enrich(get_games(pid, "2025 Preseason"))
 last = enrich(get_games(pid, "2024-25"))
@@ -131,22 +140,27 @@ if data.empty:
     st.error("No data found for this player.")
     st.stop()
 
-# --- Train Models ---
+# -----------------------
+# Model Training
+# -----------------------
 models, feats = model(data, pid)
 
-# --- Predict Next Game ---
 if not models:
     st.warning("Not enough data for prediction.")
     st.stop()
 
+# -----------------------
+# Predictions
+# -----------------------
 latest_feats = prepare(data).iloc[[-1]][feats]
 pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
 
-# --- Display ---
-st.markdown(f"## 🏀 {player_name} — AI Predicted Next Game")
+st.markdown(f"## 🏀 {player_name} — AI Predicted Next Game Stats")
 metric_cards(pred)
 
-# --- Recent Game ---
+# -----------------------
+# Recent Game
+# -----------------------
 latest = data.iloc[-1]
 recent = {
     "PTS": latest["PTS"],
@@ -165,16 +179,21 @@ recent = {
 st.markdown("### 🔥 Most Recent Game Stats")
 metric_cards(recent)
 
-# --- Historical Sections ---
+# -----------------------
+# Historical Sections
+# -----------------------
 st.markdown("### 📈 Last 5 Games")
-bar_chart("Last 5 Games — Averages", data.tail(5))
+bar_chart("Last 5 Games — Performance", data.tail(5))
 
 st.markdown("### 📈 Last 10 Games")
-bar_chart("Last 10 Games — Averages", data.tail(10))
+bar_chart("Last 10 Games — Performance", data.tail(10))
 
 st.markdown("### 📈 Last 20 Games")
-bar_chart("Last 20 Games — Averages", data.tail(20))
+bar_chart("Last 20 Games — Performance", data.tail(20))
 
+# -----------------------
+# Season and Career
+# -----------------------
 st.markdown("### 📊 This Season Averages")
 season_avg = data.mean(numeric_only=True).round(1)
 metric_cards({

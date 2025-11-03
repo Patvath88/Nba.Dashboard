@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-plotly
-Pillow
-requests
-nba_api
+streamlit>=1.37.0
+pandas>=2.1.0
+numpy>=1.25.0
+plotly>=5.15.0
+nba_api>=1.3.0
+requests>=2.31.0
+Pillow>=10.0.0
+scikit-learn>=1.4.0

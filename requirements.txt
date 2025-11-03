@@ -4,3 +4,5 @@ numpy
 plotly
 Pillow
 requests
+nba_api
+

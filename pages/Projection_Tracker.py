@@ -96,7 +96,7 @@ def get_live_stats(game_id, player_name):
         r = requests.get(url, timeout=10)
         data = r.json()
         if "game" not in data:
-            return None, "not_started"
+            return {}, "not_started"
         players_data = data["game"]["players"]
         for p in players_data:
             full_name = f"{p['firstName']} {p['familyName']}"
@@ -120,9 +120,9 @@ def get_live_stats(game_id, player_name):
                     return stats, "in_progress"
                 else:
                     return stats, "not_started"
-        return None, "not_started"
+        return {}, "not_started"
     except Exception:
-        return None, "not_started"
+        return {}, "not_started"
 
 # ---------------------- DELETE PROJECTION FUNCTION ----------------------
 def delete_projection(player_name):
@@ -173,12 +173,11 @@ for player_name, group in data.groupby("player"):
         continue
 
     game_date = next_game["game_date"]
-    status = "not_started"
-    live_stats = {}
-
-    # If game is today or in progress, fetch live data
-    if game_date <= datetime.now().date() + timedelta(days=1):
-        live_stats, status = get_live_stats(next_game["game_id"], player_name)
+    live_stats, status = get_live_stats(next_game["game_id"], player_name)
+    if live_stats is None:
+        live_stats = {}
+    if status is None:
+        status = "not_started"
 
     st.markdown(
         f"**Next Game:** {team_tricode} vs {next_game['opponent']} "

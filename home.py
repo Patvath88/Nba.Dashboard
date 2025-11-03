@@ -5,212 +5,133 @@ import streamlit as st
 import pandas as pd
 import datetime
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
-from nba_api.stats.static import players
+from nba_api.stats.static import players, teams
 import requests
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
 st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
-                   page_icon="🏠", layout="wide")
+                   page_icon="🏀", layout="wide")
 
-# -------------------------------------------------
-# STYLE (lighter ESPN-style with circular headshots)
-# -------------------------------------------------
+# ---------- STYLE ----------
 st.markdown("""
 <style>
-body {
-    background-color:#121212;
-    color:#EAEAEA;
-    font-family:'Roboto',sans-serif;
-}
-h1,h2,h3,h4 {
-    font-family:'Oswald',sans-serif;
-    color:#FF6F00;
-    text-shadow:0 0 8px #FF9F43;
-}
-.section {
-    background:#1C1C1C;
-    border-radius:10px;
-    padding:15px;
-    margin-bottom:20px;
-    box-shadow:0 0 12px rgba(255,111,0,0.1);
-}
-.player-row {
-    display:flex;
-    align-items:center;
-    gap:12px;
-    margin-bottom:6px;
-}
-.player-img {
-    width:45px;
-    height:45px;
-    border-radius:50%;
-    border:2px solid #FF6F00;
-    object-fit:cover;
-}
-.btn {
-    background:linear-gradient(90deg,#FF6F00,#FF9100);
-    color:white;
-    font-weight:bold;
-    border:none;
-    border-radius:8px;
-    padding:10px 20px;
-    transition:0.3s;
-}
-.btn:hover {
-    transform:scale(1.03);
-    box-shadow:0 0 10px #FF6F00;
-}
-.status-active {color:#00FF80;font-weight:bold;}
-.status-questionable {color:#FFD700;font-weight:bold;}
-.status-out {color:#FF5252;font-weight:bold;}
+body {background:#121212;color:#EAEAEA;font-family:'Roboto',sans-serif;}
+h1,h2,h3 {color:#FF6F00;text-shadow:0 0 8px #FF9F43;font-family:'Oswald',sans-serif;}
+.section {background:#1C1C1C;border-radius:12px;padding:15px;margin-bottom:20px;
+          box-shadow:0 0 12px rgba(255,111,0,0.1);}
+.leader {display:flex;align-items:center;gap:18px;margin-bottom:18px;}
+.leader img {width:110px;height:110px;border-radius:50%;border:3px solid #FF6F00;object-fit:cover;}
+.leader a {color:#FFF;text-decoration:none;}
+.leader a:hover {text-decoration:underline;}
+.status-active{color:#00FF80;font-weight:bold;}
+.status-questionable{color:#FFD700;font-weight:bold;}
+.status-out{color:#FF5252;font-weight:bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------
-# HELPERS
-# -------------------------------------------------
+# ---------- HELPERS ----------
 @st.cache_data(ttl=600)
 def get_leaders():
-    leaders = leagueleaders.LeagueLeaders(season="2025-26")
-    return leaders.get_data_frames()[0]
+    df = leagueleaders.LeagueLeaders(season="2025-26").get_data_frames()[0]
+    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
+    return df
 
 @st.cache_data(ttl=600)
 def get_standings():
-    standings = leaguestandingsv3.LeagueStandingsV3(season="2025-26")
-    return standings.get_data_frames()[0]
+    return leaguestandingsv3.LeagueStandingsV3(season="2025-26").get_data_frames()[0]
 
 @st.cache_data(ttl=600)
 def get_games_today():
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    games = scoreboardv2.ScoreboardV2(game_date=today)
-    return games.get_data_frames()
+    return scoreboardv2.ScoreboardV2(game_date=today).get_data_frames()
 
 @st.cache_data(ttl=600)
 def get_injuries():
     try:
-        url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
-        data = requests.get(url, timeout=10).json()
-        return pd.DataFrame(data["league"]["injuries"])
-    except Exception:
-        return pd.DataFrame()
+        url="https://cdn.nba.com/static/json/injury/injury_2025.json"
+        return pd.DataFrame(requests.get(url,timeout=10).json()["league"]["injuries"])
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
-def get_player_id_map():
-    plist = players.get_active_players()
-    return {p["full_name"]: p["id"] for p in plist}
+def player_id_map():
+    return {p["full_name"]:p["id"] for p in players.get_active_players()}
 
-def player_photo(player_name):
-    pid_map = get_player_id_map()
-    pid = pid_map.get(player_name)
-    if not pid:
-        return "https://cdn-icons-png.flaticon.com/512/847/847969.png"
-    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+def player_photo(name):
+    pid=player_id_map().get(name)
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
+           "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
-# -------------------------------------------------
-# HEADER / NAVIGATION
-# -------------------------------------------------
+def team_logo(abbr):
+    return f"https://cdn.nba.com/logos/nba/{abbr}/primary/L/logo.svg"
+
+# ---------- HEADER ----------
 st.title("🏠 Hot Shot Props — NBA Home Hub")
-st.caption("Live season leaders, games, injuries, and standings")
+st.caption("Live leaders, games, injuries & standings")
 
-col1, col2 = st.columns([1,1])
+col1,col2=st.columns([1,1])
 with col1:
     if st.button("📊 Go to Player AI Dashboard"):
         st.switch_page("pages/Player_AI.py")
 with col2:
     if st.button("🔄 Refresh Data"):
-        st.cache_data.clear()
-        st.experimental_rerun()
+        st.cache_data.clear(); st.experimental_rerun()
 
-# -------------------------------------------------
-# SECTION 1: SEASON LEADERS (with headshots)
-# -------------------------------------------------
-st.markdown("## 🏀 Season Leaders")
-df = get_leaders()
+# ---------- SEASON LEADERS ----------
+st.markdown("## 🏀 Top Performers")
 
-if not df.empty:
-    categories = {
-        "Points": "PTS",
-        "Rebounds": "REB",
-        "Assists": "AST",
-        "3PM": "FG3M",
-        "PRA": None
-    }
+df=get_leaders()
+cats={"Points":"PTS","Rebounds":"REB","Assists":"AST","3PT Made":"FG3M","PRA":"PRA"}
 
-    for cat, key in categories.items():
-        with st.expander(f"🏆 {cat} Leaders (Top 10)", expanded=False):
-            if key:
-                leaders = df.nlargest(10, key)[["PLAYER","TEAM","PTS","REB","AST","FG3M"]]
-            else:
-                df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
-                leaders = df.nlargest(10, "PRA")[["PLAYER","TEAM","PTS","REB","AST","PRA"]]
+for cat,key in cats.items():
+    leader=df.loc[df[key].idxmax()]
+    photo=player_photo(leader["PLAYER"])
+    url=f"?player={leader['PLAYER'].replace(' ','%20')}"
+    st.markdown(
+        f"<div class='section leader'>"
+        f"<a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
+        f"<img src='{photo}'></a>"
+        f"<div><a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
+        f"<b>{leader['PLAYER']}</b></a><br>{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
+        unsafe_allow_html=True)
 
-            for _, row in leaders.iterrows():
-                photo_url = player_photo(row["PLAYER"])
-                st.markdown(
-                    f"<div class='player-row'>"
-                    f"<img src='{photo_url}' class='player-img'>"
-                    f"<div><b>{row['PLAYER']}</b> ({row['TEAM']})<br>"
-                    f"PTS: {row['PTS']} | REB: {row['REB']} | AST: {row['AST']} | 3PM: {row['FG3M']}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True)
-else:
-    st.info("Leader data not available.")
-
-# -------------------------------------------------
-# SECTION 2: GAMES TONIGHT
-# -------------------------------------------------
+# ---------- GAMES TONIGHT ----------
 st.markdown("## 📅 Games Tonight")
 try:
-    line_score, game_header, *_ = get_games_today()
-    if not game_header.empty:
-        for _, row in game_header.iterrows():
+    _, games, *_ = get_games_today()
+    if not games.empty:
+        for _,g in games.iterrows():
             st.markdown(
-                f"<div class='section'><b>{row['VISITOR_TEAM_NAME']}</b> "
-                f"@ <b>{row['HOME_TEAM_NAME']}</b> — "
-                f"<i>{row['GAME_STATUS_TEXT']}</i></div>", unsafe_allow_html=True)
-    else:
-        st.info("No games scheduled tonight.")
-except Exception:
-    st.warning("Could not load today's games.")
+              f"<div class='section'><img src='{team_logo(g['VISITOR_TEAM_ID'])}' width='40'> "
+              f"<b>{g['VISITOR_TEAM_NAME']}</b> @ "
+              f"<img src='{team_logo(g['HOME_TEAM_ID'])}' width='40'> "
+              f"<b>{g['HOME_TEAM_NAME']}</b> — <i>{g['GAME_STATUS_TEXT']}</i></div>",
+              unsafe_allow_html=True)
+    else: st.info("No games tonight.")
+except Exception: st.warning("Couldn't load schedule.")
 
-# -------------------------------------------------
-# SECTION 3: INJURY REPORT
-# -------------------------------------------------
+# ---------- INJURY REPORT ----------
 st.markdown("## 💀 Injury Report")
-inj_df = get_injuries()
-if not inj_df.empty:
-    for _, row in inj_df.head(30).iterrows():
-        status_class = "status-active"
-        if "Out" in row["status"] or "Injured" in row["status"]:
-            status_class = "status-out"
-        elif "Questionable" in row["status"]:
-            status_class = "status-questionable"
+inj=get_injuries()
+if not inj.empty:
+    for _,r in inj.head(25).iterrows():
+        scls="status-active"
+        if "Out" in r["status"]: scls="status-out"
+        elif "Questionable" in r["status"]: scls="status-questionable"
         st.markdown(
-            f"<div class='section'><b>{row['player']}</b> — {row['team']}<br>"
-            f"<span class='{status_class}'>{row['status']}</span> — "
-            f"{row.get('description','')}</div>", unsafe_allow_html=True)
-else:
-    st.info("No injury data currently available.")
+          f"<div class='section'><b>{r['player']}</b> — {r['team']}<br>"
+          f"<span class='{scls}'>{r['status']}</span> — {r.get('description','')}</div>",
+          unsafe_allow_html=True)
+else: st.info("No injury data currently available.")
 
-# -------------------------------------------------
-# SECTION 4: STANDINGS
-# -------------------------------------------------
+# ---------- STANDINGS ----------
 st.markdown("## 🏆 NBA Standings")
-stand = get_standings()
+stand=get_standings()
 if not stand.empty:
-    east = stand[stand["Conference"] == "East"]
-    west = stand[stand["Conference"] == "West"]
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("### Eastern Conference")
-        st.dataframe(east[["TeamCity","TeamName","WINS","LOSSES","WinPCT","Streak"]], use_container_width=True)
-    with c2:
-        st.markdown("### Western Conference")
-        st.dataframe(west[["TeamCity","TeamName","WINS","LOSSES","WinPCT","Streak"]], use_container_width=True)
-else:
-    st.warning("Standings data not available.")
+    east=stand[stand["Conference"]=="East"]; west=stand[stand["Conference"]=="West"]
+    base=["TeamCity","TeamName","WINS","LOSSES","WinPCT"]
+    cols=[c for c in base if c in east.columns]+(["Streak"] if "Streak" in east.columns else [])
+    c1,c2=st.columns(2)
+    with c1: st.markdown("### Eastern Conference"); st.dataframe(east[cols], width="stretch")
+    with c2: st.markdown("### Western Conference"); st.dataframe(west[cols], width="stretch")
+else: st.warning("Standings unavailable.")
 
-st.markdown("---")
-st.caption("⚡ Hot Shot Props NBA Dashboard — Live Data © 2025")
+st.markdown("---"); st.caption("⚡ Hot Shot Props — Live Data © 2025")

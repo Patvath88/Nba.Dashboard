@@ -126,12 +126,25 @@ st.subheader("AI-Powered Player Prop Insights with Live NBA Data")
 # -------------------------------------------------
 # PLAYER SEARCH / SELECT
 # -------------------------------------------------
-selected_player = st.selectbox("Search or Browse by Team ↓", team_options, index=1)
-if selected_player.startswith("==="):
-    st.warning("Please select an actual player.")
+# -------------------------------------------------
+# PLAYER SEARCH / SELECT
+# -------------------------------------------------
+selected_player = st.selectbox(
+    "Search or Browse by Team ↓",
+    options=team_options,
+    index=None,              # no default, user must choose
+    placeholder="Select an NBA player"
+)
+
+# If nothing chosen yet, stop execution
+if not selected_player:
     st.stop()
 
-metric = st.selectbox("Select Metric", ["Points","Rebounds","Assists","PRA"])
+# Prevent selecting a header line
+if selected_player.startswith("==="):
+    st.warning("Please select an actual player from the list.")
+    st.stop()
+
 
 # -------------------------------------------------
 # DATA FETCH

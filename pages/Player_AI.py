@@ -5,6 +5,7 @@ from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="NBA Player AI Dashboard", layout="wide", page_icon="🏀")
 
@@ -51,12 +52,51 @@ def get_player_photo(player_name):
         return f"{base_url}{pid}.png"
     return "https://cdn.nba.com/logos/nba/nba-logoman/2022/1x/logo.png"
 
-def metric_cards(stats: dict):
-    """Render stats in a 4-column grid."""
+# Simple team color lookup
+TEAM_COLORS = {
+    "Lakers": "#552583", "Celtics": "#007A33", "Warriors": "#1D428A", "Nuggets": "#0E2240",
+    "Heat": "#98002E", "Bucks": "#00471B", "Cavaliers": "#6F263D", "76ers": "#006BB6",
+    "Suns": "#E56020", "Mavericks": "#00538C", "Knicks": "#F58426", "Bulls": "#CE1141"
+}
+
+def get_team_color(team_name):
+    for k, v in TEAM_COLORS.items():
+        if k.lower() in team_name.lower():
+            return v
+    return "#E50914"  # Default red if team not found
+
+def metric_cards(stats: dict, color: str):
+    """Render stats in a 4-column grid with glowing team-color borders."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         with cols[i % 4]:
-            st.metric(label=key, value=val)
+            st.markdown(
+                f"""
+                <div style="
+                    border: 2px solid {color};
+                    border-radius: 10px;
+                    background: rgba(25,25,25,0.85);
+                    padding: 10px;
+                    text-align:center;
+                    box-shadow: 0px 0px 10px {color};
+                    transition: all 0.3s ease;
+                ">
+                    <h4 style='color:white;margin-bottom:0;'>{key}</h4>
+                    <p style='font-size:22px;color:{color};margin-top:4px;font-weight:bold;'>{val}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+def bar_chart(title, df):
+    """Display grouped bar chart for major stats."""
+    fig = go.Figure()
+    colors = {"PTS": "#E50914", "REB": "#00E676", "AST": "#29B6F6", "FG3M": "#FFD700"}
+    for col in ["PTS","REB","AST","FG3M"]:
+        if col in df:
+            fig.add_trace(go.Bar(x=df["GAME_DATE"], y=df[col], name=col, marker_color=colors.get(col, "#FFFFFF")))
+    fig.update_layout(title=title, barmode="group", height=300, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------
 # Modeling Logic
@@ -129,13 +169,14 @@ pid = player_info["id"]
 # Player header
 photo_url = get_player_photo(player_name)
 player_team = next((t["full_name"] for t in teams.get_teams() if t["id"] == player_info.get("team_id", None)), "NBA")
+team_color = get_team_color(player_team)
 
 st.markdown(
     f"""
     <div style='text-align:center; margin-top:20px;'>
         <img src="{photo_url}" width="200" style='border-radius:10px; margin-bottom:10px;'>
         <h1 style='margin-bottom:0;'>{player_name}</h1>
-        <h3 style='color:#999;'>{player_team}</h3>
+        <h3 style='color:{team_color};'>{player_team}</h3>
     </div>
     """,
     unsafe_allow_html=True
@@ -148,7 +189,7 @@ current = enrich(get_games(pid, "2025-26"))
 pre = enrich(get_games(pid, "2025 Preseason"))
 last = enrich(get_games(pid, "2024-25"))
 
-# Blend datasets based on availability
+# Blend datasets
 blended = current.copy()
 if len(blended) < 20:
     blended = pd.concat([blended, pre])
@@ -160,7 +201,6 @@ if blended.empty:
     st.error("No data found for this player.")
     st.stop()
 
-# Regular season for recent game display
 regular_season = current[current["SEASON_TYPE"] == "Regular Season"] if "SEASON_TYPE" in current else current
 
 # -----------------------
@@ -175,7 +215,7 @@ latest_feats = prepare(blended).iloc[[-1]][feats]
 pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
 
 st.markdown("## 🧠 AI Predicted Next Game Stats")
-metric_cards(pred)
+metric_cards(pred, team_color)
 
 # -----------------------
 # Most Recent Game
@@ -188,7 +228,15 @@ if not regular_season.empty:
         "PRA": latest["PRA"], "P+R": latest["P+R"], "P+A": latest["P+A"], "R+A": latest["R+A"]
     }
     st.markdown("### 🔥 Most Recent Regular Season Game Stats")
-    metric_cards(recent)
+    metric_cards(recent, team_color)
+
+    # Bar chart comparison
+    fig = go.Figure()
+    colors = {"PTS": "#E50914", "REB": "#00E676", "AST": "#29B6F6", "FG3M": "#FFD700"}
+    for col in ["PTS", "REB", "AST", "FG3M"]:
+        fig.add_trace(go.Bar(x=[col], y=[latest[col]], name=col, marker_color=colors.get(col)))
+    fig.update_layout(title="Most Recent Game Breakdown", height=300, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("No recent regular season games found.")
 
@@ -196,7 +244,6 @@ else:
 # Historical Stats
 # -----------------------
 def avg_section(title, df, n=None):
-    """Display metric cards for selected timeframe."""
     subset = df.tail(n) if n else df
     if subset.empty:
         return
@@ -205,7 +252,14 @@ def avg_section(title, df, n=None):
     metric_cards({
         "PTS": avg["PTS"], "REB": avg["REB"], "AST": avg["AST"], "FG3M": avg["FG3M"],
         "STL": avg["STL"], "BLK": avg["BLK"], "TOV": avg["TOV"], "PRA": avg["PRA"]
-    })
+    }, team_color)
+    if n == 5:
+        # 5-game trend bar
+        fig = go.Figure()
+        for col in ["PTS", "REB", "AST", "FG3M"]:
+            fig.add_trace(go.Bar(x=subset["GAME_DATE"], y=subset[col], name=col))
+        fig.update_layout(title="Last 5 Games Performance", barmode="group", height=300, template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
 
 avg_section("📈 Last 5 Games", blended, 5)
 avg_section("📈 Last 10 Games", blended, 10)
@@ -215,4 +269,4 @@ avg_section("📊 Previous Season Averages", last)
 avg_section("🏆 Career Totals", blended)
 
 st.markdown("---")
-st.caption("Powered by Hot Shot Props AI — Live NBA Analytics © 2025")
+st.caption("🔥 Hot Shot Props NBA AI Dashboard © 2025")

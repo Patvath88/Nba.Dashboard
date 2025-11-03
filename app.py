@@ -9,6 +9,7 @@ from nba_api.stats.endpoints import playergamelog
 from PIL import Image
 import requests
 from io import BytesIO
+from difflib import get_close_matches
 
 # -------------------------------------------------
 # CONFIG
@@ -47,15 +48,15 @@ def load_predictions():
         return pd.read_csv("predictions.csv")
     # fallback sample
     return pd.DataFrame({
-        "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic"],
-        "team":["BOS","CLE","DAL"],
-        "prop_type":["Points","Points","Points"],
-        "line":[27.5,26.5,31.5],
-        "projection":[31.2,28.8,35.1],
-        "ev":[0.14,0.08,0.09],
-        "confidence":[0.87,0.79,0.83],
-        "sportsbook_line":["FanDuel","FanDuel","FanDuel"],
-        "edge_value":[14,8,9]
+        "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic","Aaron Gordon"],
+        "team":["BOS","CLE","DAL","DEN"],
+        "prop_type":["Points","Points","Points","PRA"],
+        "line":[27.5,26.5,31.5,24.5],
+        "projection":[31.2,28.8,35.1,26.2],
+        "ev":[0.14,0.08,0.09,0.07],
+        "confidence":[0.87,0.79,0.83,0.81],
+        "sportsbook_line":["FanDuel","FanDuel","FanDuel","FanDuel"],
+        "edge_value":[14,8,9,7]
     })
 
 @st.cache_data(ttl=3600)
@@ -98,24 +99,19 @@ def get_recent_games(player_id):
 # -------------------------------------------------
 # LOAD DATA
 # -------------------------------------------------
-# -------------------------------------------------
-# LOAD DATA (FIXED)
-# -------------------------------------------------
 preds = load_predictions()
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
-
-# Build team lookup by ID
 team_lookup = {t["id"]: t for t in nba_teams}
 
-# Build team-player map safely
+# Safe team-player map
 team_map = {}
 for p in nba_players:
     team_id = p.get("team_id")
     team_abbr = team_lookup[team_id]["abbreviation"] if team_id in team_lookup else "FA"
     team_map.setdefault(team_abbr, []).append(p["full_name"])
 
-# Create flattened dropdown list
+# Flatten dropdown
 team_options = []
 for team, plist in sorted(team_map.items()):
     team_options.append(f"=== {team} ===")
@@ -128,7 +124,7 @@ st.title("🏀 Hot Shot Props — NBA ESPN-Style Dashboard")
 st.subheader("AI-Powered Player Prop Insights with Live NBA Data")
 
 # -------------------------------------------------
-# PLAYER SEARCH / SELECT (patched)
+# PLAYER SEARCH / SELECT
 # -------------------------------------------------
 selected_player = st.selectbox(
     "Search or Browse by Team ↓",
@@ -137,11 +133,9 @@ selected_player = st.selectbox(
     placeholder="Select an NBA player"
 )
 
-# Stop until a player is chosen
 if selected_player is None or selected_player == "":
     st.stop()
 
-# Guard against team header lines
 if isinstance(selected_player, str) and selected_player.startswith("==="):
     st.warning("Please select an actual player from the list.")
     st.stop()
@@ -165,28 +159,25 @@ if recent.empty:
 recent["PRA"] = recent["PTS"] + recent["REB"] + recent["AST"]
 
 # -------------------------------------------------
-# MODEL MATCH
+# MODEL MATCH (fuzzy logic)
 # -------------------------------------------------
-from difflib import get_close_matches
+def normalize_name(name):
+    return name.lower().replace(".", "").strip()
 
-# -------------------------------------------------
-# MODEL MATCH (robust fuzzy matching)
-# -------------------------------------------------
 model_row = pd.DataFrame()
 if "player_name" in preds.columns:
-    names_lower = preds["player_name"].str.lower().tolist()
-    matches = get_close_matches(selected_player.lower(), names_lower, n=1, cutoff=0.6)
-    if matches:
-        model_row = preds[preds["player_name"].str.lower() == matches[0]]
+    player_names = preds["player_name"].dropna().apply(normalize_name).tolist()
+    match = get_close_matches(normalize_name(selected_player), player_names, n=1, cutoff=0.5)
+    if match:
+        model_row = preds[preds["player_name"].apply(normalize_name) == match[0]]
 
 model_val = None
 if not model_row.empty:
     row = model_row.iloc[0]
-    if row["prop_type"].lower() == metric.lower():
+    if str(row["prop_type"]).lower() == metric.lower():
         model_val = row["projection"]
 else:
     row = {}
-
 
 # -------------------------------------------------
 # VISUALS
@@ -211,15 +202,8 @@ with col2:
 # CHART
 # -------------------------------------------------
 st.markdown("### Recent Performance (last 5 games)")
-
-# map display name to the correct dataframe column
-col_map = {
-    "Points": "PTS",
-    "Rebounds": "REB",
-    "Assists": "AST",
-    "PRA": "PRA"
-}
-col_name = col_map.get(metric, "PTS")
+col_map = {"Points":"PTS","Rebounds":"REB","Assists":"AST","PRA":"PRA"}
+col_name = col_map.get(metric,"PTS")
 
 x = recent["GAME_DATE"].iloc[::-1]
 y_actual = recent[col_name].iloc[::-1]
@@ -228,13 +212,16 @@ fig = go.Figure()
 fig.add_trace(go.Bar(x=x, y=y_actual, name="Actual", marker_color="#E50914"))
 
 if model_val:
-    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x),
-                             name="Model Projection",
+    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x), name="Model Projection",
                              mode="lines", line=dict(color="#00E676", dash="dash")))
 
-fig.update_layout(paper_bgcolor="#121212", plot_bgcolor="#121212",
-                  font_color="#F5F5F5", legend=dict(orientation="h", yanchor="bottom"),
-                  yaxis_title=metric)
+fig.update_layout(
+    paper_bgcolor="#121212",
+    plot_bgcolor="#121212",
+    font_color="#F5F5F5",
+    legend=dict(orientation="h", yanchor="bottom"),
+    yaxis_title=metric
+)
 st.plotly_chart(fig, use_container_width=True)
 
 # -------------------------------------------------
@@ -243,7 +230,7 @@ st.plotly_chart(fig, use_container_width=True)
 if not model_row.empty:
     line = row["line"]; proj = row["projection"]; edge = row["edge_value"]; conf = row["confidence"]
     status = "🔥 Over trend" if proj > line else "🧊 Under risk"
-    st.info(f"{status}: projected **{proj:.1f} {metric}** vs line **{line}**  "
+    st.info(f"{status}: projected **{proj:.1f} {metric}** vs line **{line}** "
             f"({edge:+.0f}% edge, confidence {conf*100:.0f}%)")
 
 # -------------------------------------------------

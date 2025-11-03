@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-from nba_api.stats.endpoints import playergamelog, commonplayerinfo
+from nba_api.stats.endpoints import commonplayerinfo
 from nba_api.stats.static import players
 from PIL import Image
 from io import BytesIO
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 
 # ---------------------- CONFIG ----------------------
@@ -17,11 +17,9 @@ st.markdown("""
 body { background-color: black; color: white; }
 .metric-card {
     background-color: #1e1e1e;
-    border: 2px solid #E50914;
     border-radius: 10px;
     padding: 12px;
     text-align: center;
-    color: #E50914;
     font-weight: bold;
     box-shadow: 0px 0px 10px #E50914;
 }
@@ -36,8 +34,6 @@ body { background-color: black; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
-team_color = "#E50914"
-
 st.markdown("# 🎯 Projection Tracker")
 
 # ---------------------- IMAGE FETCH ----------------------
@@ -47,10 +43,10 @@ def get_player_photo(name):
         player = next((p for p in players.get_active_players() if p["full_name"] == name), None)
         if not player:
             return None
-        player_id = player["id"]
+        pid = player["id"]
         urls = [
-            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
-            f"https://stats.nba.com/media/players/headshot/{player_id}.png"
+            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png",
+            f"https://stats.nba.com/media/players/headshot/{pid}.png"
         ]
         for url in urls:
             resp = requests.get(url, timeout=5)
@@ -60,7 +56,7 @@ def get_player_photo(name):
         return None
     return None
 
-# ---------------------- GET PLAYER TEAM ----------------------
+# ---------------------- GET TEAM CODE ----------------------
 @st.cache_data(show_spinner=False)
 def get_team_tricode(player_id):
     try:
@@ -70,9 +66,8 @@ def get_team_tricode(player_id):
         return None
 
 # ---------------------- FETCH NEXT GAME ----------------------
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def get_next_game_info(team_tricode):
-    """Find next scheduled game for a given team."""
     try:
         sched = requests.get("https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json", timeout=10).json()
         today = datetime.now().date()
@@ -84,13 +79,50 @@ def get_next_game_info(team_tricode):
                         loc = "Home" if g["homeTeam"]["teamTricode"] == team_tricode else "Away"
                         opp = g["awayTeam"]["teamTricode"] if loc == "Home" else g["homeTeam"]["teamTricode"]
                         return {
-                            "game_date": game_date.strftime("%B %d, %Y"),
+                            "game_id": g["gameId"],
+                            "game_date": game_date,
                             "opponent": opp,
                             "location": loc
                         }
         return None
     except Exception:
         return None
+
+# ---------------------- FETCH LIVE OR FINAL BOX SCORE ----------------------
+def get_live_stats(game_id, player_name):
+    """Fetch live or final stats for the player's next game."""
+    try:
+        url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if "game" not in data:
+            return None, "not_started"
+        players_data = data["game"]["players"]
+        for p in players_data:
+            full_name = f"{p['firstName']} {p['familyName']}"
+            if player_name.lower() == full_name.lower():
+                stats = {
+                    "PTS": int(p["statistics"].get("points", 0)),
+                    "REB": int(p["statistics"].get("reboundsTotal", 0)),
+                    "AST": int(p["statistics"].get("assists", 0)),
+                    "FG3M": int(p["statistics"].get("threePointersMade", 0)),
+                    "STL": int(p["statistics"].get("steals", 0)),
+                    "BLK": int(p["statistics"].get("blocks", 0)),
+                    "TOV": int(p["statistics"].get("turnovers", 0)),
+                    "PRA": int(p["statistics"].get("points", 0))
+                           + int(p["statistics"].get("reboundsTotal", 0))
+                           + int(p["statistics"].get("assists", 0))
+                }
+                status = data["game"]["gameStatusText"].lower()
+                if "final" in status:
+                    return stats, "final"
+                elif "q" in status or "half" in status:
+                    return stats, "in_progress"
+                else:
+                    return stats, "not_started"
+        return None, "not_started"
+    except Exception:
+        return None, "not_started"
 
 # ---------------------- DELETE PROJECTION FUNCTION ----------------------
 def delete_projection(player_name):
@@ -121,7 +153,6 @@ for player_name, group in data.groupby("player"):
     if not pid:
         continue
 
-    # Header with photo + name + delete
     photo = get_player_photo(player_name)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
@@ -136,56 +167,51 @@ for player_name, group in data.groupby("player"):
     team_tricode = get_team_tricode(pid)
     next_game = get_next_game_info(team_tricode)
 
-    if next_game:
-        st.markdown(
-            f"**Next Game:** {team_tricode} vs {next_game['opponent']} "
-            f"({next_game['location']}) — {next_game['game_date']}"
-        )
-    else:
+    if not next_game:
         st.info("No upcoming game found for this player.")
         st.markdown("---")
         continue
 
-    # --- Player's saved projection ---
+    game_date = next_game["game_date"]
+    status = "not_started"
+    live_stats = {}
+
+    # If game is today or in progress, fetch live data
+    if game_date <= datetime.now().date() + timedelta(days=1):
+        live_stats, status = get_live_stats(next_game["game_id"], player_name)
+
+    st.markdown(
+        f"**Next Game:** {team_tricode} vs {next_game['opponent']} "
+        f"({next_game['location']}) — {game_date.strftime('%B %d, %Y')}"
+    )
+
     latest_proj = group.iloc[-1].to_dict()
     stats = [s for s in latest_proj.keys() if s not in ["timestamp", "player"]]
 
-    # --- Get last (or live) stats if game has started ---
-    try:
-        gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        last_game = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
-        live_stats = {
-            "PTS": last_game["PTS"],
-            "REB": last_game["REB"],
-            "AST": last_game["AST"],
-            "FG3M": last_game["FG3M"],
-            "STL": last_game["STL"],
-            "BLK": last_game["BLK"],
-            "TOV": last_game["TOV"],
-            "PRA": last_game["PTS"] + last_game["REB"] + last_game["AST"],
-            "P+R": last_game["PTS"] + last_game["REB"],
-            "P+A": last_game["PTS"] + last_game["AST"],
-            "R+A": last_game["REB"] + last_game["AST"]
-        }
-    except Exception:
-        live_stats = {}
+    # Define color logic
+    if status == "not_started":
+        border_color = "#808080"  # Gray
+    elif status == "in_progress":
+        border_color = "#FFD700"  # Yellow
+    else:
+        border_color = "#00FF00"  # Default green/red handled below
 
-    # --- Metric cards section ---
-    st.markdown("### 📊 AI Prediction vs. Actual (Upcoming Game)")
+    st.markdown("### 📊 AI Prediction vs. Actual Progress")
 
     cols = st.columns(4)
     for i, stat in enumerate(stats):
         proj_val = latest_proj[stat]
         live_val = live_stats.get(stat, 0)
-        hit = live_val >= proj_val
-        border_color = "#00FF00" if hit else "#E50914"
-        emoji = "✅" if hit else "❌"
+        if status == "final":
+            hit = live_val >= proj_val
+            color = "#00FF00" if hit else "#E50914"
+        else:
+            color = border_color
         with cols[i % 4]:
             st.markdown(
                 f"""
-                <div class="metric-card" style="border-color:{border_color};color:{border_color};">
-                    <div class="stat-name">{stat} {emoji}</div>
+                <div class="metric-card" style="border:2px solid {color};color:{color};">
+                    <div class="stat-name">{stat}</div>
                     <div class="stat-value">{live_val}</div>
                     <div style="font-size:14px;margin-top:4px;">Proj: {proj_val}</div>
                 </div>
@@ -193,15 +219,15 @@ for player_name, group in data.groupby("player"):
                 unsafe_allow_html=True
             )
 
-    # --- Add side-by-side bar chart for visualization ---
-    try:
+    # --- Add side-by-side bar chart if game started or final ---
+    if live_stats:
         proj_vals = [latest_proj[s] for s in stats]
         live_vals = [live_stats.get(s, 0) for s in stats]
         fig = go.Figure()
         fig.add_trace(go.Bar(x=stats, y=proj_vals, name="AI Projection", marker_color="#E50914"))
         fig.add_trace(go.Bar(x=stats, y=live_vals, name="Actual", marker_color="#00BFFF"))
         fig.update_layout(
-            title=f"{player_name} — AI Projection vs. Actual",
+            title=f"{player_name} — AI Projection vs. Actual ({status.replace('_',' ').title()})",
             barmode="group",
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
@@ -209,7 +235,5 @@ for player_name, group in data.groupby("player"):
             height=400,
         )
         st.plotly_chart(fig, use_container_width=True)
-    except Exception:
-        pass
 
     st.markdown("---")

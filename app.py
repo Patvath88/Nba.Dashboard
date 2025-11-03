@@ -187,7 +187,7 @@ def render_expander(title, df):
 # MAIN DASHBOARD
 # -------------------------------------------------
 st.title("Hot Shot Props — NBA AI Dashboard")
-st.caption("AI-driven player form and next-game projection model.")
+st.caption("AI-driven player form and model analytics.")
 
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
@@ -226,12 +226,12 @@ with col2:
     if logo: st.image(logo, width=100)
     st.markdown(f"## {selected_player} ({team_abbr})")
 
-# --- MODEL + PROJECTIONS ---
+# --- MODEL + PREDICTIONS ---
 models, scores = train_player_model(games_current)
 preds = predict_next_game(games_current, models)
 
 st.markdown("---")
-st.subheader("📊 Most Recent Game vs. AI Projection")
+st.subheader("📊 Most Recent Game vs. Model Prediction (Same Game)")
 
 if not games_current.empty:
     last = games_current.iloc[0]
@@ -243,18 +243,32 @@ if not games_current.empty:
     st.markdown("### 🔥 Most Recent Game (Actual)")
     render_metric_cards(actual,"actual")
 
-    st.markdown("### 🤖 AI Predicted Next Game Stats")
-    render_metric_cards(preds,"preds")
+    # Predict that same game’s stats (model vs real)
+    df_for_pred = prepare_features(games_current.copy())
+    features = [c for c in df_for_pred.columns if "avg_" in c or "std_" in c]
+    if len(df_for_pred) > 0:
+        row = df_for_pred.iloc[-1:][features]
+        model_same_preds = {}
+        for stat, model in models.items():
+            model_same_preds[stat] = round(float(model.predict(row)[0]), 1)
+        st.markdown("### 🧠 Model Prediction for Last Game")
+        render_metric_cards(model_same_preds, "model_last")
 
-    stats = list(actual.keys())
-    actual_vals = [actual[s] for s in stats]
-    pred_vals = [preds.get(s, 0) for s in stats]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=stats,y=actual_vals,name="Actual",marker_color="#E50914",opacity=.7))
-    fig.add_trace(go.Bar(x=stats,y=pred_vals,name="Predicted",marker_color="#29B6F6",opacity=.7))
-    fig.update_layout(barmode="group",title="Actual vs Predicted — Key Stats",
-                      paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
-    st.plotly_chart(fig,use_container_width=True)
+        # side-by-side comparison
+        stats = list(actual.keys())
+        actual_vals = [actual[s] for s in stats]
+        pred_vals = [model_same_preds.get(s, 0) for s in stats]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=stats,y=actual_vals,name="Actual",marker_color="#E50914",opacity=.7))
+        fig.add_trace(go.Bar(x=stats,y=pred_vals,name="Predicted",marker_color="#29B6F6",opacity=.7))
+        fig.update_layout(barmode="group",title="Actual vs Predicted — Last Game",
+                          paper_bgcolor="#0d0d0d",plot_bgcolor="#0d0d0d",font_color="#F5F5F5")
+        st.plotly_chart(fig,use_container_width=True)
+
+# ---- NEW EXPANDER: AI Projections ----
+with st.expander("🤖 AI Model Projections — Next Game", expanded=False):
+    st.markdown("The AI model projects the following for the upcoming game:")
+    render_metric_cards(preds,"next_preds")
 
 st.markdown("---")
 
@@ -277,13 +291,13 @@ with st.expander("📊 Season Averages", expanded=False):
             "TOV":round(s["TOV"],1),"MIN":round(s["MIN"],1),
             "PRA":round(s["PTS"]+s["REB"]+s["AST"],1)
         },"season")
-with st.expander("🏀 Career Averages", expanded=False):
+with st.expander("🏀 Career Totals", expanded=False):
     if not career_df.empty:
-        c = career_df.groupby("SEASON_ID")[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].mean().mean()
+        c = career_df[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].sum()
         render_metric_cards({
-            "PTS":round(c["PTS"],1),"REB":round(c["REB"],1),"AST":round(c["AST"],1),
-            "3PM":round(c["FG3M"],1),"STL":round(c["STL"],1),"BLK":round(c["BLK"],1),
-            "TOV":round(c["TOV"],1),"MIN":round(c["MIN"],1)
+            "PTS":int(c["PTS"]),"REB":int(c["REB"]),"AST":int(c["AST"]),
+            "3PM":int(c["FG3M"]),"STL":int(c["STL"]),"BLK":int(c["BLK"]),
+            "TOV":int(c["TOV"]),"MIN":int(c["MIN"])
         },"career")
 
 st.markdown("---")

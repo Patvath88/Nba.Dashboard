@@ -36,32 +36,66 @@ def go_to_player_page(player_name: str):
     st.switch_page("pages/Player_AI.py")
 
 # ---------------------- TOP PERFORMERS ----------------------
+# ---------------------- TOP PERFORMERS (Patched for NBA Stats headers) ----------------------
 st.markdown("## 🌟 Top Performers (Season Leaders)")
 
-try:
-    leaders_url = "https://stats.nba.com/stats/leagueleaders?LeagueID=00&PerMode=PerGame&Scope=S&Season=2025-26&SeasonType=Regular%20Season&StatCategory=PTS"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    data = requests.get(leaders_url, headers=headers, timeout=10).json()
-    result_set = data.get("resultSet", data.get("resultSets", [{}]))[0]
-    rows = result_set.get("rowSet", [])
-    headers = result_set.get("headers", [])
+@st.cache_data(ttl=1800)
+def get_top_performers():
+    """Fetch league leaders with realistic browser headers (bypass NBA stats block)."""
+    url = "https://stats.nba.com/stats/leagueleaders"
+    params = {
+        "LeagueID": "00",
+        "PerMode": "PerGame",
+        "Scope": "S",
+        "Season": "2025-26",
+        "SeasonType": "Regular Season",
+        "StatCategory": "PTS"
+    }
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.nba.com",
+        "Referer": "https://www.nba.com/",
+        "Connection": "keep-alive",
+        "x-nba-stats-origin": "stats",
+        "x-nba-stats-token": "true"
+    }
 
-    if rows:
-        top5 = rows[:5]
-        cols = st.columns(5)
-        for i, row in enumerate(top5):
-            player_name = row[2]
-            with cols[i]:
-                st.markdown(f"### {player_name}")
-                st.markdown(f"**PPG:** {row[22]}  \n**Team:** {row[4]}")
-                if st.button("View Player", key=f"player_{i}"):
-                    go_to_player_page(player_name)
-    else:
-        st.info("Unable to load top performers at the moment.")
-except Exception as e:
-    st.error(f"Error loading leaders: {e}")
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        result_set = data.get("resultSet", data.get("resultSets", [{}]))[0]
+        headers_list = result_set.get("headers", [])
+        rows = result_set.get("rowSet", [])
+        return rows, headers_list
+    except Exception as e:
+        st.error(f"NBA API Error: {e}")
+        return [], []
 
-st.markdown("---")
+rows, headers_list = get_top_performers()
+
+if rows:
+    top5 = rows[:5]
+    cols = st.columns(5)
+    for i, row in enumerate(top5):
+        player_name = row[2]
+        team_abbr = row[4]
+        ppg = row[22]
+        with cols[i]:
+            st.markdown(f"### {player_name}")
+            st.markdown(f"**PPG:** {ppg}  \n**Team:** {team_abbr}")
+            if st.button("View Player", key=f"player_{i}"):
+                st.query_params["player"] = player_name
+                st.switch_page("pages/Player_AI.py")
+else:
+    st.info("Could not retrieve live stats from NBA servers. Please try again shortly.")
+
 
 # ---------------------- GAMES TONIGHT ----------------------
 @st.cache_data(ttl=900)

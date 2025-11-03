@@ -27,13 +27,11 @@ LAST_SEASON = "2024-25"
 st.markdown("""
 <style>
 body {
-  background-color:#000;
-  background-image:url('https://upload.wikimedia.org/wikipedia/en/0/03/National_Basketball_Association_logo.svg');
-  background-repeat:repeat;
-  background-size:300px;
-  filter:grayscale(100%) brightness(30%);
+  background: radial-gradient(circle at top left, #100000, #000 80%);
+  background-attachment: fixed;
   color:#fff;
   font-family:'Roboto',sans-serif;
+  overflow-x:hidden;
 }
 h1,h2,h3,h4 {
   font-family:'Oswald',sans-serif;

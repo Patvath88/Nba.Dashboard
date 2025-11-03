@@ -98,19 +98,24 @@ def get_recent_games(player_id):
 # -------------------------------------------------
 # LOAD DATA
 # -------------------------------------------------
+# -------------------------------------------------
+# LOAD DATA (FIXED)
+# -------------------------------------------------
 preds = load_predictions()
 nba_players = players.get_active_players()
-nba_teams = {t["abbreviation"]: t for t in teams.get_teams()}
+nba_teams = teams.get_teams()
 
-# team-player map
+# Build team lookup by ID
+team_lookup = {t["id"]: t for t in nba_teams}
+
+# Build team-player map safely
 team_map = {}
 for p in nba_players:
     team_id = p.get("team_id")
-    team_abbr = next((t["abbreviation"] for t in nba_teams.values() if t.get("id") == team_id), None)
-    if team_abbr:
-        team_map.setdefault(team_abbr, []).append(p["full_name"])
+    team_abbr = team_lookup[team_id]["abbreviation"] if team_id in team_lookup else "FA"
+    team_map.setdefault(team_abbr, []).append(p["full_name"])
 
-# flatten for selectbox
+# Create flattened dropdown list
 team_options = []
 for team, plist in sorted(team_map.items()):
     team_options.append(f"=== {team} ===")

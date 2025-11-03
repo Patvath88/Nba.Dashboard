@@ -20,8 +20,6 @@ h1,h2,h3 {color:#FF6F00;text-shadow:0 0 8px #FF9F43;font-family:'Oswald',sans-se
           box-shadow:0 0 12px rgba(255,111,0,0.1);}
 .leader {display:flex;align-items:center;gap:18px;margin-bottom:18px;}
 .leader img {width:110px;height:110px;border-radius:50%;border:3px solid #FF6F00;object-fit:cover;}
-.leader a {color:#FFF;text-decoration:none;}
-.leader a:hover {text-decoration:underline;}
 .status-active{color:#00FF80;font-weight:bold;}
 .status-questionable{color:#FFD700;font-weight:bold;}
 .status-out{color:#FF5252;font-weight:bold;}
@@ -76,14 +74,12 @@ with col2:
         st.cache_data.clear(); st.experimental_rerun()
 
 # ---------- SEASON LEADERS ----------
-# ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")
 
 df = get_leaders()
 
 # Compute per-game averages instead of totals
 if not df.empty:
-    # Convert totals into per-game averages (NBA API already provides GP column)
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
     df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
     df["AST_Avg"] = (df["AST"] / df["GP"]).round(1)
@@ -107,19 +103,18 @@ if not df.empty:
         photo = player_photo(leader["PLAYER"])
         st.markdown(
             f"<div class='section leader'>"
-            f"<a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
-            f"<img src='{photo}'></a>"
-            f"<div><a href='/pages/Player_AI?player={leader['PLAYER'].replace(' ','%20')}' target='_self'>"
-            f"<b>{leader['PLAYER']}</b></a><br>"
+            f"<img src='{photo}'>"
+            f"<div><b>{leader['PLAYER']}</b><br>"
             f"{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
             unsafe_allow_html=True
         )
 else:
     st.info("Leader data not available.")
 
-
 # ---------- GAMES TONIGHT ----------
 st.markdown("## 📅 Games Tonight")
+st.markdown("[🔗 Click here to view tonight's full NBA schedule on NBA.com](https://www.nba.com/schedule)")
+
 try:
     _, games, *_ = get_games_today()
     if not games.empty:
@@ -135,6 +130,9 @@ except Exception: st.warning("Couldn't load schedule.")
 
 # ---------- INJURY REPORT ----------
 st.markdown("## 💀 Injury Report")
+st.markdown("[🔗 ESPN NBA Injury Report](https://www.espn.com/nba/injuries)")
+st.markdown("[🔗 NBA Injury Report (X Page)](https://x.com/search?q=NBA%20injury%20report&src=typed_query)")
+
 inj=get_injuries()
 if not inj.empty:
     for _,r in inj.head(25).iterrows():

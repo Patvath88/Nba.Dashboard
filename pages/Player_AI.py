@@ -41,14 +41,31 @@ def prepare(df):
     return df.dropna()
 
 def model(df):
-    df=prepare(df); feats=[c for c in df if "avg" in c]; models={}
-    for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        if s not in df:continue
-        X,y=df[feats],df[s]; 
-        if len(X)<8:continue
-        m=RandomForestRegressor(n_estimators=200,max_depth=8,random_state=42)
-        m.fit(*train_test_split(X,y,test_size=.2,random_state=42)[:2]); models[s]=m
-    return models,feats
+    df = prepare(df)
+    feats = [c for c in df if "avg" in c]
+    models = {}
+
+    for s in ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA", "P+R", "P+A", "R+A"]:
+        if s not in df:
+            continue
+
+        # Drop NaNs and align X/y properly
+        X = df[feats].dropna()
+        y = df.loc[X.index, s].dropna()
+
+        # Make sure both have the same length
+        min_len = min(len(X), len(y))
+        if min_len < 8:
+            continue
+        X, y = X.iloc[-min_len:], y.iloc[-min_len:]
+
+        Xtr, Xte, Ytr, Yte = train_test_split(X, y, test_size=0.2, random_state=42)
+        m = RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42)
+        m.fit(Xtr, Ytr)
+        models[s] = m
+
+    return models, feats
+
 
 def metric_cards(stats):
     html="<div class='metric-grid'>"

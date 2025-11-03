@@ -1,233 +1,208 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog
-from sklearn.ensemble import RandomForestRegressor
-from PIL import Image
 import requests
+import matplotlib.pyplot as plt
+import io
+import base64
+from PIL import Image
 from io import BytesIO
+from sklearn.ensemble import RandomForestRegressor
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import playergamelog, playercareerstats
 
-# ---------------------- CONFIG ----------------------
-st.set_page_config(page_title="Player AI", layout="wide")
-st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
-team_color = "#E50914"
+st.set_page_config(page_title="Hot Shot Props — Player AI", layout="wide")
 
-# ---------------------- UTILITIES ----------------------
-@st.cache_data(show_spinner=False)
-def get_games(player_id, season):
+# ---------------------- STYLE ----------------------
+st.markdown("""
+<style>
+body { background-color: #0a0a0a; color: white; }
+h1, h2, h3, h4 { color: white; }
+.metric-card {
+    background-color: #1a1a1a;
+    border: 2px solid #E50914;
+    border-radius: 12px;
+    padding: 10px;
+    text-align: center;
+    margin: 4px;
+}
+.metric-value {
+    font-size: 28px;
+    color: #E50914;
+    font-weight: bold;
+}
+.download-btn a {
+    display: inline-block;
+    background: linear-gradient(90deg,#E50914,#ff7300);
+    color: white;
+    font-weight: bold;
+    padding: 10px 18px;
+    border-radius: 10px;
+    text-decoration: none;
+    transition: all 0.2s ease-in-out;
+    box-shadow: 0px 0px 12px #E50914;
+}
+.download-btn a:hover {
+    box-shadow: 0px 0px 18px #ff7300;
+    transform: scale(1.05);
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------- SEARCH BAR ----------------------
+st.markdown("### Search or Browse Player")
+nba_players = players.get_active_players()
+player_names = sorted([p["full_name"] for p in nba_players])
+player = st.selectbox("Select Player", player_names)
+
+if not player:
+    st.stop()
+
+# ---------------------- BASIC PLAYER INFO ----------------------
+player_id = next(p["id"] for p in nba_players if p["full_name"] == player)
+
+@st.cache_data(ttl=900)
+def get_player_image(player_name):
     try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE")
-        return gl
+        formatted = player_name.lower().replace(" ", "_")
+        url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{formatted}.png"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return Image.open(BytesIO(r.content))
+    except Exception:
+        pass
+    return None
+
+photo = get_player_image(player)
+if photo:
+    st.image(photo, width=120)
+else:
+    st.markdown("🧍‍♂️")
+
+# ---------------------- TEAM + NEXT GAME ----------------------
+@st.cache_data(ttl=900)
+def get_team_and_next_game(player_name):
+    try:
+        sched = requests.get(
+            "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json", timeout=10
+        ).json()
+        for date in sched["leagueSchedule"]["gameDates"]:
+            for g in date["games"]:
+                for side in ["homeTeam", "awayTeam"]:
+                    if player_name.lower().split(" ")[-1] in g[side]["teamName"].lower():
+                        team = g[side]["teamName"]
+                        opp = g["awayTeam"]["teamName"] if side == "homeTeam" else g["homeTeam"]["teamName"]
+                        loc = "Home" if side == "homeTeam" else "Away"
+                        return team, f"Next Game: vs {opp} ({loc})"
+        return "Team Unknown", "Next Game: TBD"
+    except Exception:
+        return "Team Unknown", "Next Game: TBD"
+
+team_name, next_game = get_team_and_next_game(player)
+st.markdown(f"### {player}")
+st.markdown(f"**Team:** {team_name}")
+st.markdown(f"*{next_game}*")
+st.markdown("---")
+
+# ---------------------- FETCH STATS ----------------------
+@st.cache_data(ttl=3600)
+def get_games(pid, season):
+    try:
+        g = playergamelog.PlayerGameLog(player_id=pid, season=season)
+        df = g.get_data_frames()[0]
+        return df
     except Exception:
         return pd.DataFrame()
 
-def enrich(df):
-    if df.empty:
-        return df
-    df["P+R"] = df["PTS"] + df["REB"]
-    df["P+A"] = df["PTS"] + df["AST"]
-    df["R+A"] = df["REB"] + df["AST"]
-    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
-    return df
+CURRENT_SEASON = "2025-26"
+LAST_SEASON = "2024-25"
+games_current = get_games(player_id, CURRENT_SEASON)
+games_prev = get_games(player_id, LAST_SEASON)
 
-def get_player_photo(name):
-    """Fetch player headshot with fallback between official CDN and stats.nba.com."""
-    try:
-        player = next((p for p in players.get_active_players() if p["full_name"] == name), None)
-        if not player:
-            return None
-
-        # Get player_id from nba_api (same one used in the stats site)
-        player_id = player["id"]
-
-        # Try the official NBA CDN first
-        urls = [
-            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
-            f"https://stats.nba.com/media/players/headshot/{player_id}.png"
-        ]
-
-        for url in urls:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
-                return Image.open(BytesIO(resp.content))
-
-    except Exception as e:
-        st.write(f"Image error: {e}")
-    return None
-
-
-
-# ---------------------- HEADER ----------------------
-nba_players = players.get_active_players()
-player_list = sorted([p["full_name"] for p in nba_players])
-player = st.selectbox("Search or Browse Player", [""] + player_list)
-
-if not player:
-    st.warning("Select a player from the dropdown above.")
+if games_current.empty and games_prev.empty:
+    st.warning("No game data found for this player.")
     st.stop()
 
-pid = next(p["id"] for p in nba_players if p["full_name"] == player)
+games = pd.concat([games_current, games_prev]).reset_index(drop=True)
+games["PTS+REB"] = games["PTS"] + games["REB"]
+games["PTS+AST"] = games["PTS"] + games["AST"]
+games["REB+AST"] = games["REB"] + games["AST"]
+games["PRA"] = games["PTS"] + games["REB"] + games["AST"]
 
-CURRENT_SEASON = "2025-26"
-PREVIOUS_SEASON = "2024-25"
+# ---------------------- SEASON AVERAGE ----------------------
+season_avg = games.mean(numeric_only=True).to_dict()
 
-# ---------------------- DATA ----------------------
-current = enrich(get_games(pid, CURRENT_SEASON))
-last = enrich(get_games(pid, PREVIOUS_SEASON))
-blended = pd.concat([current, last], ignore_index=True)
-
-# ---------------------- MODEL ----------------------
+# ---------------------- SIMPLE ML MODEL ----------------------
 def train_model(df):
-    if df is None or len(df) < 5:
-        return None
-    X = np.arange(len(df)).reshape(-1, 1)
-    y = df.values
-    min_len = min(len(X), len(y))
-    X, y = X[:min_len], y[:min_len]
-    m = RandomForestRegressor(n_estimators=150, random_state=42)
-    m.fit(X, y)
-    return m
+    df = df[["PTS","REB","AST","FG3M","STL","BLK","TOV","PTS+REB","PTS+AST","REB+AST","PRA"]]
+    X = df.index.values.reshape(-1,1)
+    models = {}
+    for col in df.columns:
+        m = RandomForestRegressor(n_estimators=100, random_state=42)
+        m.fit(X, df[col].values)
+        models[col] = m
+    return models
 
-def predict_next(df):
-    if df is None or len(df) < 3:
-        return 0
+model = train_model(games)
+next_game_index = np.array([[len(games)+1]])
+pred_next = {stat: round(float(model[stat].predict(next_game_index)[0]),1) for stat in model.keys()}
 
-    X_pred = np.array([[len(df)]])
-    m = train_model(df)
-
-    if m:
-        y_pred = m.predict(X_pred)
-        # Extract the single prediction safely and round
-        return round(float(y_pred.item()), 1)
-    else:
-        return 0
-
-else:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        pred_next[stat] = 0
-
-# ---------------------- METRIC CARDS (reverted to working version) ----------------------
-def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render metrics cleanly using Streamlit native metric API (no escaped HTML)."""
-    cols = st.columns(4)
-    for i, (key, val) in enumerate(stats.items()):
-        with cols[i % 4]:
-            # Add native metric style (clean rendering)
-            st.markdown(
-                f"""
-                <div style="
-                    border:2px solid {color};
-                    border-radius:10px;
-                    background-color:#1e1e1e;
-                    padding:12px;
-                    text-align:center;
-                    color:{color};
-                    font-weight:bold;
-                    box-shadow:0px 0px 10px {color};
-                ">
-                    <div style='font-size:22px;margin-bottom:5px;'>{key}</div>
-                    <div style='font-size:32px;margin-top:5px;'>{val}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-# ---------------------- BAR CHART ----------------------
-def bar_chart_recent(title, df):
-    if df.empty:
-        return
-    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
-    avg = df[stats].mean(numeric_only=True)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=avg.index, y=avg.values, marker_color=team_color))
-    fig.update_layout(
-        title=title,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="white"),
-        height=300,
-        margin=dict(l=30, r=30, t=40, b=30),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------------------- LAYOUT ----------------------
-photo = get_player_photo(player)
-col1, col2 = st.columns([1, 3])
-with col1:
-    if photo:
-        st.image(photo, width=180)
-with col2:
-    st.markdown(f"## **{player}**")
-    st.markdown(f"**Team:** (Auto-detected)")
-st.markdown("---")
-
-# ---------------------- AI PREDICTION ----------------------
+# ---------------------- METRIC CARDS ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
-metric_cards(pred_next, team_color)
-bar_chart_recent("AI Prediction vs. Season Average", current)
+cols = st.columns(4)
+i = 0
+for stat, val in pred_next.items():
+    with cols[i % 4]:
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div>{stat}</div>
+            <div class='metric-value'>{val}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    i += 1
 
-# ---------------------- MOST RECENT GAME ----------------------
-if not current.empty:
-    recent = current.iloc[-1]
-    st.markdown("## 🔥 Most Recent Regular Season Game Stats")
-    stats_recent = {
-        "PTS": int(recent.get("PTS", 0)), "REB": int(recent.get("REB", 0)), "AST": int(recent.get("AST", 0)),
-        "FG3M": int(recent.get("FG3M", 0)), "STL": int(recent.get("STL", 0)), "BLK": int(recent.get("BLK", 0)),
-        "TOV": int(recent.get("TOV", 0)), "PRA": int(recent.get("PRA", 0)),
-        "P+R": int(recent.get("P+R", 0)), "P+A": int(recent.get("P+A", 0)), "R+A": int(recent.get("R+A", 0))
-    }
-    metric_cards(stats_recent, team_color)
-    bar_chart_recent("Most Recent Game Breakdown", pd.DataFrame([recent]))
-else:
-    st.info("No recent game data available.")
+# ---------------------- COMPARISON BAR CHART ----------------------
+metrics = list(pred_next.keys())
+pred_values = [pred_next[m] for m in metrics]
+avg_values = [season_avg.get(m, 0) for m in metrics]
 
-# ---------------------- HISTORICAL PERFORMANCE ----------------------
-st.markdown("### 📊 Player Historical Performance")
-timeframe = st.selectbox(
-    "Select your time frame to view player's historical stats:",
-    ["", "Last 5 Games", "Last 10 Games", "Last 20 Games",
-     "Current Season Averages", "Previous Season Averages",
-     "Career Averages", "Career Totals"],
-    index=0
+fig, ax = plt.subplots(figsize=(10, 5), facecolor="#0a0a0a")
+x = np.arange(len(metrics))
+bar_width = 0.35
+
+bars_pred = ax.bar(
+    x - bar_width/2,
+    pred_values,
+    width=bar_width,
+    color="#E50914",
+    label="AI Prediction"
+)
+bars_avg = ax.bar(
+    x + bar_width/2,
+    avg_values,
+    width=bar_width,
+    color="#1E90FF",
+    label="Season Avg"
 )
 
-if timeframe:
-    if timeframe == "Last 5 Games":
-        df = blended.tail(5)
-        title = "📈 Last 5 Games"
-    elif timeframe == "Last 10 Games":
-        df = blended.tail(10)
-        title = "📈 Last 10 Games"
-    elif timeframe == "Last 20 Games":
-        df = blended.tail(20)
-        title = "📈 Last 20 Games"
-    elif timeframe == "Current Season Averages":
-        df = current
-        title = "📊 Current Season Averages"
-    elif timeframe == "Previous Season Averages":
-        df = last
-        title = "📊 Previous Season Averages"
-    elif timeframe == "Career Averages":
-        df = blended
-        title = "🏆 Career Averages"
-    else:
-        df = blended
-        title = "🏆 Career Totals"
+ax.set_xticks(x)
+ax.set_xticklabels(metrics)
+ax.set_title("AI Prediction vs. Season Average", color="white", fontsize=14, pad=15)
+ax.legend(facecolor="#1e1e1e", edgecolor="none", labelcolor="white")
+ax.tick_params(colors="white")
+ax.set_facecolor("#0a0a0a")
 
-    if not df.empty:
-        st.markdown(f"### {title}")
-        avg = df.mean(numeric_only=True).round(1)
-        metric_cards({
-            "PTS": avg.get("PTS", 0), "REB": avg.get("REB", 0),
-            "AST": avg.get("AST", 0), "FG3M": avg.get("FG3M", 0),
-            "STL": avg.get("STL", 0), "BLK": avg.get("BLK", 0),
-            "TOV": avg.get("TOV", 0), "PRA": avg.get("PRA", 0)
-        }, team_color)
-        bar_chart_recent(f"{title} — Performance Overview", df)
-    else:
-        st.info("No data available for this timeframe.")
+st.pyplot(fig)
 
+# ---------------------- DOWNLOAD PNG BUTTON ----------------------
+buf = io.BytesIO()
+fig.savefig(buf, format="png", dpi=300, bbox_inches="tight", facecolor="#0a0a0a")
+buf.seek(0)
+b64 = base64.b64encode(buf.read()).decode()
+st.markdown(f"""
+<div class='download-btn'>
+    <a href="data:file/png;base64,{b64}" download="{player}_AI_Prediction_vs_SeasonAvg.png">
+    📸 Download Chart as PNG
+    </a>
+</div>
+""", unsafe_allow_html=True)

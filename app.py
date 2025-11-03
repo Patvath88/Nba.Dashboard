@@ -1,3 +1,6 @@
+# -------------------------------------------------
+# PART 1: SETUP AND HELPERS
+# -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,63 +8,34 @@ import plotly.graph_objects as go
 import os
 from datetime import datetime
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playergamelog
+from nba_api.stats.endpoints import playergamelog, playercareerstats
 from PIL import Image
 import requests
 from io import BytesIO
 from difflib import get_close_matches
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
 st.set_page_config(page_title="Hot Shot Props | NBA Dashboard", page_icon="🔥", layout="wide")
 
-ODDS_API_KEY = "e11d4159145383afd3a188f99489969e"
+CURRENT_SEASON = "2025-26"
+LAST_SEASON = "2024-25"
 ASSETS_DIR = "assets"
 PLAYER_PHOTO_DIR = os.path.join(ASSETS_DIR, "player_photos")
 TEAM_LOGO_DIR = os.path.join(ASSETS_DIR, "team_logos")
 os.makedirs(PLAYER_PHOTO_DIR, exist_ok=True)
 os.makedirs(TEAM_LOGO_DIR, exist_ok=True)
 
-# -------------------------------------------------
-# STYLE
-# -------------------------------------------------
+# --- Style ---
 st.markdown("""
 <style>
 body {background-color:#121212;color:#F5F5F5;font-family:'Roboto',sans-serif;}
 h1,h2,h3,h4{font-family:'Oswald',sans-serif;color:#E50914;}
-.player-card{background:linear-gradient(180deg,#1E1E1E 0%,#191919 100%);
-  border-radius:18px;padding:15px;text-align:center;
-  transition:transform .3s ease,box-shadow .3s ease;}
-.player-card:hover{transform:scale(1.03);box-shadow:0 0 25px rgba(229,9,20,.4);}
-.chart-box{background:#1C1C1C;padding:20px;border-radius:15px;margin-top:15px;
-  box-shadow:0 0 10px rgba(0,0,0,.3);}
+.metric-card{background:#1e1e1e;border-radius:10px;padding:8px;text-align:center;}
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------
-# UTILITIES
-# -------------------------------------------------
-@st.cache_data(ttl=3600)
-def load_predictions():
-    if os.path.exists("predictions.csv"):
-        return pd.read_csv("predictions.csv")
-    # fallback example
-    return pd.DataFrame({
-        "player_name":["Jayson Tatum","Donovan Mitchell","Luka Doncic","Aaron Gordon"],
-        "team":["BOS","CLE","DAL","DEN"],
-        "prop_type":["Points","Points","Points","PRA"],
-        "line":[27.5,26.5,31.5,24.5],
-        "projection":[31.2,28.8,35.1,26.2],
-        "ev":[0.14,0.08,0.09,0.07],
-        "confidence":[0.87,0.79,0.83,0.81],
-        "sportsbook_line":["FanDuel","FanDuel","FanDuel","FanDuel"],
-        "edge_value":[14,8,9,7]
-    })
-
+# --- Cached utilities ---
 @st.cache_data(ttl=3600)
 def get_player_photo(player_name, player_id=None):
-    """Fetch official NBA media-day headshot, cache locally."""
     safe = player_name.replace(" ", "_").lower()
     local_path = os.path.join(PLAYER_PHOTO_DIR, f"{safe}.png")
     if os.path.exists(local_path):
@@ -74,48 +48,50 @@ def get_player_photo(player_name, player_id=None):
                 img = Image.open(BytesIO(r.content))
                 img.save(local_path)
                 return local_path
-        fallback = "https://cdn.nba.com/logos/nba/nba-logoman-75-word_white.svg"
-        r = requests.get(fallback, timeout=5)
-        img = Image.open(BytesIO(r.content))
-        img.save(local_path)
-        return local_path
     except Exception:
-        return None
+        pass
+    return None
 
 @st.cache_data(ttl=3600)
 def get_team_logo(team_abbr):
     safe = team_abbr.lower()
-    local_path = os.path.join(TEAM_LOGO_DIR, f"{safe}.png")
-    if os.path.exists(local_path):
-        return local_path
+    path = os.path.join(TEAM_LOGO_DIR, f"{safe}.png")
+    if os.path.exists(path):
+        return path
     try:
         url = f"https://loodibee.com/wp-content/uploads/nba-{safe}-logo.png"
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             img = Image.open(BytesIO(r.content))
-            img.save(local_path)
-            return local_path
+            img.save(path)
+            return path
     except Exception:
         pass
     return None
 
 @st.cache_data(ttl=900)
-def get_recent_games(player_id):
+def get_games(player_id, season):
     try:
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season='2024-25')
-        df = gamelog.get_data_frames()[0]
-        return df.head(5)[["GAME_DATE","PTS","REB","AST"]]
+        log = playergamelog.PlayerGameLog(player_id=player_id, season=season)
+        return log.get_data_frames()[0]
     except Exception:
-        return pd.DataFrame(columns=["GAME_DATE","PTS","REB","AST"])
+        return pd.DataFrame()
 
+@st.cache_data(ttl=900)
+def get_career(player_id):
+    try:
+        career = playercareerstats.PlayerCareerStats(player_id=player_id)
+        return career.get_data_frames()[0]
+    except Exception:
+        return pd.DataFrame()
 # -------------------------------------------------
-# LOAD NBA DATA
+# PART 2: PLAYER SELECTION AND HEADER
 # -------------------------------------------------
-preds = load_predictions()
 nba_players = players.get_active_players()
 nba_teams = teams.get_teams()
 team_lookup = {t["id"]: t for t in nba_teams}
 
+# Build mapping
 team_map = {}
 for p in nba_players:
     tid = p.get("team_id")
@@ -123,19 +99,13 @@ for p in nba_players:
     team_map.setdefault(abbr, []).append(p["full_name"])
 
 team_options = []
-for team, plist in sorted(team_map.items()):
-    team_options.append(f"=== {team} ===")
+for t, plist in sorted(team_map.items()):
+    team_options.append(f"=== {t} ===")
     team_options.extend(sorted(plist))
 
-# -------------------------------------------------
-# HEADER
-# -------------------------------------------------
-st.title("🏀 Hot Shot Props — NBA ESPN-Style Dashboard")
-st.subheader("AI-Powered Player Prop Insights with Live NBA Data")
+st.title("🏀 Hot Shot Props — NBA Player Dashboard")
+st.subheader("Live Stats, Splits, and Career Averages")
 
-# -------------------------------------------------
-# PLAYER SEARCH
-# -------------------------------------------------
 selected_player = st.selectbox(
     "Search or Browse by Team ↓",
     options=team_options,
@@ -146,104 +116,144 @@ selected_player = st.selectbox(
 if selected_player is None or selected_player == "" or selected_player.startswith("==="):
     st.stop()
 
-metric = st.selectbox("Select Metric", ["Points","Rebounds","Assists","PRA"])
-
-# -------------------------------------------------
-# FETCH STATS
-# -------------------------------------------------
 pinfo = next((p for p in nba_players if p["full_name"] == selected_player), None)
 if not pinfo:
     st.error("Player not found.")
     st.stop()
 
 player_id = pinfo["id"]
-recent = get_recent_games(player_id)
-if recent.empty:
-    st.warning("No recent game data.")
-    st.stop()
+team_abbr = "FA"
+if pinfo.get("team_id") in team_lookup:
+    team_abbr = team_lookup[pinfo["team_id"]]["abbreviation"]
 
-recent["PRA"] = recent["PTS"] + recent["REB"] + recent["AST"]
-
-# -------------------------------------------------
-# MODEL MATCH (fuzzy)
-# -------------------------------------------------
-def normalize_name(name): return name.lower().replace(".", "").strip()
-
-model_row = pd.DataFrame()
-if "player_name" in preds.columns:
-    names = preds["player_name"].dropna().apply(normalize_name).tolist()
-    match = get_close_matches(normalize_name(selected_player), names, n=1, cutoff=0.5)
-    if match:
-        model_row = preds[preds["player_name"].apply(normalize_name) == match[0]]
-
-model_val = None
-if not model_row.empty:
-    row = model_row.iloc[0]
-    if str(row["prop_type"]).lower() == metric.lower():
-        model_val = row["projection"]
-else:
-    row = pd.Series()
-
-# -------------------------------------------------
-# VISUALS
-# -------------------------------------------------
 photo = get_player_photo(selected_player, player_id)
-team_abbr = row["team"] if "team" in row else "nba"
-team_logo = get_team_logo(str(team_abbr))
+logo = get_team_logo(team_abbr)
+# -------------------------------------------------
+# PART 3: DATA AGGREGATION
+# -------------------------------------------------
+def enrich_stats(df):
+    if df.empty:
+        return df
+    df["P+R"] = df["PTS"] + df["REB"]
+    df["P+A"] = df["PTS"] + df["AST"]
+    df["R+A"] = df["REB"] + df["AST"]
+    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
+    return df
 
-col1, col2 = st.columns([1,2])
+def get_last_game(df):
+    if df.empty:
+        return {}
+    g = df.iloc[0]
+    return {
+        "GAME_DATE": g["GAME_DATE"],
+        "PTS": g["PTS"], "REB": g["REB"], "AST": g["AST"], "FG3M": g["FG3M"],
+        "STL": g["STL"], "BLK": g["BLK"], "TOV": g["TOV"], "MIN": g["MIN"]
+    }
+
+def compute_avg(df):
+    if df.empty:
+        return {}
+    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","P+R","P+A","R+A","PRA","MIN"]
+    return {s: round(df[s].mean(),1) for s in stats if s in df.columns}
+
+# load season logs
+games_current = get_games(player_id, CURRENT_SEASON)
+if games_current.empty:
+    # fallback
+    games_current = get_games(player_id, LAST_SEASON)
+
+games_last = get_games(player_id, LAST_SEASON)
+career_df = get_career(player_id)
+games_current = enrich_stats(games_current)
+games_last = enrich_stats(games_last)
+# -------------------------------------------------
+# PART 4: UI + EXPANDERS + CHARTS
+# -------------------------------------------------
+# ----- Top banner -----
+st.markdown("### Player Summary")
+col1, col2 = st.columns([1, 3])
+
+# Most recent game
+latest = get_last_game(games_current)
 with col1:
-    if photo: st.image(photo, use_container_width=True)
+    if photo: st.image(photo, use_column_width=True)
 with col2:
-    if team_logo: st.image(team_logo, width=90)
-    st.markdown(f"### {selected_player} — {metric}")
-    if model_row.empty:
-        st.markdown("No model data available for this player.")
-    else:
-        st.metric("Model Projection", f"{row['projection']:.1f}")
-        st.metric("Sportsbook Line", f"{row['line']}")
-        st.metric("Edge", f"{row['edge_value']}%")
+    if logo: st.image(logo, width=100)
+    st.markdown(f"## {selected_player} ({team_abbr})")
+    if latest:
+        st.markdown(f"**Last Game:** {latest['GAME_DATE']}")
+        st.markdown(
+            f"PTS: {latest['PTS']} | REB: {latest['REB']} | AST: {latest['AST']} | "
+            f"3PM: {latest['FG3M']} | STL: {latest['STL']} | BLK: {latest['BLK']} | "
+            f"TOV: {latest['TOV']} | MIN: {latest['MIN']}"
+        )
 
-# -------------------------------------------------
-# CHART
-# -------------------------------------------------
-st.markdown("### Recent Performance (last 5 games)")
-col_map = {"Points":"PTS","Rebounds":"REB","Assists":"AST","PRA":"PRA"}
-col_name = col_map.get(metric,"PTS")
+# ----- Helper to render expanders -----
+def render_expander(title, df):
+    if df.empty: 
+        st.warning(f"No data available for {title}")
+        return
+    avg = compute_avg(df)
+    cols = st.columns(6)
+    stats = list(avg.keys())
+    for i, stat in enumerate(stats):
+        with cols[i % 6]:
+            st.metric(stat, avg[stat])
 
-x = recent["GAME_DATE"].iloc[::-1]
-y_actual = recent[col_name].iloc[::-1]
+    # Charts: only 4 key stats
+    chart_stats = [("PTS","#E50914"),("REB","#00E676"),("AST","#29B6F6"),("FG3M","#FFD700")]
+    x = df["GAME_DATE"].iloc[::-1]
+    fig = go.Figure()
+    for s, c in chart_stats:
+        if s in df.columns:
+            y = df[s].iloc[::-1]
+            fig.add_trace(go.Bar(x=x, y=y, name=s, marker_color=c, opacity=0.6))
+            fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=f"{s} trend",
+                                     line=dict(color=c, width=2)))
+    fig.update_layout(
+        paper_bgcolor="#121212", plot_bgcolor="#121212", font_color="#F5F5F5",
+        legend=dict(orientation="h", yanchor="bottom"), margin=dict(l=10,r=10,t=30,b=10),
+        yaxis_title="Stat Value"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-fig = go.Figure()
-fig.add_trace(go.Bar(x=x, y=y_actual, name="Actual", marker_color="#E50914"))
-if model_val:
-    fig.add_trace(go.Scatter(x=x, y=[model_val]*len(x), name="Model Projection",
-                             mode="lines", line=dict(color="#00E676", dash="dash")))
-fig.update_layout(
-    paper_bgcolor="#121212",
-    plot_bgcolor="#121212",
-    font_color="#F5F5F5",
-    legend=dict(orientation="h", yanchor="bottom"),
-    yaxis_title=metric
-)
-st.plotly_chart(fig, use_container_width=True)
+# ----- Expanders -----
+# Last 5 / 10 / 20 games
+with st.expander("📅 Last 5 Games", expanded=False):
+    render_expander("last 5 games", games_current.head(5))
+with st.expander("📅 Last 10 Games", expanded=False):
+    render_expander("last 10 games", games_current.head(10))
+with st.expander("📅 Last 20 Games", expanded=False):
+    # if fewer than 20 this season, combine with last season
+    df20 = games_current.copy()
+    if len(df20) < 20:
+        need = 20 - len(df20)
+        df20 = pd.concat([df20, games_last.head(need)], ignore_index=True)
+    render_expander("last 20 games", df20)
 
-# -------------------------------------------------
-# INSIGHT SUMMARY
-# -------------------------------------------------
-if not model_row.empty:
-    line = row["line"]; proj = row["projection"]
-    edge = row["edge_value"]; conf = row["confidence"]
-    status = "🔥 Over trend" if proj > line else "🧊 Under risk"
-    st.info(f"{status}: projected **{proj:.1f} {metric}** vs line **{line}** "
-            f"({edge:+.0f}% edge, confidence {conf*100:.0f}%)")
+# ----- Current season averages -----
+if not games_current.empty:
+    with st.expander("📊 Current Season Averages", expanded=False):
+        render_expander("current season", games_current)
+# ----- Last season -----
+if not games_last.empty:
+    with st.expander("🕰️ Last Season Averages", expanded=False):
+        render_expander("last season", games_last)
 
-# -------------------------------------------------
-# FOOTER
-# -------------------------------------------------
+# ----- Career -----
+if not career_df.empty:
+    career_avg = career_df.groupby("PLAYER_ID").agg({
+        "PTS":"mean","REB":"mean","AST":"mean","FG3M":"mean","STL":"mean",
+        "BLK":"mean","TOV":"mean","MIN":"mean"
+    }).reset_index()
+    career_avg = enrich_stats(career_avg)
+    with st.expander("🏆 Career Averages", expanded=False):
+        render_expander("career", career_avg)
+
+# ----- Footer -----
 st.markdown(f"""
 ---
 <div style='text-align:center;color:#777;font-size:13px;margin-top:20px;'>
-Hot Shot Props © {datetime.now().year} | Powered by AI Sports Analytics
+Hot Shot Props © {datetime.now().year} | Powered by NBA API + Streamlit
 </div>
 """, unsafe_allow_html=True)

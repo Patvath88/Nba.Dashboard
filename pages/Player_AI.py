@@ -1,4 +1,3 @@
-# /mount/src/nba.dashboard/pages/Player_AI.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,7 +22,7 @@ def get_games(player_id, season):
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
         gl = gl.sort_values("GAME_DATE")
         return gl
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def enrich(df):
@@ -41,7 +40,7 @@ def get_player_photo(name):
         resp = requests.get(url)
         if resp.status_code == 200:
             return Image.open(BytesIO(resp.content))
-    except:
+    except Exception:
         pass
     return None
 
@@ -56,7 +55,6 @@ if not player:
 
 pid = next(p["id"] for p in nba_players if p["full_name"] == player)
 
-# Seasons
 CURRENT_SEASON = "2025-26"
 PREVIOUS_SEASON = "2024-25"
 
@@ -70,8 +68,11 @@ def train_model(df):
     if df is None or len(df) < 5:
         return None
     X = np.arange(len(df)).reshape(-1, 1)
+    y = df.values
+    min_len = min(len(X), len(y))
+    X, y = X[:min_len], y[:min_len]
     m = RandomForestRegressor(n_estimators=150, random_state=42)
-    m.fit(X, df.values)
+    m.fit(X, y)
     return m
 
 def predict_next(df):
@@ -91,37 +92,37 @@ else:
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
-    """Render stats in a 4-column grid with glowing team-color borders."""
+    """Render stats in 4-column grid with proper HTML rendering."""
     cols = st.columns(4)
     for i, (key, val) in enumerate(stats.items()):
         acc_str = ""
         if accuracy and predictions:
             acc_val = accuracy.get(key, 0)
-            acc_str = f"<div style='font-size:13px; color:gray; font-style:italic; margin-top:-2px;'>(Accuracy: {acc_val}%)</div>"
+            acc_str = f"<div style='font-size:13px; color:gray; font-style:italic;'>(Accuracy: {acc_val}%)</div>"
+
+        card_html = f"""
+        <div style="
+            border: 2px solid {color};
+            border-radius: 10px;
+            background: rgba(25,25,25,0.85);
+            padding: 12px;
+            text-align:center;
+            box-shadow: 0px 0px 10px {color};
+        ">
+            <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
+            {acc_str}
+            <div style='font-size:30px;color:{color};font-weight:bold;'>{val}</div>
+        </div>
+        """
         with cols[i % 4]:
-            html = f"""
-            <div style="
-                border: 2px solid {color};
-                border-radius: 10px;
-                background: rgba(25,25,25,0.85);
-                padding: 12px;
-                text-align:center;
-                box-shadow: 0px 0px 10px {color};
-                transition: all 0.3s ease;
-            ">
-                <h4 style='color:white;margin-bottom:2px;'>{key}</h4>
-                {acc_str}
-                <div style='font-size:30px;color:{color};margin-top:6px;font-weight:bold;'>{val}</div>
-            </div>
-            """
-            st.markdown(html, unsafe_allow_html=True)
+            st.markdown(card_html, unsafe_allow_html=True)
 
 # ---------------------- BAR CHART ----------------------
 def bar_chart_recent(title, df):
     if df.empty:
         return
     stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
-    avg = df[stats].mean()
+    avg = df[stats].mean(numeric_only=True)
     fig = go.Figure()
     fig.add_trace(go.Bar(x=avg.index, y=avg.values, marker_color=team_color))
     fig.update_layout(
@@ -155,10 +156,10 @@ if not current.empty:
     recent = current.iloc[-1]
     st.markdown("## 🔥 Most Recent Regular Season Game Stats")
     stats_recent = {
-        "PTS": int(recent["PTS"]), "REB": int(recent["REB"]), "AST": int(recent["AST"]),
-        "FG3M": int(recent["FG3M"]), "STL": int(recent["STL"]), "BLK": int(recent["BLK"]),
-        "TOV": int(recent["TOV"]), "PRA": int(recent["PRA"]),
-        "P+R": int(recent["P+R"]), "P+A": int(recent["P+A"]), "R+A": int(recent["R+A"])
+        "PTS": int(recent.get("PTS", 0)), "REB": int(recent.get("REB", 0)), "AST": int(recent.get("AST", 0)),
+        "FG3M": int(recent.get("FG3M", 0)), "STL": int(recent.get("STL", 0)), "BLK": int(recent.get("BLK", 0)),
+        "TOV": int(recent.get("TOV", 0)), "PRA": int(recent.get("PRA", 0)),
+        "P+R": int(recent.get("P+R", 0)), "P+A": int(recent.get("P+A", 0)), "R+A": int(recent.get("R+A", 0))
     }
     metric_cards(stats_recent, team_color)
     bar_chart_recent("Most Recent Game Breakdown", pd.DataFrame([recent]))

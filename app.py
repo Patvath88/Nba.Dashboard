@@ -200,7 +200,8 @@ def render_expander(title, df):
         with cols[i % 6]:
             st.metric(stat, avg[stat])
 
-    # Charts: only 4 key stats
+    # Charts: only 4 key stats (skip chart if no GAME_DATE)
+if "GAME_DATE" in df.columns:
     chart_stats = [("PTS","#E50914"),("REB","#00E676"),("AST","#29B6F6"),("FG3M","#FFD700")]
     x = df["GAME_DATE"].iloc[::-1]
     fig = go.Figure()
@@ -210,6 +211,15 @@ def render_expander(title, df):
             fig.add_trace(go.Bar(x=x, y=y, name=s, marker_color=c, opacity=0.6))
             fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=f"{s} trend",
                                      line=dict(color=c, width=2)))
+    fig.update_layout(
+        paper_bgcolor="#121212", plot_bgcolor="#121212", font_color="#F5F5F5",
+        legend=dict(orientation="h", yanchor="bottom"), margin=dict(l=10,r=10,t=30,b=10),
+        yaxis_title="Stat Value"
+    )
+    st.plotly_chart(fig, width="stretch", key=f"chart_{title}")
+else:
+    st.caption("No game-level data available to chart for this section.")
+
     fig.update_layout(
         paper_bgcolor="#121212", plot_bgcolor="#121212", font_color="#F5F5F5",
         legend=dict(orientation="h", yanchor="bottom"), margin=dict(l=10,r=10,t=30,b=10),

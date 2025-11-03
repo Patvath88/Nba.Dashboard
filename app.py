@@ -140,14 +140,12 @@ def enrich_stats(df):
 # -------------------------------------------------
 @st.cache_data(ttl=600)
 def get_odds_data():
-    """Fetch NBA player prop odds from OddsAPI (422-safe)."""
-    url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+    """Fetch NBA player prop odds from OddsAPI (using correct player_props endpoint)."""
+    url = "https://api.the-odds-api.com/v4/sports/basketball_nba/player_props"
     params = {
-        "regions": "us,uk,eu",  # broader region coverage
-        "markets": "player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
+        "regions": "us,uk,eu",
         "oddsFormat": "american",
-        "dateFormat": "iso",
-        "include": "bookmakers",
+        "markets": "player_points,player_rebounds,player_assists,player_threes_made,player_points_rebounds_assists",
         "apiKey": ODDS_API_KEY,
     }
 
@@ -156,11 +154,11 @@ def get_odds_data():
         if r.status_code == 200:
             data = r.json()
             if not data:
-                st.warning("No odds data returned — using fallback sample data.")
+                st.warning("No live player prop odds found — will still show model projections.")
                 return []
             return data
         elif r.status_code == 422:
-            st.warning("OddsAPI 422: No valid player prop data returned for these markets.")
+            st.warning("OddsAPI 422: Player props temporarily unavailable for NBA.")
             return []
         else:
             st.error(f"OddsAPI error {r.status_code}: {r.text}")
@@ -168,6 +166,7 @@ def get_odds_data():
     except Exception as e:
         st.error(f"Odds fetch failed: {e}")
         return []
+
 
 
 def extract_best_line(player_name, odds_json):

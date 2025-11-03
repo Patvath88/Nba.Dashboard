@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import requests
-from nba_api.stats.endpoints import playergamelog
+from nba_api.stats.endpoints import playergamelog, commonplayerinfo
 from nba_api.stats.static import players
 from PIL import Image
 from io import BytesIO
 import os
 from datetime import datetime
+import plotly.graph_objects as go
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Projection Tracker", layout="wide")
@@ -31,15 +32,6 @@ body { background-color: black; color: white; }
 .metric-card div.stat-value {
     font-size: 32px;
     margin-top: 5px;
-}
-.delete-btn {
-    background-color: #B00020;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-weight: bold;
-    cursor: pointer;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -68,24 +60,33 @@ def get_player_photo(name):
         return None
     return None
 
-# ---------------------- NEXT GAME FETCH ----------------------
-@st.cache_data(ttl=3600)
-def get_next_game_info(player_name):
-    """Get next scheduled game (team, opponent, home/away, date)"""
+# ---------------------- GET PLAYER TEAM ----------------------
+@st.cache_data(show_spinner=False)
+def get_team_tricode(player_id):
+    try:
+        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id).get_data_frames()[0]
+        return info["TEAM_ABBREVIATION"].iloc[0]
+    except Exception:
+        return None
+
+# ---------------------- FETCH NEXT GAME ----------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_next_game_info(team_tricode):
+    """Find next scheduled game for a given team."""
     try:
         sched = requests.get("https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json", timeout=10).json()
+        today = datetime.now().date()
         for date in sched["leagueSchedule"]["gameDates"]:
             for g in date["games"]:
-                for side in ["homeTeam", "awayTeam"]:
-                    if player_name.lower().split(" ")[-1] in g[side]["teamName"].lower():
-                        team = g[side]["teamName"]
-                        opp = g["awayTeam"]["teamName"] if side == "homeTeam" else g["homeTeam"]["teamName"]
-                        loc = "Home" if side == "homeTeam" else "Away"
+                if g["homeTeam"]["teamTricode"] == team_tricode or g["awayTeam"]["teamTricode"] == team_tricode:
+                    game_date = datetime.strptime(g["gameDateEst"].split("T")[0], "%Y-%m-%d").date()
+                    if game_date >= today:
+                        loc = "Home" if g["homeTeam"]["teamTricode"] == team_tricode else "Away"
+                        opp = g["awayTeam"]["teamTricode"] if loc == "Home" else g["homeTeam"]["teamTricode"]
                         return {
-                            "team": team,
+                            "game_date": game_date.strftime("%B %d, %Y"),
                             "opponent": opp,
-                            "location": loc,
-                            "game_date": date["gameDate"]
+                            "location": loc
                         }
         return None
     except Exception:
@@ -93,7 +94,6 @@ def get_next_game_info(player_name):
 
 # ---------------------- DELETE PROJECTION FUNCTION ----------------------
 def delete_projection(player_name):
-    """Remove a player's projection from saved_projections.csv"""
     path = "saved_projections.csv"
     if not os.path.exists(path):
         st.warning("No projections file found.")
@@ -127,21 +127,19 @@ for player_name, group in data.groupby("player"):
     with col1:
         if photo:
             st.image(photo, width=120)
-        else:
-            st.markdown("🧍‍♂️")
     with col2:
         st.markdown(f"## 🏀 {player_name}")
     with col3:
         if st.button("❌ Delete Projection", key=f"delete_{player_name}"):
             delete_projection(player_name)
 
-    # Next game info
-    next_game = get_next_game_info(player_name)
+    team_tricode = get_team_tricode(pid)
+    next_game = get_next_game_info(team_tricode)
+
     if next_game:
-        game_date = datetime.strptime(next_game["game_date"].split("T")[0], "%Y-%m-%d").strftime("%B %d, %Y")
         st.markdown(
-            f"**Next Game:** {next_game['team']} vs {next_game['opponent']} "
-            f"({next_game['location']}) on {game_date}"
+            f"**Next Game:** {team_tricode} vs {next_game['opponent']} "
+            f"({next_game['location']}) — {next_game['game_date']}"
         )
     else:
         st.info("No upcoming game found for this player.")
@@ -152,36 +150,29 @@ for player_name, group in data.groupby("player"):
     latest_proj = group.iloc[-1].to_dict()
     stats = [s for s in latest_proj.keys() if s not in ["timestamp", "player"]]
 
-    # --- Fetch live or upcoming game stats ---
+    # --- Get last (or live) stats if game has started ---
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        upcoming_games = gl[gl["GAME_DATE"] >= pd.Timestamp(datetime.now().date())]
-        if upcoming_games.empty:
-            st.info("Game has not started yet.")
-            st.markdown("---")
-            continue
-        game = upcoming_games.iloc[0]
+        last_game = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
         live_stats = {
-            "PTS": game["PTS"],
-            "REB": game["REB"],
-            "AST": game["AST"],
-            "FG3M": game["FG3M"],
-            "STL": game["STL"],
-            "BLK": game["BLK"],
-            "TOV": game["TOV"],
-            "PRA": game["PTS"] + game["REB"] + game["AST"],
-            "P+R": game["PTS"] + game["REB"],
-            "P+A": game["PTS"] + game["AST"],
-            "R+A": game["REB"] + game["AST"]
+            "PTS": last_game["PTS"],
+            "REB": last_game["REB"],
+            "AST": last_game["AST"],
+            "FG3M": last_game["FG3M"],
+            "STL": last_game["STL"],
+            "BLK": last_game["BLK"],
+            "TOV": last_game["TOV"],
+            "PRA": last_game["PTS"] + last_game["REB"] + last_game["AST"],
+            "P+R": last_game["PTS"] + last_game["REB"],
+            "P+A": last_game["PTS"] + last_game["AST"],
+            "R+A": last_game["REB"] + last_game["AST"]
         }
     except Exception:
-        st.info(f"No current game stats available yet for {player_name}.")
-        st.markdown("---")
-        continue
+        live_stats = {}
 
     # --- Metric cards section ---
-    st.markdown("### 📊 Upcoming Game — AI Projection vs. Actual (Live or Final)")
+    st.markdown("### 📊 AI Prediction vs. Actual (Upcoming Game)")
 
     cols = st.columns(4)
     for i, stat in enumerate(stats):
@@ -201,5 +192,24 @@ for player_name, group in data.groupby("player"):
                 """,
                 unsafe_allow_html=True
             )
+
+    # --- Add side-by-side bar chart for visualization ---
+    try:
+        proj_vals = [latest_proj[s] for s in stats]
+        live_vals = [live_stats.get(s, 0) for s in stats]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=stats, y=proj_vals, name="AI Projection", marker_color="#E50914"))
+        fig.add_trace(go.Bar(x=stats, y=live_vals, name="Actual", marker_color="#00BFFF"))
+        fig.update_layout(
+            title=f"{player_name} — AI Projection vs. Actual",
+            barmode="group",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="white"),
+            height=400,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception:
+        pass
 
     st.markdown("---")

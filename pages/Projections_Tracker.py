@@ -7,17 +7,18 @@ st.set_page_config(page_title="Projection Tracker", layout="wide")
 st.markdown("# 🎯 Projection Tracker")
 
 # Auto-refresh every 5 minutes (300000 ms)
-st_autorefresh = st.experimental_rerun if False else None
-st_autorefresh_interval = 300000
-st_autorefresh = st.experimental_rerun
+st_autorefresh = st.experimental_data_editor  # placeholder to prevent lint warning
+st_autorefresh_interval = 300000  # 5 minutes
 
-if "refresh_count" not in st.session_state:
-    st.session_state["refresh_count"] = 0
+# Proper Streamlit auto-refresh
+count = st.experimental_data_editor if False else None
+st_autorefresh = st.autorefresh(interval=st_autorefresh_interval, key="refresh")
 
+# Manual refresh button
 if st.button("🔄 Refresh Now"):
-    st.session_state["refresh_count"] += 1
     st.experimental_rerun()
 
+# ---------------------- LOAD SAVED PROJECTIONS ----------------------
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
@@ -28,6 +29,7 @@ except FileNotFoundError:
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
 
+# ---------------------- DISPLAY TRACKED PROJECTIONS ----------------------
 for player_name, group in data.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -36,6 +38,7 @@ for player_name, group in data.groupby("player"):
     st.markdown(f"## {player_name}")
     latest_proj = group.iloc[-1].to_dict()
 
+    # --- Get last game stats ---
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         gl = gl.sort_values("GAME_DATE", ascending=False).iloc[0]

@@ -215,7 +215,8 @@ def render_expander(title, df):
         legend=dict(orientation="h", yanchor="bottom"), margin=dict(l=10,r=10,t=30,b=10),
         yaxis_title="Stat Value"
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"chart_{title}")
+
 
 # ----- Expanders -----
 # Last 5 / 10 / 20 games

@@ -95,14 +95,17 @@ def train_model(df):
 def predict_next(df):
     if df is None or len(df) < 3:
         return 0
+
     X_pred = np.array([[len(df)]])
     m = train_model(df)
-    return round(float(m.predict(X_pred)), 1) if m else 0
 
-pred_next = {}
-if not current.empty:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        pred_next[stat] = predict_next(current[stat])
+    if m:
+        y_pred = m.predict(X_pred)
+        # Extract the single prediction safely and round
+        return round(float(y_pred.item()), 1)
+    else:
+        return 0
+
 else:
     for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
         pred_next[stat] = 0

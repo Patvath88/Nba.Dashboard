@@ -137,7 +137,7 @@ def bar_chart_recent(title, df):
         height=300,
         margin=dict(l=30, r=30, t=40, b=30),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width='stretch')
 
 # ---------------------- LAYOUT ----------------------
 photo = get_player_photo(player)

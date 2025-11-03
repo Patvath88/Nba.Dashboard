@@ -377,15 +377,15 @@ render_recent_wins_section()
 st.markdown("---")
 render_recent_game_section(games_current, st.session_state.get("latest_model"))
 
-with st.expander("📅 Last 5 Games", expanded=False): render_expander("last5", games_current.head(5))
-with st.expander("📅 Last 10 Games", expanded=False): render_expander("last10", games_current.head(10))
-with st.expander("with st.expander("📅 Last 20 Games", expanded=False):
+with st.expander(" Last 5 Games", expanded=False): render_expander("last5", games_current.head(5))
+with st.expander(" Last 10 Games", expanded=False): render_expander("last10", games_current.head(10))
+with st.expander("with st.expander(" Last 20 Games", expanded=False):
     df20 = games_current.copy()
     if len(df20) < 20 and not games_last.empty:
         df20 = pd.concat([df20, games_last.head(20 - len(df20))])
     render_expander("last20", df20)
 
-with st.expander("📊 Season Averages", expanded=False):
+with st.expander(" Season Averages", expanded=False):
     if not games_current.empty:
         season_avg = games_current.mean(numeric_only=True)
         render_metric_cards({
@@ -400,7 +400,7 @@ with st.expander("📊 Season Averages", expanded=False):
             "PRA": round(season_avg["PTS"] + season_avg["REB"] + season_avg["AST"], 1)
         }, key_suffix="season")
 
-with st.expander("🏆 Career Averages", expanded=False):
+with st.expander(" Career Averages", expanded=False):
     if not career_df.empty:
         career_avg = career_df.groupby("SEASON_ID")[["PTS","REB","AST","STL","BLK","TOV","FG3M","MIN"]].mean().mean()
         render_metric_cards({

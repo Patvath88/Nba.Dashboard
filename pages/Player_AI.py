@@ -34,21 +34,31 @@ def enrich(df):
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
-def get_player_photo(name, player_id=None):
-    """Fetch player headshot using official NBA CDN fallback logic."""
+def get_player_photo(name):
+    """Fetch player headshot with fallback between official CDN and stats.nba.com."""
     try:
-        # Try official NBA CDN using player ID (always available)
-        if player_id:
-            url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
-        else:
-            # fallback if ID missing
-            url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{name.replace(' ', '_')}.png"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            return Image.open(BytesIO(resp.content))
+        player = next((p for p in players.get_active_players() if p["full_name"] == name), None)
+        if not player:
+            return None
+
+        # Get player_id from nba_api (same one used in the stats site)
+        player_id = player["id"]
+
+        # Try the official NBA CDN first
+        urls = [
+            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+            f"https://stats.nba.com/media/players/headshot/{player_id}.png"
+        ]
+
+        for url in urls:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
+                return Image.open(BytesIO(resp.content))
+
     except Exception as e:
-        st.write(f"Photo error: {e}")
+        st.write(f"Image error: {e}")
     return None
+
 
 
 # ---------------------- HEADER ----------------------

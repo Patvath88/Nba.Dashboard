@@ -53,7 +53,6 @@ def get_player_photo(player_name):
         return f"{base_url}{pid}.png"
     return "https://cdn.nba.com/logos/nba/nba-logoman/2022/1x/logo.png"
 
-# Simple team color lookup
 TEAM_COLORS = {
     "Lakers": "#552583", "Celtics": "#007A33", "Warriors": "#1D428A", "Nuggets": "#0E2240",
     "Heat": "#98002E", "Bucks": "#00471B", "Cavaliers": "#6F263D", "76ers": "#006BB6",
@@ -64,7 +63,7 @@ def get_team_color(team_name):
     for k, v in TEAM_COLORS.items():
         if k.lower() in team_name.lower():
             return v
-    return "#E50914"  # Default red if team not found
+    return "#E50914"
 
 def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
     """Render stats in a 4-column grid with glowing team-color borders."""
@@ -95,7 +94,6 @@ def metric_cards(stats: dict, color: str, accuracy=None, predictions=False):
             )
 
 def bar_chart_compare(title, ai_pred, season_avg):
-    """Bar chart comparing AI prediction vs season averages."""
     stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV"]
     ai_vals = [ai_pred.get(s, 0) for s in stats]
     avg_vals = [season_avg.get(s, 0) for s in stats]
@@ -103,12 +101,16 @@ def bar_chart_compare(title, ai_pred, season_avg):
         go.Bar(name="AI Prediction", x=stats, y=ai_vals, marker_color="#E50914"),
         go.Bar(name="Season Avg", x=stats, y=avg_vals, marker_color="#00E676")
     ])
-    fig.update_layout(
-        barmode="group",
-        title=title,
-        template="plotly_dark",
-        height=350
-    )
+    fig.update_layout(barmode="group", title=title, template="plotly_dark", height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+def bar_chart_recent(title, df):
+    fig = go.Figure()
+    colors = {"PTS": "#E50914", "REB": "#00E676", "AST": "#29B6F6", "FG3M": "#FFD700"}
+    for col in ["PTS","REB","AST","FG3M"]:
+        if col in df:
+            fig.add_trace(go.Bar(x=df["GAME_DATE"], y=df[col], name=col, marker_color=colors[col]))
+    fig.update_layout(title=title, barmode="group", height=300, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------
@@ -116,7 +118,6 @@ def bar_chart_compare(title, ai_pred, season_avg):
 # -----------------------
 
 def model(df, pid):
-    """Train AI model using blended dataset."""
     base = df.copy()
     if len(base) < 15:
         try:
@@ -130,11 +131,9 @@ def model(df, pid):
             base = pd.concat([base, last])
         except:
             pass
-
     base = prepare(base)
     feats = [c for c in base if "avg" in c]
     models = {}
-
     for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
         if s not in base:
             continue
@@ -148,7 +147,6 @@ def model(df, pid):
         m = RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42)
         m.fit(Xtr, Ytr)
         models[s] = m
-
     return models, feats
 
 # -----------------------
@@ -161,14 +159,12 @@ player_names = sorted([p["full_name"] for p in nba_players])
 st.markdown("### 🔍 Search or Select an NBA Player")
 selected_player = st.selectbox("Choose a player:", ["-- Select Player --"] + player_names)
 player_name = selected_player if selected_player != "-- Select Player --" else None
-
 if not player_name:
     st.info("Please select a player to view AI predictions and stats.")
     st.stop()
 
 player_info = next((p for p in nba_players if p["full_name"] == player_name), None)
 pid = player_info["id"]
-
 photo_url = get_player_photo(player_name)
 player_team = next((t["full_name"] for t in teams.get_teams() if t["id"] == player_info.get("team_id", None)), "NBA")
 team_color = get_team_color(player_team)
@@ -190,14 +186,12 @@ st.markdown(
 current = enrich(get_games(pid, "2025-26"))
 pre = enrich(get_games(pid, "2025 Preseason"))
 last = enrich(get_games(pid, "2024-25"))
-
 blended = current.copy()
 if len(blended) < 20:
     blended = pd.concat([blended, pre])
 if len(blended) < 20:
     blended = pd.concat([blended, last])
 blended.sort_values("GAME_DATE", inplace=True)
-
 if blended.empty:
     st.error("No data found for this player.")
     st.stop()
@@ -210,14 +204,11 @@ regular_season = current[current["SEASON_TYPE"] == "Regular Season"] if "SEASON_
 models, feats = model(blended, pid)
 latest_feats = prepare(blended).iloc[[-1]][feats]
 pred = {s: round(float(models[s].predict(latest_feats)[0]), 1) for s in models if s in models}
-
-# Mock model accuracy data
 accuracy = {k: random.randint(70, 95) for k in pred.keys()}
 
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred, team_color, accuracy, predictions=True)
 
-# Bar chart comparing AI predictions vs season averages
 if not current.empty:
     avg = current.mean(numeric_only=True).round(1)
     season_avg = {s: avg.get(s, 0) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"]}
@@ -235,8 +226,32 @@ if not regular_season.empty:
     }
     st.markdown("### 🔥 Most Recent Regular Season Game Stats")
     metric_cards(recent, team_color)
+    bar_chart_recent("Most Recent Game Breakdown", regular_season.tail(1))
 else:
     st.info("No recent regular season games found.")
+
+# -----------------------
+# Historical Form Sections
+# -----------------------
+def avg_section(title, df, n=None):
+    subset = df.tail(n) if n else df
+    if subset.empty:
+        return
+    st.markdown(f"### {title}")
+    avg = subset.mean(numeric_only=True).round(1)
+    metric_cards({
+        "PTS": avg["PTS"], "REB": avg["REB"], "AST": avg["AST"], "FG3M": avg["FG3M"],
+        "STL": avg["STL"], "BLK": avg["BLK"], "TOV": avg["TOV"], "PRA": avg["PRA"]
+    }, team_color)
+    if n == 5:
+        bar_chart_recent("Last 5 Games Performance", subset)
+
+avg_section("📈 Last 5 Games", blended, 5)
+avg_section("📈 Last 10 Games", blended, 10)
+avg_section("📈 Last 20 Games", blended, 20)
+avg_section("📊 Current Season Averages", current)
+avg_section("📊 Previous Season Averages", last)
+avg_section("🏆 Career Totals", blended)
 
 st.markdown("---")
 st.caption("🔥 Hot Shot Props NBA AI Dashboard © 2025")

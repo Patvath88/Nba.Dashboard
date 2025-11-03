@@ -34,15 +34,22 @@ def enrich(df):
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
-def get_player_photo(name):
+def get_player_photo(name, player_id=None):
+    """Fetch player headshot using official NBA CDN fallback logic."""
     try:
-        url = f"https://nba-players-directory.vercel.app/api/player/{name.replace(' ', '_')}.png"
-        resp = requests.get(url)
+        # Try official NBA CDN using player ID (always available)
+        if player_id:
+            url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+        else:
+            # fallback if ID missing
+            url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{name.replace(' ', '_')}.png"
+        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             return Image.open(BytesIO(resp.content))
-    except Exception:
-        pass
+    except Exception as e:
+        st.write(f"Photo error: {e}")
     return None
+
 
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()

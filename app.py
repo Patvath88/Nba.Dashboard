@@ -1,27 +1,30 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA AI DASHBOARD (FULL RESTORED VERSION)
+# HOT SHOT PROPS — NBA AI PLAYER MODEL DASHBOARD (FINAL)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from nba_api.stats.static import players
+from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import playergamelog
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
+from PIL import Image
+import requests
+from io import BytesIO
 
 # -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
-st.set_page_config(page_title="Hot Shot Props | AI NBA Dashboard", page_icon="🏀", layout="wide")
+st.set_page_config(page_title="Hot Shot Props | NBA Player AI Dashboard",
+                   page_icon="🏀", layout="wide")
 
 CURRENT_SEASON = "2025-26"
 LAST_SEASON = "2024-25"
 PRESEASON = "2025 Preseason"
 
 # -------------------------------------------------
-# STYLE (Black background + futuristic metrics)
+# STYLE
 # -------------------------------------------------
 st.markdown("""
 <style>
@@ -48,6 +51,16 @@ h1,h2,h3,h4 { font-family:'Oswald',sans-serif; color:#ff6f00; text-shadow:0 0 10
 .metric-card:hover{transform:scale(1.04);box-shadow:0 0 16px rgba(255,111,0,0.6);}
 .metric-value{font-size:1.1em;font-weight:700;}
 .metric-label{font-size:.8em;color:#bbb;}
+.player-header {
+    display:flex;align-items:center;gap:20px;margin-bottom:20px;
+}
+.player-img {
+    width:120px;height:120px;border-radius:50%;border:3px solid #ff6f00;
+    object-fit:cover;box-shadow:0 0 12px #ff6f00;
+}
+.team-logo {
+    width:80px;height:80px;object-fit:contain;
+}
 .arrow-up {color:#00FF80;}
 .arrow-down {color:#FF5555;}
 @media(max-width:600px){.metric-grid{grid-template-columns:repeat(2,1fr);}}
@@ -57,7 +70,7 @@ h1,h2,h3,h4 { font-family:'Oswald',sans-serif; color:#ff6f00; text-shadow:0 0 10
 # -------------------------------------------------
 # HELPERS
 # -------------------------------------------------
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=600)
 def get_games(player_id, season):
     try:
         log = playergamelog.PlayerGameLog(player_id=player_id, season=season)
@@ -74,7 +87,7 @@ def enrich(df):
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=600)
 def prepare(df):
     if df.empty: return df
     df = df.copy()
@@ -100,16 +113,6 @@ def train_model(df):
         models[s] = (m, feats)
     return models
 
-def predict_all(df, models):
-    if not models or df.empty: return df
-    df = prepare(df.copy())
-    for s, (m, feats) in models.items():
-        if not all(f in df.columns for f in feats): continue
-        X = df[feats].dropna()
-        if X.empty: continue
-        df.loc[X.index, f"pred_{s}"] = m.predict(X)
-    return df
-
 def metric_cards(stats, season=None):
     html = "<div class='metric-grid'>"
     for k, v in stats.items():
@@ -134,25 +137,55 @@ def bar_compare(actual, pred, title):
     a_vals = [actual[s] for s in stats]
     p_vals = [pred.get(s, 0) for s in stats]
     fig = go.Figure()
-    fig.add_bar(x=stats, y=a_vals, name="Actual", marker_color="#ff6f00")
-    fig.add_bar(x=stats, y=p_vals, name="Predicted", marker_color="#00bcd4", opacity=.7)
+    fig.add_bar(x=stats, y=a_vals, name="Last Game", marker_color="#ff6f00")
+    fig.add_bar(x=stats, y=p_vals, name="Model Prediction (Next Game)", marker_color="#00bcd4", opacity=.7)
     fig.update_layout(title=title, barmode="group", paper_bgcolor="#000", plot_bgcolor="#000", font_color="#F5F5F5")
     st.plotly_chart(fig, width="stretch")
 
+def get_player_photo(player_id):
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+
+def get_team_logo(team_name):
+    try:
+        team = next(t for t in teams.get_teams() if t["full_name"] == team_name)
+        return f"https://cdn.nba.com/logos/nba/{team['id']}/primary/L/logo.svg"
+    except StopIteration:
+        return None
+
 # -------------------------------------------------
-# MAIN DASHBOARD
+# MAIN
 # -------------------------------------------------
-st.title("🏀 Hot Shot Props — AI NBA Prediction Dashboard (Full Version)")
-st.caption("Real NBA data, AI predictions, and visual form tracking powered by RandomForest.")
+st.title("🏀 Hot Shot Props — Player AI Dashboard")
+st.caption("AI model predictions, recent performance, and player insights")
 
 nba_players = players.get_active_players()
 player_list = sorted([p["full_name"] for p in nba_players])
 player = st.selectbox("Select a Player", player_list)
 
-if not player: st.stop()
+if not player:
+    st.stop()
 pid = next(p["id"] for p in nba_players if p["full_name"] == player)
 
-# gather data across multiple seasons
+# header visuals
+photo_url = get_player_photo(pid)
+team_name = "Unknown Team"
+team_logo = None
+try:
+    g_log = get_games(pid, CURRENT_SEASON)
+    if not g_log.empty:
+        matchup = g_log["MATCHUP"].iloc[0]
+        team_name = matchup.split(" ")[0]
+        team_logo = get_team_logo(team_name)
+except Exception:
+    pass
+
+st.markdown("<div class='player-header'>", unsafe_allow_html=True)
+st.image(photo_url, caption=player, width=120, use_container_width=False)
+if team_logo:
+    st.image(team_logo, width=80)
+st.markdown("</div>", unsafe_allow_html=True)
+
+# gather data
 cur = enrich(get_games(pid, CURRENT_SEASON))
 pre = enrich(get_games(pid, PRESEASON))
 last = enrich(get_games(pid, LAST_SEASON))
@@ -160,56 +193,12 @@ data = pd.concat([cur, pre, last]).drop_duplicates(subset="Game_ID", keep="first
 if data.empty:
     st.error("No data found for this player.")
     st.stop()
-
 data = data.sort_values("GAME_DATE").reset_index(drop=True)
 
-# --- train model & predictions ---
+# train model
 models = train_model(data)
-data_pred = predict_all(data, models)
 
-# --- backtesting ---
-bt_rows = []
-for i in range(8, len(data)):
-    past = data.iloc[:i]
-    test = data.iloc[[i]]
-    m = train_model(past)
-    preds = predict_all(test, m)
-    if preds.empty: continue
-    preds["Game_ID"] = test["Game_ID"].values[0]
-    bt_rows.append(preds)
-bt = pd.concat(bt_rows) if bt_rows else pd.DataFrame()
-
-# --- most recent game vs model ---
-stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
-if not bt.empty:
-    latest = bt.iloc[-1]
-    actual = {s: round(latest[s], 1) for s in stats if s in bt.columns}
-    pred = {s: round(latest.get(f"pred_{s}", np.nan), 1) for s in stats}
-    st.subheader("🔥 Most Recent Game (Actual)")
-    metric_cards(actual)
-    st.subheader("🤖 Model Prediction (Same Game)")
-    metric_cards(pred)
-    bar_compare(actual, pred, "Actual vs Predicted — Last Game")
-
-# --- current form sections ---
-def show_form_section(title, df):
-    st.markdown(f"### {title}")
-    if df.empty: return
-    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
-    form = {s: round(df[s].mean(), 1) for s in stats if s in df}
-    metric_cards(form)
-    bar_chart(df, f"{title} — Averages")
-
-# show all timeframe sections
-if len(data) >= 5: show_form_section("Last 5 Games", data.head(5))
-if len(data) >= 10: show_form_section("Last 10 Games", data.head(10))
-if len(data) >= 20: show_form_section("Last 20 Games", data.head(20))
-
-show_form_section("This Season Averages", cur)
-show_form_section("Last Season Averages", last)
-show_form_section("Career Totals", data)
-
-# --- next game AI predictions ---
+# --- AI Predictions for Next Game ---
 pred_next = {}
 if models:
     dfp = prepare(data)
@@ -225,20 +214,35 @@ if models:
                     continue
 
 if pred_next:
-    st.markdown("---")
     st.subheader("🧠 AI Predicted Next Game Stats")
-    season_avg = {s: round(data[s].mean(), 1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in data}
+    season_avg = {s: round(data[s].mean(), 1)
+                  for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV"] if s in data}
     metric_cards(pred_next, season_avg)
-    form5 = data.head(5)[["PTS","REB","AST","FG3M"]].mean()
-    trend = "improving" if form5["PTS"] > data["PTS"].mean() else "cooling off"
-    reasoning = f"""
-    **Model reasoning:**  
-    Based on {player}'s recent {trend} form, the AI expects similar output patterns.  
-    Over the last 5 games he’s averaged **{form5['PTS']:.1f} PTS**, **{form5['REB']:.1f} REB**,  
-    **{form5['AST']:.1f} AST**, and **{form5['FG3M']:.1f} 3PM**.  
-    The model weighted consistent offensive performance and minimized variance effects.
-    """
-    st.markdown(reasoning)
+
+# --- Most Recent Game Stats ---
+if not data.empty:
+    last_game = data.iloc[0]
+    recent = {s: round(last_game[s], 1) for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"] if s in data.columns}
+    st.subheader("🔥 Most Recent Game Performance")
+    metric_cards(recent)
+    if pred_next:
+        bar_compare(recent, pred_next, "Comparison: Last Game vs AI Next Game Prediction")
+
+# --- Historical Performance Sections ---
+def show_form_section(title, df):
+    st.markdown(f"### {title}")
+    if df.empty: return
+    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+    form = {s: round(df[s].mean(), 1) for s in stats if s in df}
+    metric_cards(form)
+    bar_chart(df, f"{title} — Averages")
+
+if len(data) >= 5: show_form_section("Last 5 Games", data.head(5))
+if len(data) >= 10: show_form_section("Last 10 Games", data.head(10))
+if len(data) >= 20: show_form_section("Last 20 Games", data.head(20))
+show_form_section("This Season Averages", cur)
+show_form_section("Last Season Averages", last)
+show_form_section("Career Totals", data)
 
 st.markdown("---")
-st.caption("⚡ Hot Shot Props AI Model — Full Restored Version © 2025")
+st.caption("⚡ Hot Shot Props AI Player Dashboard © 2025")

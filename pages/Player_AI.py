@@ -8,6 +8,8 @@ from sklearn.ensemble import RandomForestRegressor
 from PIL import Image
 import requests
 from io import BytesIO
+import os
+from datetime import datetime
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
@@ -164,6 +166,24 @@ st.markdown("---")
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred_next, team_color)
 bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current)
+
+# ---------------------- SAVE PROJECTIONS BUTTON ----------------------
+def save_projection(player_name, projections):
+    df = pd.DataFrame([{
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "player": player_name,
+        **projections
+    }])
+    path = "saved_projections.csv"
+    if os.path.exists(path):
+        existing = pd.read_csv(path)
+        df = pd.concat([existing, df], ignore_index=True)
+    df.to_csv(path, index=False)
+
+st.markdown("---")
+if st.button("💾 Save Current AI Projections"):
+    save_projection(player, pred_next)
+    st.success(f"{player}'s projections saved successfully!")
 
 # ---------------------- MOST RECENT GAME ----------------------
 if not current.empty:

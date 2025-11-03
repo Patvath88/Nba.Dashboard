@@ -167,7 +167,18 @@ recent["PRA"] = recent["PTS"] + recent["REB"] + recent["AST"]
 # -------------------------------------------------
 # MODEL MATCH
 # -------------------------------------------------
-model_row = preds[preds["player_name"].str.lower() == selected_player.lower()]
+from difflib import get_close_matches
+
+# -------------------------------------------------
+# MODEL MATCH (robust fuzzy matching)
+# -------------------------------------------------
+model_row = pd.DataFrame()
+if "player_name" in preds.columns:
+    names_lower = preds["player_name"].str.lower().tolist()
+    matches = get_close_matches(selected_player.lower(), names_lower, n=1, cutoff=0.6)
+    if matches:
+        model_row = preds[preds["player_name"].str.lower() == matches[0]]
+
 model_val = None
 if not model_row.empty:
     row = model_row.iloc[0]
@@ -175,6 +186,7 @@ if not model_row.empty:
         model_val = row["projection"]
 else:
     row = {}
+
 
 # -------------------------------------------------
 # VISUALS

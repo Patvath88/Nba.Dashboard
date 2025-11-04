@@ -13,7 +13,7 @@ from datetime import datetime
 import datetime as dt
 
 # ---------------------- CONFIG ----------------------
-st.set_page_config(page_title="Player AI", layout="wide")
+st.set_page_config(page_title="Research & Predictions", layout="wide")
 st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
 team_color = "#E50914"
 contrast_color = "#00FFFF"
@@ -58,14 +58,14 @@ def get_player_photo(name):
 
 # ---------------------- NEXT GAME INFO ----------------------
 def get_next_game_info(player_id):
-    """Use NBA’s public JSON feed to find next scheduled game."""
+    """Use NBA’s live JSON feed to find the next scheduled game."""
     try:
         gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
         team_code = gl.iloc[0]["MATCHUP"].split(" ")[0]
 
         today = dt.datetime.now().date()
-        for offset in range(0, 7):
+        for offset in range(0, 10):
             date_check = today + dt.timedelta(days=offset)
             date_str = date_check.strftime("%Y-%m-%d")
             url = f"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_{date_str}.json"
@@ -87,7 +87,7 @@ def get_next_game_info(player_id):
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()
 player_list = sorted([p["full_name"] for p in nba_players])
-player = st.selectbox("Search or Browse Player", [""] + player_list)
+player = st.selectbox("🔍 Search or Browse Player", [""] + player_list)
 if not player:
     st.warning("Select a player from the dropdown above.")
     st.stop()
@@ -151,6 +151,7 @@ with col1:
 with col2:
     st.markdown(f"## **{player}**")
 
+# ---------------------- AI PREDICTION ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred_next, team_color)
 
@@ -173,3 +174,68 @@ if st.button("💾 Save Current AI Projections"):
     next_game_date, next_matchup = get_next_game_info(pid)
     save_projection(player, pred_next, next_game_date, next_matchup)
     st.success(f"{player}'s projections saved for {next_matchup} on {next_game_date}!")
+
+# ---------------------- HISTORICAL PERFORMANCE ----------------------
+with st.expander("📊 Historical Game Performance & Trends", expanded=False):
+    if not current.empty:
+        recent = current.iloc[-1]
+        st.markdown("### 🔥 Most Recent Game")
+        stats_recent = {
+            "PTS": int(recent.get("PTS", 0)), "REB": int(recent.get("REB", 0)), "AST": int(recent.get("AST", 0)),
+            "FG3M": int(recent.get("FG3M", 0)), "STL": int(recent.get("STL", 0)), "BLK": int(recent.get("BLK", 0)),
+            "TOV": int(recent.get("TOV", 0)), "PRA": int(recent.get("PRA", 0)),
+        }
+        metric_cards(stats_recent, contrast_color)
+
+    timeframe = st.selectbox(
+        "Select timeframe:",
+        ["Last 5 Games", "Last 10 Games", "Last 20 Games",
+         "Current Season Averages", "Previous Season Averages",
+         "Career Averages"]
+    )
+
+    if timeframe:
+        if timeframe == "Last 5 Games":
+            df = blended.tail(5)
+            title = "📈 Last 5 Games"
+        elif timeframe == "Last 10 Games":
+            df = blended.tail(10)
+            title = "📈 Last 10 Games"
+        elif timeframe == "Last 20 Games":
+            df = blended.tail(20)
+            title = "📈 Last 20 Games"
+        elif timeframe == "Current Season Averages":
+            df = current
+            title = "📊 Current Season Averages"
+        elif timeframe == "Previous Season Averages":
+            df = last
+            title = "📊 Previous Season Averages"
+        else:
+            df = blended
+            title = "🏆 Career Averages"
+
+        if not df.empty:
+            st.markdown(f"### {title}")
+            avg = df.mean(numeric_only=True).round(1)
+            metric_cards({
+                "PTS": avg.get("PTS", 0), "REB": avg.get("REB", 0),
+                "AST": avg.get("AST", 0), "FG3M": avg.get("FG3M", 0),
+                "STL": avg.get("STL", 0), "BLK": avg.get("BLK", 0),
+                "TOV": avg.get("TOV", 0), "PRA": avg.get("PRA", 0)
+            }, contrast_color)
+
+            stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+            avg_vals = df[stats].mean(numeric_only=True)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=avg_vals.index, y=avg_vals.values, marker_color=team_color))
+            fig.update_layout(
+                title=f"{title} — Performance Overview",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="white"),
+                height=300,
+                margin=dict(l=30, r=30, t=40, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data available for this timeframe.")

@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import time
 from nba_api.stats.endpoints import playergamelog
@@ -7,16 +8,10 @@ from nba_api.stats.static import players
 st.set_page_config(page_title="🎯 Projection Tracker", layout="wide")
 st.title("🏀 Live NBA Projection Tracker")
 
-# --- Auto-refresh every 5 minutes ---
-st_autorefresh = st.experimental_data_editor  # placeholder so Streamlit knows it exists
-refresh_interval_ms = 300000  # 5 minutes
-count = st.experimental_data_editor if False else None
+# --- Auto-refresh every 5 minutes (300000 ms) ---
+count = st_autorefresh(interval=300000, limit=None, key="auto_refresh")
 
-# Streamlit's built-in refresher
-from streamlit_autorefresh import st_autorefresh
-count = st_autorefresh(interval=refresh_interval_ms, key="refresh_counter")
-
-st.caption(f"🔄 Auto-refreshed every 5 minutes. Last refreshed: {time.strftime('%H:%M:%S')}")
+st.caption(f"🔄 Auto-refreshed every 5 minutes | Last updated: {time.strftime('%H:%M:%S')}")
 
 if st.button("🔁 Manual Refresh Now"):
     st.experimental_rerun()
@@ -34,7 +29,6 @@ player_map = {p["full_name"]: p["id"] for p in nba_players}
 
 @st.cache_data(ttl=120)
 def get_latest_stats(pid):
-    """Fetch latest player stats (cached 2 mins)."""
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         latest = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
@@ -52,7 +46,7 @@ def get_latest_stats(pid):
     except Exception:
         return None
 
-# --- Main Loop ---
+# --- Main display ---
 for player_name, group in data.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:

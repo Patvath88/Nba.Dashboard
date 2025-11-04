@@ -9,15 +9,13 @@ import requests
 from io import BytesIO
 from datetime import datetime
 
-# ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="🎯 Projection Tracker", layout="wide")
 st.title("🏀 Upcoming Game Projection Tracker")
 
 # ---------------------- REFRESH ----------------------
-REFRESH_INTERVAL = 300  # seconds
+REFRESH_INTERVAL = 300
 if "last_refresh" not in st.session_state:
     st.session_state["last_refresh"] = time.time()
-
 if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
     st.session_state["last_refresh"] = time.time()
     st.rerun()
@@ -27,12 +25,12 @@ if st.button("🔁 Manual Refresh Now"):
     st.session_state["last_refresh"] = time.time()
     st.rerun()
 
-# ---------------------- LOAD PROJECTIONS ----------------------
+# ---------------------- LOAD DATA ----------------------
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
 except FileNotFoundError:
-    st.info("No saved projections yet — save some on the Player AI page.")
+    st.info("No projections yet. Save from the Player AI page.")
     st.stop()
 
 if data.empty:
@@ -46,7 +44,7 @@ player_map = {p["full_name"]: p["id"] for p in nba_players}
 def get_player_photo(pid):
     urls = [
         f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png",
-        f"https://stats.nba.com/media/players/headshot/{pid}.png",
+        f"https://stats.nba.com/media/players/headshot/{pid}.png"
     ]
     for url in urls:
         try:
@@ -66,7 +64,7 @@ def get_gamelog(pid):
     except Exception:
         return pd.DataFrame()
 
-# ---------------------- MAIN DISPLAY ----------------------
+# ---------------------- DISPLAY ----------------------
 for player_name, group in data.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -78,7 +76,7 @@ for player_name, group in data.groupby("player"):
     proj_date = pd.to_datetime(game_date, errors="coerce")
     today = pd.Timestamp.now().normalize()
 
-    # --- Player header ---
+    # Header
     st.markdown("---")
     col_photo, col_info = st.columns([1, 3])
     with col_photo:
@@ -89,21 +87,16 @@ for player_name, group in data.groupby("player"):
         st.subheader(player_name)
         st.caption(f"📅 **Game Date:** {game_date or 'TBD'} | 🆚 **Opponent:** {opponent or 'TBD'}")
 
-    # --- Determine if game already happened ---
-    # Decide whether this projection is for a finished or upcoming game
-if pd.isna(proj_date):
-    game_finished = False
-else:
-    # Compare only when date exists
-    if proj_date < today:
-        # Check if NBA API actually has that boxscore yet
+    # Determine game status
+    if pd.isna(proj_date):
+        game_finished = False
+    elif proj_date < today:
         gl_check = get_gamelog(pid)
         game_finished = not gl_check.empty and proj_date in list(gl_check["GAME_DATE"])
     else:
         game_finished = False
 
-
-    # --- Fetch actual if available ---
+    # Actual stats if finished
     actual_stats = {}
     if game_finished:
         gl = get_gamelog(pid)
@@ -113,52 +106,39 @@ else:
             actual_stats = {
                 "PTS": row["PTS"], "REB": row["REB"], "AST": row["AST"], "FG3M": row["FG3M"],
                 "STL": row["STL"], "BLK": row["BLK"], "TOV": row["TOV"],
-                "PRA": row["PTS"] + row["REB"] + row["AST"],
+                "PRA": row["PTS"] + row["REB"] + row["AST"]
             }
 
-    # --- Build display dataframe ---
-    compare_stats = ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA"]
+    # Metric cards
+    compare_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
     results = []
     for s in compare_stats:
         pred = latest_proj.get(s, 0)
         actual = actual_stats.get(s, None)
-        if actual is None:
-            diff, acc = "—", "Pending"
-        else:
-            diff = round(actual - pred, 1)
-            acc = f"{max(0, 1 - abs(diff)/pred)*100:.1f}%" if pred else "—"
-        results.append({"Stat": s, "Projected": pred, "Actual": actual if actual is not None else "—",
-                        "Δ": diff, "Accuracy": acc})
+        diff = "—" if actual is None else round(actual - pred, 1)
+        results.append({"Stat": s, "Projected": pred, "Actual": actual if actual is not None else "—", "Δ": diff})
     df_show = pd.DataFrame(results)
 
-    # --- Metric cards with color coding ---
     cols = st.columns(4)
     for i, row in df_show.iterrows():
-        # Determine color theme
         if row["Actual"] == "—":
-            border = "#00FFFF"
-            glow = "#00FFFF55"
+            border, glow = "#00FFFF", "#00FFFF55"
         elif isinstance(row["Δ"], (int, float)) and row["Δ"] >= 0:
-            border = "#00FF66"
-            glow = "#00FF6655"
+            border, glow = "#00FF66", "#00FF6655"
         else:
-            border = "#E50914"
-            glow = "#E5091444"
+            border, glow = "#E50914", "#E5091444"
 
         delta_text = f"Δ {row['Δ']}" if row["Δ"] != "—" else "Pending"
-
         with cols[i % 4]:
             st.markdown(
                 f"""
-                <div style="
-                    border:1px solid {border};
-                    border-radius:12px;
-                    background:#111;
-                    padding:10px;
-                    text-align:center;
-                    box-shadow:0 0 15px {glow};
-                    margin-bottom:10px;
-                ">
+                <div style="border:1px solid {border};
+                            border-radius:12px;
+                            background:#111;
+                            padding:10px;
+                            text-align:center;
+                            box-shadow:0 0 15px {glow};
+                            margin-bottom:10px;">
                     <b>{row['Stat']}</b><br>
                     <span style='color:#00FFFF'>Proj: {row['Projected']}</span><br>
                     <span style='color:#E50914'>Actual: {row['Actual']}</span><br>
@@ -168,30 +148,19 @@ else:
                 unsafe_allow_html=True
             )
 
-    # --- Bar chart only if game finished ---
+    # Chart for completed games
     if game_finished and actual_stats:
         fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=compare_stats,
-            y=[latest_proj.get(s, 0) for s in compare_stats],
-            name="AI Projection",
-            marker_color="#E50914",
-        ))
-        fig.add_trace(go.Bar(
-            x=compare_stats,
-            y=[actual_stats.get(s, 0) for s in compare_stats],
-            name="Actual",
-            marker_color="#00FFFF",
-        ))
-        fig.update_layout(
-            title=f"{player_name}: Projection vs Actual ({opponent})",
-            barmode="group",
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="white"),
-            height=350,
-            margin=dict(l=30, r=30, t=40, b=30),
-        )
-        st.plotly_chart(fig, use_container_width=True, key=f"{player_name}_{game_date}")
+        fig.add_trace(go.Bar(x=compare_stats, y=[latest_proj.get(s, 0) for s in compare_stats],
+                             name="AI Projection", marker_color="#E50914"))
+        fig.add_trace(go.Bar(x=compare_stats, y=[actual_stats.get(s, 0) for s in compare_stats],
+                             name="Actual", marker_color="#00FFFF"))
+        fig.update_layout(title=f"{player_name}: Projection vs Actual ({opponent})",
+                          barmode="group",
+                          plot_bgcolor="rgba(0,0,0,0)",
+                          paper_bgcolor="rgba(0,0,0,0)",
+                          font=dict(color="white"),
+                          height=350)
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("🕒 Upcoming game — awaiting actual stats after tip-off.")

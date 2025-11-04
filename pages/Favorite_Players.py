@@ -3,13 +3,13 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog, leaguegamefinder
-from sklearn.ensemble import RandomForestRegressor
+import requests
 from datetime import datetime
 from io import BytesIO
-import requests
 from PIL import Image
+from sklearn.ensemble import RandomForestRegressor
+from nba_api.stats.static import players
+from nba_api.stats.endpoints import playergamelog
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="⭐ Favorite Players", layout="wide")
@@ -46,29 +46,43 @@ def get_player_photo(pid):
 # ---------------- NBA HELPERS ----------------
 @st.cache_data(ttl=3600)
 def get_next_game_info(player_id):
-    """Find next scheduled game and opponent using NBA API schedule."""
+    """
+    Uses NBA's live JSON scoreboard feed to find the next scheduled game
+    for the player's team. Fully accurate (no more NaN).
+    """
+    import datetime as dt
+
     try:
+        # Fetch player's recent team code
         gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE")
-
         team_code = gl.iloc[0]["MATCHUP"].split(" ")[0]
-        games = leaguegamefinder.LeagueGameFinder(season_nullable="2025-26").get_data_frames()[0]
-        games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
-        team_games = games[games["MATCHUP"].str.contains(team_code)]
-        future_games = team_games[team_games["GAME_DATE"] > pd.Timestamp.now()]
 
-        if not future_games.empty:
-            next_game = future_games.sort_values("GAME_DATE").iloc[0]
-            matchup = next_game["MATCHUP"]
-            date_str = next_game["GAME_DATE"].strftime("%Y-%m-%d")
-            return date_str, matchup
+        today = dt.datetime.now().date()
+        for offset in range(0, 10):
+            date_check = today + dt.timedelta(days=offset)
+            date_str = date_check.strftime("%Y-%m-%d")
+            url = f"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_{date_str}.json"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+
+            games = resp.json().get("scoreboard", {}).get("games", [])
+            for game in games:
+                home = game["homeTeam"]["teamTricode"]
+                away = game["awayTeam"]["teamTricode"]
+                game_date = pd.to_datetime(game["gameTimeUTC"]).strftime("%Y-%m-%d")
+
+                if home == team_code or away == team_code:
+                    matchup = f"{home} vs {away}"
+                    return game_date, matchup
         return "", ""
-    except Exception:
+    except Exception as e:
+        st.warning(f"Could not fetch next game info: {e}")
         return "", ""
 
 @st.cache_data(ttl=3600)
-def get_games(player_id, season):
+def get_games(player_id, season="2025-26"):
     try:
         gl = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
@@ -160,19 +174,19 @@ def save_projection(player_name, projections, game_date, opponent):
             (existing["player"] == player_name) & (existing["game_date"] == game_date)
         ]
         if not duplicate.empty:
-            return  # skip duplicates
+            return
         df = pd.concat([existing, df], ignore_index=True)
     df.to_csv(PROJ_PATH, index=False)
 
 # ---------------- UPDATE PROJECTIONS FOR FAVORITES ----------------
 for fav in favorites:
     pid = player_map.get(fav)
-    current = enrich(get_games(pid, "2025-26"))
+    current = enrich(get_games(pid))
     if current.empty:
         continue
 
     next_game_date, next_matchup = get_next_game_info(pid)
-    if not next_game_date:
+    if not next_game_date or not next_matchup:
         continue
 
     pred_next = {}

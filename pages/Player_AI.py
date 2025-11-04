@@ -9,13 +9,14 @@ from PIL import Image
 import requests
 from io import BytesIO
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
+import datetime as dt
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
 st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
-team_color = "#E50914"   # red accent
-contrast_color = "#00FFFF"  # neon blue
+team_color = "#E50914"
+contrast_color = "#00FFFF"
 
 # ---------------------- UTILITIES ----------------------
 @st.cache_data(show_spinner=False)
@@ -56,39 +57,32 @@ def get_player_photo(name):
     return None
 
 # ---------------------- NEXT GAME INFO ----------------------
-from nba_api.stats.endpoints import leaguegamefinder
-import datetime as dt
-
-@st.cache_data(ttl=3600)
 def get_next_game_info(player_id):
-    """Find the next scheduled game and opponent for the player's team."""
+    """Use NBA’s public JSON feed to find next scheduled game."""
     try:
-        # Fetch recent games for the player
         gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE")
+        team_code = gl.iloc[0]["MATCHUP"].split(" ")[0]
 
-        # Determine player's last team code and game
-        last_game = gl.iloc[0]
-        team_code = last_game["MATCHUP"].split(" ")[0]
-
-        # Pull all league games and find that team’s next scheduled game
-        games = leaguegamefinder.LeagueGameFinder(season_nullable="2025-26").get_data_frames()[0]
-        games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
-        team_games = games[games["MATCHUP"].str.contains(team_code)]
-        future_games = team_games[team_games["GAME_DATE"] > pd.Timestamp.now()]
-
-        if not future_games.empty:
-            next_game = future_games.sort_values("GAME_DATE").iloc[0]
-            matchup = next_game["MATCHUP"]
-            date_str = next_game["GAME_DATE"].strftime("%Y-%m-%d")
-            return date_str, matchup
-        else:
-            return "", ""
-    except Exception as e:
-        st.write(f"Schedule lookup failed: {e}")
+        today = dt.datetime.now().date()
+        for offset in range(0, 7):
+            date_check = today + dt.timedelta(days=offset)
+            date_str = date_check.strftime("%Y-%m-%d")
+            url = f"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_{date_str}.json"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+            games = resp.json().get("scoreboard", {}).get("games", [])
+            for game in games:
+                home = game["homeTeam"]["teamTricode"]
+                away = game["awayTeam"]["teamTricode"]
+                game_date = pd.to_datetime(game["gameTimeUTC"]).strftime("%Y-%m-%d")
+                if home == team_code or away == team_code:
+                    matchup = f"{home} vs {away}"
+                    return game_date, matchup
         return "", ""
-
+    except Exception:
+        return "", ""
 
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()
@@ -123,12 +117,8 @@ def predict_next(df):
     return round(float(m.predict(X_pred)), 1) if m else 0
 
 pred_next = {}
-if not current.empty:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        pred_next[stat] = predict_next(current[stat])
-else:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        pred_next[stat] = 0
+for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+    pred_next[stat] = predict_next(current[stat]) if not current.empty else 0
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str):
@@ -148,7 +138,8 @@ def metric_cards(stats: dict, color: str):
                     <div style='font-size:22px;margin-bottom:5px;'>{key}</div>
                     <div style='font-size:32px;margin-top:5px;'>{val}</div>
                 </div>
-                """, unsafe_allow_html=True
+                """,
+                unsafe_allow_html=True
             )
 
 # ---------------------- LAYOUT ----------------------
@@ -159,9 +150,7 @@ with col1:
         st.image(photo, width=180)
 with col2:
     st.markdown(f"## **{player}**")
-st.markdown("---")
 
-# ---------------------- AI PREDICTION ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred_next, team_color)
 
@@ -170,8 +159,8 @@ def save_projection(player_name, projections, game_date, opponent):
     df = pd.DataFrame([{
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "player": player_name,
-        "game_date": game_date or "",
-        "opponent": opponent or "",
+        "game_date": game_date,
+        "opponent": opponent,
         **projections
     }])
     path = "saved_projections.csv"
@@ -184,6 +173,3 @@ if st.button("💾 Save Current AI Projections"):
     next_game_date, next_matchup = get_next_game_info(pid)
     save_projection(player, pred_next, next_game_date, next_matchup)
     st.success(f"{player}'s projections saved for {next_matchup} on {next_game_date}!")
-
-st.markdown("---")
-st.info("Projections saved will appear in the Projection Tracker automatically.")

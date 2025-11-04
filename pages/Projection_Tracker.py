@@ -90,7 +90,18 @@ for player_name, group in data.groupby("player"):
         st.caption(f"📅 **Game Date:** {game_date or 'TBD'} | 🆚 **Opponent:** {opponent or 'TBD'}")
 
     # --- Determine if game already happened ---
-    game_finished = proj_date is not pd.NaT and proj_date < today
+    # Decide whether this projection is for a finished or upcoming game
+if pd.isna(proj_date):
+    game_finished = False
+else:
+    # Compare only when date exists
+    if proj_date < today:
+        # Check if NBA API actually has that boxscore yet
+        gl_check = get_gamelog(pid)
+        game_finished = not gl_check.empty and proj_date in list(gl_check["GAME_DATE"])
+    else:
+        game_finished = False
+
 
     # --- Fetch actual if available ---
     actual_stats = {}

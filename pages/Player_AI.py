@@ -11,28 +11,11 @@ from io import BytesIO
 import os
 from datetime import datetime
 
-from nba_api.stats.endpoints import leaguegamefinder
-
-@st.cache_data(ttl=3600)
-def get_next_or_last_game(player_id):
-    """Fetch next scheduled or most recent opponent for the given player."""
-    try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE", ascending=False)
-        latest_game = gl.iloc[0]
-        game_date = latest_game["GAME_DATE"].strftime("%Y-%m-%d")
-        opponent = latest_game["MATCHUP"]  # e.g., "DAL vs LAL" or "DAL @ BOS"
-        return game_date, opponent
-    except Exception:
-        return None, None
-
-
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
 st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
-team_color = "#E50914"   # red accent
-contrast_color = "#00FFFF"  # neon blue for comparison
+team_color = "#E50914"  # red accent
+contrast_color = "#00FFFF"  # neon blue
 
 # ---------------------- UTILITIES ----------------------
 @st.cache_data(show_spinner=False)
@@ -45,6 +28,7 @@ def get_games(player_id, season):
     except Exception:
         return pd.DataFrame()
 
+
 def enrich(df):
     if df.empty:
         return df
@@ -54,8 +38,9 @@ def enrich(df):
     df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
     return df
 
+
 def get_player_photo(name):
-    """Fetch player headshot with fallback between official CDN and stats.nba.com."""
+    """Fetch player headshot with fallback."""
     try:
         player = next((p for p in players.get_active_players() if p["full_name"] == name), None)
         if not player:
@@ -71,9 +56,25 @@ def get_player_photo(name):
             resp = requests.get(url, timeout=5)
             if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
                 return Image.open(BytesIO(resp.content))
-    except Exception as e:
-        st.write(f"Image error: {e}")
+    except Exception:
+        return None
     return None
+
+
+@st.cache_data(ttl=3600)
+def get_next_or_last_game(player_id):
+    """Get the most recent game and matchup."""
+    try:
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
+        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
+        gl = gl.sort_values("GAME_DATE", ascending=False)
+        latest_game = gl.iloc[0]
+        game_date = latest_game["GAME_DATE"].strftime("%Y-%m-%d")
+        opponent = latest_game["MATCHUP"]
+        return game_date, opponent
+    except Exception:
+        return None, None
+
 
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()
@@ -106,6 +107,7 @@ def train_model(df):
     m.fit(X, y)
     return m
 
+
 def predict_next(df):
     if df is None or len(df) < 3:
         return 0
@@ -113,13 +115,15 @@ def predict_next(df):
     m = train_model(df)
     return round(float(m.predict(X_pred)), 1) if m else 0
 
+
 pred_next = {}
 if not current.empty:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+    for stat in ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA", "P+R", "P+A", "R+A"]:
         pred_next[stat] = predict_next(current[stat])
 else:
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
+    for stat in ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA", "P+R", "P+A", "R+A"]:
         pred_next[stat] = 0
+
 
 # ---------------------- METRIC CARDS ----------------------
 def metric_cards(stats: dict, color: str):
@@ -145,9 +149,10 @@ def metric_cards(stats: dict, color: str):
                 unsafe_allow_html=True
             )
 
+
 # ---------------------- BAR CHART ----------------------
-def bar_chart_comparison(title, pred_dict, season_df):
-    """Dual-color bar chart comparing AI predictions vs season averages."""
+def bar_chart_comparison(title, pred_dict, season_df, key_suffix=""):
+    """Compare AI predictions vs season averages."""
     if season_df.empty:
         return
     stats = list(pred_dict.keys())
@@ -167,7 +172,7 @@ def bar_chart_comparison(title, pred_dict, season_df):
         margin=dict(l=30, r=30, t=40, b=30),
         legend=dict(font=dict(color="white"))
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
+    st.plotly_chart(fig, use_container_width=True, key=f"chart_{key_suffix}")
 
 
 # ---------------------- LAYOUT ----------------------
@@ -182,7 +187,6 @@ st.markdown("---")
 
 # ---------------------- AI PREDICTION ----------------------
 game_date, opponent = get_next_or_last_game(pid)
-
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 if game_date and opponent:
     st.markdown(f"**📅 Game Date:** {game_date}")
@@ -191,17 +195,15 @@ else:
     st.info("No recent or upcoming game data available.")
 
 metric_cards(pred_next, team_color)
-bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current)
-# ---------------------- AI PREDICTION ----------------------
-st.markdown("## 🧠 AI Predicted Next Game Stats")
-metric_cards(pred_next, team_color)
-bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current)
+bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current, key_suffix=f"{player}_ai_vs_avg")
 
 # ---------------------- SAVE PROJECTIONS BUTTON ----------------------
-def save_projection(player_name, projections):
+def save_projection(player_name, projections, game_date, opponent):
     df = pd.DataFrame([{
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "player": player_name,
+        "game_date": game_date or "",
+        "opponent": opponent or "",
         **projections
     }])
     path = "saved_projections.csv"
@@ -210,25 +212,32 @@ def save_projection(player_name, projections):
         df = pd.concat([existing, df], ignore_index=True)
     df.to_csv(path, index=False)
 
+
 st.markdown("---")
 if st.button("💾 Save Current AI Projections"):
-    save_projection(player, pred_next)
-    st.success(f"{player}'s projections saved successfully!")
+    save_projection(player, pred_next, game_date, opponent)
+    st.success(f"{player}'s projections for {opponent or 'N/A'} saved successfully!")
 
 # ---------------------- MOST RECENT GAME ----------------------
 if not current.empty:
     recent = current.iloc[-1]
     st.markdown("## 🔥 Most Recent Regular Season Game Stats")
     stats_recent = {
-        "PTS": int(recent.get("PTS", 0)), "REB": int(recent.get("REB", 0)), "AST": int(recent.get("AST", 0)),
-        "FG3M": int(recent.get("FG3M", 0)), "STL": int(recent.get("STL", 0)), "BLK": int(recent.get("BLK", 0)),
-        "TOV": int(recent.get("TOV", 0)), "PRA": int(recent.get("PRA", 0)),
-        "P+R": int(recent.get("P+R", 0)), "P+A": int(recent.get("P+A", 0)), "R+A": int(recent.get("R+A", 0))
+        "PTS": int(recent.get("PTS", 0)),
+        "REB": int(recent.get("REB", 0)),
+        "AST": int(recent.get("AST", 0)),
+        "FG3M": int(recent.get("FG3M", 0)),
+        "STL": int(recent.get("STL", 0)),
+        "BLK": int(recent.get("BLK", 0)),
+        "TOV": int(recent.get("TOV", 0)),
+        "PRA": int(recent.get("PRA", 0)),
+        "P+R": int(recent.get("P+R", 0)),
+        "P+A": int(recent.get("P+A", 0)),
+        "R+A": int(recent.get("R+A", 0))
     }
     metric_cards(stats_recent, team_color)
-    # keep the existing breakdown bar for recent game
     avg_df = pd.DataFrame([recent])
-    stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+    stats = ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA"]
     avg = avg_df[stats].mean(numeric_only=True)
     fig = go.Figure()
     fig.add_trace(go.Bar(x=avg.index, y=avg.values, marker_color=team_color))
@@ -238,20 +247,17 @@ if not current.empty:
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="white"),
         height=300,
-        margin=dict(l=30, r=30, t=40, b=30),
+        margin=dict(l=30, r=30, t=40, b=30)
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
-
+    st.plotly_chart(fig, use_container_width=True, key=f"recent_game_{player}")
 else:
     st.info("No recent game data available.")
 
 # ---------------------- HISTORICAL PERFORMANCE ----------------------
 st.markdown("### 📊 Player Historical Performance")
 timeframe = st.selectbox(
-    "Select your time frame to view player's historical stats:",
-    ["", "Last 5 Games", "Last 10 Games", "Last 20 Games",
-     "Current Season Averages", "Previous Season Averages",
-     "Career Averages", "Career Totals"],
+    "Select timeframe:",
+    ["", "Last 5 Games", "Last 10 Games", "Last 20 Games", "Current Season Averages", "Previous Season Averages", "Career Averages", "Career Totals"],
     index=0
 )
 
@@ -287,8 +293,8 @@ if timeframe:
             "STL": avg.get("STL", 0), "BLK": avg.get("BLK", 0),
             "TOV": avg.get("TOV", 0), "PRA": avg.get("PRA", 0)
         }, team_color)
-        # show historical bar chart
-        stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+
+        stats = ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA"]
         avg_vals = df[stats].mean(numeric_only=True)
         fig = go.Figure()
         fig.add_trace(go.Bar(x=avg_vals.index, y=avg_vals.values, marker_color=team_color))
@@ -298,9 +304,8 @@ if timeframe:
             paper_bgcolor="rgba(0,0,0,0)",
             font=dict(color="white"),
             height=300,
-            margin=dict(l=30, r=30, t=40, b=30),
+            margin=dict(l=30, r=30, t=40, b=30)
         )
-       st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
-
+        st.plotly_chart(fig, use_container_width=True, key=f"history_{player}_{title}")
     else:
         st.info("No data available for this timeframe.")

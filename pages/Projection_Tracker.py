@@ -1,5 +1,4 @@
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import time
 from nba_api.stats.endpoints import playergamelog
@@ -8,69 +7,85 @@ from nba_api.stats.static import players
 st.set_page_config(page_title="🎯 Projection Tracker", layout="wide")
 st.title("🏀 Live NBA Projection Tracker")
 
-# --- Auto-refresh every 5 minutes (300000 ms) ---
-count = st_autorefresh(interval=300000, limit=None, key="auto_refresh")
+# --- Auto-refresh logic ---
+REFRESH_INTERVAL = 300  # seconds
+if "last_refresh" not in st.session_state:
+    st.session_state["last_refresh"] = time.time()
 
-st.caption(f"🔄 Auto-refreshed every 5 minutes | Last updated: {time.strftime('%H:%M:%S')}")
-
-if st.button("🔁 Manual Refresh Now"):
+if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
+    st.session_state["last_refresh"] = time.time()
     st.experimental_rerun()
 
-# --- Load projections ---
+st.caption(f"🔄 Auto-refresh every 5 minutes | Last updated: {time.strftime('%H:%M:%S')}")
+if st.button("🔁 Manual Refresh Now"):
+    st.session_state["last_refresh"] = time.time()
+    st.experimental_rerun()
+
+# --- Load saved projections ---
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
 except FileNotFoundError:
-    st.info("No projections saved yet.")
+    st.info("No saved projections found. Go to the **AI Player Page** to create them.")
+    st.stop()
+
+if data.empty:
+    st.info("No projections available yet.")
     st.stop()
 
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
 
 @st.cache_data(ttl=120)
-def get_latest_stats(pid):
+def get_latest_game_stats(pid):
+    """Fetch most recent game log for a player."""
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
-        latest = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
+        gl = gl.sort_values("GAME_DATE", ascending=False).iloc[0]
         live_stats = {
-            "PTS": latest["PTS"],
-            "REB": latest["REB"],
-            "AST": latest["AST"],
-            "FG3M": latest["FG3M"],
-            "STL": latest["STL"],
-            "BLK": latest["BLK"],
-            "TOV": latest["TOV"],
-            "PRA": latest["PTS"] + latest["REB"] + latest["AST"],
+            "PTS": gl["PTS"],
+            "REB": gl["REB"],
+            "AST": gl["AST"],
+            "FG3M": gl["FG3M"],
+            "STL": gl["STL"],
+            "BLK": gl["BLK"],
+            "TOV": gl["TOV"],
+            "PRA": gl["PTS"] + gl["REB"] + gl["AST"],
+            "P+R": gl["PTS"] + gl["REB"],
+            "P+A": gl["PTS"] + gl["AST"],
+            "R+A": gl["REB"] + gl["AST"],
         }
         return live_stats
     except Exception:
         return None
 
-# --- Main display ---
+# --- Display players from saved projections ---
 for player_name, group in data.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
         continue
 
-    st.subheader(player_name)
-    latest_proj = group.iloc[-1].to_dict()
+    st.subheader(f"📊 {player_name}")
 
-    live_stats = get_latest_stats(pid)
+    # Get the latest saved projection
+    latest_proj = group.iloc[-1].to_dict()
+    live_stats = get_latest_game_stats(pid)
+
     if not live_stats:
-        st.warning("Live data unavailable or game not started.")
+        st.warning("Live or recent game data unavailable.")
         continue
 
+    # --- Compare live vs projection ---
     cols = st.columns(4)
-    i = 0
-    for stat, proj_val in latest_proj.items():
+    for i, (stat, proj_val) in enumerate(latest_proj.items()):
         if stat in ["timestamp", "player"]:
             continue
         live_val = live_stats.get(stat, 0)
+        delta = round(live_val - proj_val, 1)
         hit = "✅" if live_val >= proj_val else "❌"
         with cols[i % 4]:
-            st.metric(f"{stat} {hit}", f"{live_val}", f"Proj: {proj_val}")
-        i += 1
+            st.metric(f"{stat} {hit}", live_val, f"Proj: {proj_val} ({'+' if delta >= 0 else ''}{delta})")
 
     st.markdown("---")
 
-st.success("✅ Dashboard updated successfully.")
+st.success("✅ Dashboard updated successfully — synced with AI projections.")

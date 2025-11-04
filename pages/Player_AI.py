@@ -56,21 +56,39 @@ def get_player_photo(name):
     return None
 
 # ---------------------- NEXT GAME INFO ----------------------
+from nba_api.stats.endpoints import leaguegamefinder
+import datetime as dt
+
 @st.cache_data(ttl=3600)
 def get_next_game_info(player_id):
-    """Estimate next game date & matchup based on last log."""
+    """Find the next scheduled game and opponent for the player's team."""
     try:
+        # Fetch recent games for the player
         gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        last_game = gl["GAME_DATE"].max()
-        next_game = last_game + timedelta(days=2)
-        last_matchup = gl.loc[gl["GAME_DATE"] == last_game, "MATCHUP"].values[0]
-        team_code = last_matchup.split(" ")[0]
-        opp = last_matchup.split(" ")[-1]
-        matchup = f"{team_code} vs {opp}" if "@" not in last_matchup else f"{opp} @ {team_code}"
-        return next_game.strftime("%Y-%m-%d"), matchup
-    except Exception:
+        gl = gl.sort_values("GAME_DATE")
+
+        # Determine player's last team code and game
+        last_game = gl.iloc[0]
+        team_code = last_game["MATCHUP"].split(" ")[0]
+
+        # Pull all league games and find that team’s next scheduled game
+        games = leaguegamefinder.LeagueGameFinder(season_nullable="2025-26").get_data_frames()[0]
+        games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
+        team_games = games[games["MATCHUP"].str.contains(team_code)]
+        future_games = team_games[team_games["GAME_DATE"] > pd.Timestamp.now()]
+
+        if not future_games.empty:
+            next_game = future_games.sort_values("GAME_DATE").iloc[0]
+            matchup = next_game["MATCHUP"]
+            date_str = next_game["GAME_DATE"].strftime("%Y-%m-%d")
+            return date_str, matchup
+        else:
+            return "", ""
+    except Exception as e:
+        st.write(f"Schedule lookup failed: {e}")
         return "", ""
+
 
 # ---------------------- HEADER ----------------------
 nba_players = players.get_active_players()

@@ -14,12 +14,12 @@ if "last_refresh" not in st.session_state:
 
 if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
     st.session_state["last_refresh"] = time.time()
-    st.experimental_rerun()
+    st.rerun()
 
 st.caption(f"🔄 Auto-refresh every 5 minutes | Last updated: {time.strftime('%H:%M:%S')}")
 if st.button("🔁 Manual Refresh Now"):
     st.session_state["last_refresh"] = time.time()
-    st.experimental_rerun()
+    st.rerun()
 
 # --- Load saved projections ---
 path = "saved_projections.csv"

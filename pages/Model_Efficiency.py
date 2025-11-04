@@ -4,22 +4,48 @@ import numpy as np
 import plotly.graph_objects as go
 from nba_api.stats.static import players
 from nba_api.stats.endpoints import playergamelog
-import time
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="🧠 Model Efficiency Dashboard", layout="wide")
-st.title("📊 AI Model Efficiency & Backtesting Overview")
+st.markdown(
+    """
+    <style>
+    body {background-color:black; color:white;}
+    div[data-testid="stMetricValue"] {color: #00FFFF !important;}
+    .metric-card {
+        border: 1px solid #00FFFF;
+        border-radius: 15px;
+        padding: 18px;
+        background-color: #111111;
+        box-shadow: 0 0 15px #00FFFF55;
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    .player-card {
+        border: 1px solid #E50914;
+        border-radius: 15px;
+        padding: 12px;
+        background-color: #1a1a1a;
+        box-shadow: 0 0 12px #E5091444;
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-# ---------------------- LOAD SAVED PROJECTIONS ----------------------
+st.title("🧠 Model Efficiency Command Deck")
+
+# ---------------------- LOAD DATA ----------------------
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
 except FileNotFoundError:
-    st.warning("No saved projections found. Generate some predictions first.")
+    st.warning("No saved projections found yet.")
     st.stop()
 
 if data.empty:
-    st.info("No saved projection data available.")
+    st.info("No projection data available yet.")
     st.stop()
 
 nba_players = players.get_active_players()
@@ -28,7 +54,6 @@ player_map = {p["full_name"]: p["id"] for p in nba_players}
 # ---------------------- HELPERS ----------------------
 @st.cache_data(ttl=120)
 def get_gamelog(pid):
-    """Return full season game log."""
     try:
         gl = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
         gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
@@ -37,14 +62,12 @@ def get_gamelog(pid):
         return pd.DataFrame()
 
 def evaluate_prediction(row):
-    """Compare AI prediction vs actual."""
     pid = player_map.get(row["player"])
     if not pid:
         return None
     gl = get_gamelog(pid)
     if gl.empty:
         return None
-    # Match by date
     game_row = gl[gl["GAME_DATE"].astype(str).str.contains(str(row["game_date"]))]
     if game_row.empty:
         return None
@@ -58,105 +81,109 @@ def evaluate_prediction(row):
             result[stat + "_err"] = act - pred
     return result
 
-# ---------------------- EVALUATE ALL ----------------------
-st.info("Analyzing backtested projections… this may take a few seconds.")
-evaluations = []
-for _, row in data.iterrows():
-    res = evaluate_prediction(row)
-    if res:
-        evaluations.append(res)
+# ---------------------- PROCESS ----------------------
+st.info("🧩 Analyzing backtested projections…")
+evaluations = [res for _, row in data.iterrows() if (res := evaluate_prediction(row))]
 
 if not evaluations:
-    st.warning("No completed games found to evaluate yet.")
+    st.warning("No completed games available for analysis yet.")
     st.stop()
 
 df_eval = pd.DataFrame(evaluations)
 
-# ---------------------- SUMMARY STATS ----------------------
 stat_cols = [c for c in df_eval.columns if c.endswith("_acc")]
-all_acc_values = df_eval[stat_cols].values.flatten()
-overall_mean = np.nanmean(all_acc_values).round(2)
+overall_acc = np.nanmean(df_eval[stat_cols].values.flatten()).round(2)
 total_games = len(df_eval)
-
-col1, col2, col3 = st.columns(3)
-col1.metric("🎯 Overall Model Accuracy", f"{overall_mean}%")
-col2.metric("📊 Games Evaluated", total_games)
-col3.metric("🧩 Stats per Game", len(stat_cols))
-
-# ---------------------- PER-PLAYER PERFORMANCE ----------------------
-st.markdown("### 🏀 Player Accuracy Summary")
-player_acc = df_eval.groupby("player")[stat_cols].mean().round(1).reset_index()
-player_acc["Overall"] = player_acc[stat_cols].mean(axis=1).round(1)
-player_acc = player_acc.sort_values("Overall", ascending=False)
-st.dataframe(player_acc, use_container_width=True, hide_index=True)
-
-# ---------------------- PER-STAT ACCURACY ----------------------
-st.markdown("### 📈 Average Accuracy by Statistic")
-stat_means = df_eval[stat_cols].mean().sort_values(ascending=False)
-fig_stat = go.Figure()
-fig_stat.add_trace(go.Bar(x=[s.replace("_acc", "") for s in stat_means.index],
-                          y=stat_means.values,
-                          marker_color="#00FFFF"))
-fig_stat.update_layout(
-    title="Average Accuracy by Stat",
-    plot_bgcolor="rgba(0,0,0,0)",
-    paper_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="white"),
-    height=350,
-    margin=dict(l=30, r=30, t=40, b=30)
-)
-st.plotly_chart(fig_stat, use_container_width=True, key="per_stat_accuracy")
-
-# ---------------------- ACCURACY OVER TIME ----------------------
-st.markdown("### ⏳ Accuracy Trend Over Time")
+per_stat_acc = df_eval[stat_cols].mean().sort_values(ascending=False)
 df_eval["avg_acc"] = df_eval[stat_cols].mean(axis=1)
+
+# ---------------------- METRIC CARDS ----------------------
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown(
+        f"<div class='metric-card'><h3>🎯 Overall Model Accuracy</h3><h1 style='color:#00FFFF'>{overall_acc}%</h1></div>",
+        unsafe_allow_html=True,
+    )
+with col2:
+    st.markdown(
+        f"<div class='metric-card'><h3>📊 Games Evaluated</h3><h1 style='color:#00FFFF'>{total_games}</h1></div>",
+        unsafe_allow_html=True,
+    )
+with col3:
+    st.markdown(
+        f"<div class='metric-card'><h3>🧩 Stats per Game</h3><h1 style='color:#00FFFF'>{len(stat_cols)}</h1></div>",
+        unsafe_allow_html=True,
+    )
+
+# ---------------------- PER-STAT PERFORMANCE ----------------------
+st.markdown("## 🔍 Stat Accuracy Overview")
+cols = st.columns(4)
+for i, (stat, val) in enumerate(per_stat_acc.items()):
+    with cols[i % 4]:
+        st.markdown(
+            f"<div class='metric-card'><h4>{stat.replace('_acc','')}</h4><h2 style='color:#00FFFF'>{val:.1f}%</h2></div>",
+            unsafe_allow_html=True,
+        )
+
+# ---------------------- TREND GRAPH ----------------------
+st.markdown("## 📈 Accuracy Trend Over Time")
 df_eval["game_date"] = pd.to_datetime(df_eval["game_date"])
 trend = df_eval.groupby("game_date")["avg_acc"].mean().reset_index()
-
 fig_trend = go.Figure()
 fig_trend.add_trace(go.Scatter(
     x=trend["game_date"], y=trend["avg_acc"], mode="lines+markers",
-    line=dict(width=2, color="#E50914"), marker=dict(size=8)
+    line=dict(color="#E50914", width=3), marker=dict(size=8)
 ))
 fig_trend.update_layout(
-    title="Average Model Accuracy Over Time",
+    title="Model Accuracy Over Time",
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
     font=dict(color="white"),
     height=350,
-    margin=dict(l=30, r=30, t=40, b=30)
 )
-st.plotly_chart(fig_trend, use_container_width=True, key="accuracy_trend")
+st.plotly_chart(fig_trend, use_container_width=True, key="trend_accuracy")
+
+# ---------------------- TOP / BOTTOM PLAYERS ----------------------
+st.markdown("## 🏆 Model Predictability Rankings")
+player_acc = df_eval.groupby("player")[stat_cols].mean().round(1).reset_index()
+player_acc["Overall"] = player_acc[stat_cols].mean(axis=1).round(1)
+player_acc = player_acc.sort_values("Overall", ascending=False)
+
+top5 = player_acc.head(5)
+bottom5 = player_acc.tail(5)
+
+col_top, col_bottom = st.columns(2)
+
+with col_top:
+    st.markdown("### 🔝 Most Predictable Players")
+    for _, row in top5.iterrows():
+        st.markdown(
+            f"<div class='player-card'><b>{row['player']}</b><br>Accuracy: <span style='color:#00FFFF'>{row['Overall']}%</span></div>",
+            unsafe_allow_html=True,
+        )
+
+with col_bottom:
+    st.markdown("### ⚠️ Least Predictable Players")
+    for _, row in bottom5.iterrows():
+        st.markdown(
+            f"<div class='player-card'><b>{row['player']}</b><br>Accuracy: <span style='color:#E50914'>{row['Overall']}%</span></div>",
+            unsafe_allow_html=True,
+        )
 
 # ---------------------- ERROR DISTRIBUTION ----------------------
-st.markdown("### 📉 Prediction Error Distribution")
+st.markdown("## 📉 Prediction Error Distribution")
 err_cols = [c for c in df_eval.columns if c.endswith("_err")]
 errors = df_eval[err_cols].values.flatten()
 fig_err = go.Figure()
 fig_err.add_trace(go.Histogram(x=errors, nbinsx=40, marker_color="#E50914"))
 fig_err.update_layout(
-    title="Distribution of Prediction Errors (Actual - Predicted)",
+    title="Error Distribution (Actual - Predicted)",
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
     font=dict(color="white"),
     height=350,
-    margin=dict(l=30, r=30, t=40, b=30)
 )
-st.plotly_chart(fig_err, use_container_width=True, key="error_distribution")
-
-# ---------------------- TOP/BOTTOM PLAYERS ----------------------
-st.markdown("### 🏆 Model Predictability Rankings")
-top_players = player_acc.head(5)
-bottom_players = player_acc.tail(5)
-col_top, col_bottom = st.columns(2)
-
-with col_top:
-    st.markdown("#### 🔝 Most Predictable Players")
-    st.table(top_players[["player", "Overall"]])
-
-with col_bottom:
-    st.markdown("#### ⚠️ Least Predictable Players")
-    st.table(bottom_players[["player", "Overall"]])
+st.plotly_chart(fig_err, use_container_width=True, key="error_hist")
 
 st.markdown("---")
-st.success("✅ Model efficiency report generated successfully.")
+st.success("✅ Efficiency dashboard loaded successfully.")

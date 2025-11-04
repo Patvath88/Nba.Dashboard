@@ -116,25 +116,42 @@ for player_name, group in data.groupby("player"):
         else:
             diff = round(actual - pred, 1)
             acc = f"{max(0, 1 - abs(diff)/pred)*100:.1f}%" if pred else "—"
-        results.append({"Stat": s, "Projected": pred, "Actual": actual if actual is not None else "—", "Δ": diff, "Accuracy": acc})
+        results.append({"Stat": s, "Projected": pred, "Actual": actual if actual is not None else "—",
+                        "Δ": diff, "Accuracy": acc})
     df_show = pd.DataFrame(results)
 
-    # --- Metric-like view ---
+    # --- Metric cards with color coding ---
     cols = st.columns(4)
-    for i, row in enumerate(df_show.itertuples()):
+    for i, row in df_show.iterrows():
+        # Determine color theme
+        if row["Actual"] == "—":
+            border = "#00FFFF"
+            glow = "#00FFFF55"
+        elif isinstance(row["Δ"], (int, float)) and row["Δ"] >= 0:
+            border = "#00FF66"
+            glow = "#00FF6655"
+        else:
+            border = "#E50914"
+            glow = "#E5091444"
+
+        delta_text = f"Δ {row['Δ']}" if row["Δ"] != "—" else "Pending"
+
         with cols[i % 4]:
             st.markdown(
                 f"""
-                <div style="border:1px solid #00FFFF;
-                            border-radius:12px;
-                            background:#111;
-                            padding:10px;
-                            text-align:center;
-                            box-shadow:0 0 10px #00FFFF55;">
-                    <b>{row.Stat}</b><br>
-                    <span style='color:#00FFFF'>Proj: {row.Projected}</span><br>
-                    <span style='color:#E50914'>Actual: {row.Actual}</span><br>
-                    <small>{'Δ '+str(row._4) if row._4!='—' else 'Pending'}</small>
+                <div style="
+                    border:1px solid {border};
+                    border-radius:12px;
+                    background:#111;
+                    padding:10px;
+                    text-align:center;
+                    box-shadow:0 0 15px {glow};
+                    margin-bottom:10px;
+                ">
+                    <b>{row['Stat']}</b><br>
+                    <span style='color:#00FFFF'>Proj: {row['Projected']}</span><br>
+                    <span style='color:#E50914'>Actual: {row['Actual']}</span><br>
+                    <small>{delta_text}</small>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -143,10 +160,18 @@ for player_name, group in data.groupby("player"):
     # --- Bar chart only if game finished ---
     if game_finished and actual_stats:
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=compare_stats, y=[latest_proj.get(s,0) for s in compare_stats],
-                             name="AI Projection", marker_color="#E50914"))
-        fig.add_trace(go.Bar(x=compare_stats, y=[actual_stats.get(s,0) for s in compare_stats],
-                             name="Actual", marker_color="#00FFFF"))
+        fig.add_trace(go.Bar(
+            x=compare_stats,
+            y=[latest_proj.get(s, 0) for s in compare_stats],
+            name="AI Projection",
+            marker_color="#E50914",
+        ))
+        fig.add_trace(go.Bar(
+            x=compare_stats,
+            y=[actual_stats.get(s, 0) for s in compare_stats],
+            name="Actual",
+            marker_color="#00FFFF",
+        ))
         fig.update_layout(
             title=f"{player_name}: Projection vs Actual ({opponent})",
             barmode="group",
@@ -154,7 +179,7 @@ for player_name, group in data.groupby("player"):
             paper_bgcolor="rgba(0,0,0,0)",
             font=dict(color="white"),
             height=350,
-            margin=dict(l=30,r=30,t=40,b=30)
+            margin=dict(l=30, r=30, t=40, b=30),
         )
         st.plotly_chart(fig, use_container_width=True, key=f"{player_name}_{game_date}")
     else:

@@ -11,6 +11,23 @@ from io import BytesIO
 import os
 from datetime import datetime
 
+from nba_api.stats.endpoints import leaguegamefinder
+
+@st.cache_data(ttl=3600)
+def get_next_or_last_game(player_id):
+    """Fetch next scheduled or most recent opponent for the given player."""
+    try:
+        gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
+        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
+        gl = gl.sort_values("GAME_DATE", ascending=False)
+        latest_game = gl.iloc[0]
+        game_date = latest_game["GAME_DATE"].strftime("%Y-%m-%d")
+        opponent = latest_game["MATCHUP"]  # e.g., "DAL vs LAL" or "DAL @ BOS"
+        return game_date, opponent
+    except Exception:
+        return None, None
+
+
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Player AI", layout="wide")
 st.markdown("<style>body{background-color:black;color:white;}</style>", unsafe_allow_html=True)
@@ -162,6 +179,18 @@ with col2:
     st.markdown(f"## **{player}**")
 st.markdown("---")
 
+# ---------------------- AI PREDICTION ----------------------
+game_date, opponent = get_next_or_last_game(pid)
+
+st.markdown("## 🧠 AI Predicted Next Game Stats")
+if game_date and opponent:
+    st.markdown(f"**📅 Game Date:** {game_date}")
+    st.markdown(f"**🆚 Matchup:** {opponent}")
+else:
+    st.info("No recent or upcoming game data available.")
+
+metric_cards(pred_next, team_color)
+bar_chart_comparison("AI Prediction vs. Current Season Average", pred_next, current)
 # ---------------------- AI PREDICTION ----------------------
 st.markdown("## 🧠 AI Predicted Next Game Stats")
 metric_cards(pred_next, team_color)

@@ -167,7 +167,8 @@ def bar_chart_comparison(title, pred_dict, season_df):
         margin=dict(l=30, r=30, t=40, b=30),
         legend=dict(font=dict(color="white"))
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
+
 
 # ---------------------- LAYOUT ----------------------
 photo = get_player_photo(player)
@@ -239,7 +240,8 @@ if not current.empty:
         height=300,
         margin=dict(l=30, r=30, t=40, b=30),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
+
 else:
     st.info("No recent game data available.")
 
@@ -298,6 +300,7 @@ if timeframe:
             height=300,
             margin=dict(l=30, r=30, t=40, b=30),
         )
-        st.plotly_chart(fig, use_container_width=True)
+       st.plotly_chart(fig, use_container_width=True, key=f"chart_{player}")
+
     else:
         st.info("No data available for this timeframe.")

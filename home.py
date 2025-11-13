@@ -287,7 +287,7 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 🏆 NBA STANDINGS — Corrected + Last Game Summary
+# 🏆 NBA STANDINGS — Corrected & Resilient
 # =========================================================
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
@@ -299,13 +299,16 @@ stand = get_standings()
 
 @st.cache_data(ttl=300)
 def fetch_recent_games():
-    """Fetch recent games from the past 3 days to show last results."""
+    """Fetch scoreboard data for the last few days and pick the valid team dataframe."""
     all_games = []
     for days_back in range(1, 4):
         date_str = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y-%m-%d")
         try:
-            data = scoreboardv2.ScoreboardV2(game_date=date_str).get_data_frames()[0]
-            all_games.append(data)
+            sb = scoreboardv2.ScoreboardV2(game_date=date_str)
+            # find which dataframe contains TEAM_ID
+            valid_df = next((df for df in sb.get_data_frames() if "TEAM_ID" in df.columns), None)
+            if valid_df is not None:
+                all_games.append(valid_df)
         except Exception:
             continue
     if not all_games:
@@ -324,9 +327,10 @@ def fetch_recent_games():
 recent_games = fetch_recent_games()
 
 if not stand.empty:
-    # normalize column names
+    # normalize columns
     stand.columns = [c.replace(" ", "") for c in stand.columns]
-    # detect valid team ID column
+
+    # detect correct team ID column
     team_id_col = next((c for c in stand.columns if "TeamID" in c), None)
     team_abbr_col = next((c for c in stand.columns if c.lower() in ["teamtricode", "teamabbreviation", "teamslug"]), None)
 
@@ -335,12 +339,18 @@ if not stand.empty:
 
     def get_last_game(team_id):
         """Return opponent, result, and W/L for a given team ID."""
-        if team_id is None or team_id not in recent_games["TeamID"].values:
+        if recent_games.empty or "TeamID" not in recent_games.columns:
+            return "—", "No recent data", ""
+        tg = recent_games[recent_games["TeamID"] == team_id]
+        if tg.empty:
             return "—", "No recent game", ""
-        g = recent_games[recent_games["TeamID"] == team_id].iloc[-1]
-        opp_team = g["Matchup"].replace(g["TeamAbbr"], "").replace("vs.", "").replace("@", "").strip()
-        result = f"{int(g['Points'])}–{int(g['Points'] - g['PlusMinus'])}"
-        status = "Won" if g["PlusMinus"] > 0 else "Lost"
+        g = tg.iloc[-1]
+        opp_team = str(g["Matchup"]).replace(g["TeamAbbr"], "").replace("vs.", "").replace("@", "").strip()
+        try:
+            result = f"{int(g['Points'])}–{int(g['Points'] - g['PlusMinus'])}"
+        except Exception:
+            result = "N/A"
+        status = "Won" if g.get("PlusMinus", 0) > 0 else "Lost"
         return opp_team, f"{status} {result}", status
 
     def render_leaderboard(df, conference_name):
@@ -359,8 +369,8 @@ if not stand.empty:
             team_abbr = str(row.get(team_abbr_col, "")).lower()
             logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{team_abbr}.png"
             team_name = f"{row.get('TeamCity', '')} {row.get('TeamName', '')}"
-            opp_team, result, status = get_last_game(team_id)
 
+            opp_team, result, status = get_last_game(team_id)
             winpct = round(row.get('WinPCT', 0) * 100, 1)
             streak = row.get('Streak', '—')
             status_color = "#00FF80" if "Won" in result else "#FF5252"

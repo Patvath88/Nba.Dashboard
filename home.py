@@ -66,8 +66,8 @@ st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
 
 # Only one button left: Player AI Dashboard
-if st.button("📊 Go to Player AI Dashboard"):
-    st.switch_page("pages/Player_AI.py")
+if st.button("📊 Go to Player Research & Predictions"):
+    st.switch_page("pages/Research_&_Predictions.py")
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")

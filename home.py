@@ -1,18 +1,15 @@
-# home.py
-
 import streamlit as st
-import pandas as pd
-import numpy as np
-import datetime
 import requests
+import time
+import pandas as pd
+from datetime import datetime, date
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
 from nba_api.stats.static import players, teams
 from zoneinfo import ZoneInfo
 import os
 
-# ---------- CONFIG ----------
-st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
-                   page_icon="🏀", layout="wide")
+# ---------------------- CONFIG ----------------------
+st.set_page_config(page_title="Hot Shot Props | NBA Home Hub", page_icon="🏀", layout="wide")
 
 # ---------- STYLE ----------
 st.markdown("""
@@ -42,144 +39,71 @@ def get_standings():
 
 @st.cache_data(ttl=600)
 def get_games_today():
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
     return scoreboardv2.ScoreboardV2(game_date=today).get_data_frames()
 
 @st.cache_data(ttl=600)
 def get_injuries():
     try:
-        url="https://cdn.nba.com/static/json/injury/injury_2025.json"
-        return pd.DataFrame(requests.get(url,timeout=10).json()["league"]["injuries"])
+        url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
+        return pd.DataFrame(requests.get(url, timeout=10).json()["league"]["injuries"])
     except:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def player_id_map():
-    return {p["full_name"]:p["id"] for p in players.get_active_players()}
+    return {p["full_name"]: p["id"] for p in players.get_active_players()}
 
 def player_photo(name):
     pid = player_id_map().get(name)
-    if pid:
-        return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
-    return "https://cdn-icons-png.flaticon.com/512/847/847969.png"
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
+           "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
 def team_logo(abbr):
     return f"https://cdn.nba.com/logos/nba/{abbr}/primary/L/logo.svg"
 
-# ---------- LATEST NBA NEWS — image tiles with links ----------
+# ---------- LATEST NBA NEWS ----------
 st.markdown("## 🔔 Latest NBA News")
 
-news_items = [
-    {
-        "title": "Anthony Davis trade rumors: Ranking every NBA team as a possible landing spot for Mavericks' star big man",
-        "url": "https://www.cbssports.com/nba/news/anthony-davis-trade-rumors-landing-spots-mavericks-nico-harrison-rebuild/",
-        "image": "https://cdn.cbssports.com/nba/news/2025/11/12/ad-getty.png"
-    },
-    {
-        "title": "Rockets Drop in Latest NBA Power Rankings",
-        "url": "https://www.si.com/nba/rockets-drop-in-latest-nba-power-rankings",
-        "image": "https://sportsillustrated.cbsistatic.com/i?img=/upload/2025/11/09/rockets-power-rankings.jpg"
-    },
-    {
-        "title": "Kia Rookie Ladder: Hornets' duo makes its mark in Top 5",
-        "url": "https://www.nba.com/news/kia-rookie-ladder-nov-12-2025",
-        "image": "https://cdn.nba.com/some-image-for-rookie-ladder.jpg"
-    }
-]
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "YOUR_API_KEY_HERE")
 
-cols = st.columns(len(news_items))
-for idx, item in enumerate(news_items):
-    with cols[idx]:
-        st.markdown(
-            f"<a href='{item['url']}' target='_blank'>"
-            f"<img src='{item['image']}' style='width:100%;border-radius:8px;'/>"
-            f"</a>"
-            f"<br><small>{item['title']}</small>",
-            unsafe_allow_html=True
-        )
-
-# ---------- NEW HELPER: Upcoming Games via ESPN (EST) ----------
-@st.cache_data(ttl=600)
-def get_games_from_espn(date: datetime.date):
+@st.cache_data(ttl=300)
+def fetch_nba_news(api_key, count=3):
+    url = f"https://newsapi.org/v2/everything?q=NBA&language=en&sortBy=publishedAt&pageSize={count}&apiKey={api_key}"
     try:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date.strftime('%Y%m%d')}"
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return []
-        data = r.json()
-        games = []
-        for event in data.get("events", []):
-            comp = event["competitions"][0]
-            competitors = comp["competitors"]
-            home = next(c for c in competitors if c["homeAway"] == "home")
-            away = next(c for c in competitors if c["homeAway"] == "away")
-
-            utc_time = datetime.datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
-            est_time = utc_time.astimezone(ZoneInfo("America/New_York"))
-            time_str = est_time.strftime("%I:%M %p ET")
-
-            broadcast = (comp.get("broadcasts")[0]["names"][0]
-                         if comp.get("broadcasts") else "TBD")
-
-            games.append({
-                "home_team": home["team"]["displayName"],
-                "home_logo": home["team"]["logo"],
-                "away_team": away["team"]["displayName"],
-                "away_logo": away["team"]["logo"],
-                "time": time_str,
-                "broadcast": broadcast
+        articles = r.json().get("articles", [])
+        news = []
+        for art in articles:
+            image = art.get("urlToImage") or ""
+            news.append({
+                "title": art.get("title", ""),
+                "url": art.get("url", ""),
+                "image": image
             })
-        return games
-    except Exception as e:
-        st.error(f"Error fetching ESPN data: {e}")
+        return news
+    except Exception:
         return []
+
+news_items = fetch_nba_news(NEWSAPI_KEY, count=3)
+if not news_items:
+    st.info("No recent NBA news found.")
+else:
+    cols = st.columns(len(news_items))
+    for idx, item in enumerate(news_items):
+        with cols[idx]:
+            st.markdown(
+                f"<a href='{item['url']}' target='_blank'>"
+                f"<img src='{item['image']}' style='width:100%;border-radius:8px;'/>"
+                f"</a><br><small>{item['title']}</small>",
+                unsafe_allow_html=True
+            )
 
 # ---------- HEADER ----------
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
-
-# ---------- LATEST NBA UPDATES FROM X ----------
-st.markdown("## 🔔 Latest NBA Updates")
-sources = ["NBA", "espnNBA", "wojespn"]
-tweets = get_latest_nba_tweets(sources, count=3)
-if not tweets:
-    st.info("No recent tweets available from selected sources.")
-else:
-    for t in tweets:
-        st.markdown(
-            f"<div class='section'>"
-            f"<b>@{t['username']}</b> — <i>{t['created_at']}</i><br>"
-            f"{t['text']}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-# ---------- UPCOMING GAMES (ESPN Data) ----------
-st.markdown("## 🗓️ Upcoming Games")
-today = datetime.date.today()
-tomorrow = today + datetime.timedelta(days=1)
-today_games = get_games_from_espn(today)
-tomorrow_games = get_games_from_espn(tomorrow)
-
-def render_games_section(title: str, games: list, date: datetime.date):
-    st.markdown(f"### {title} ({date.strftime('%B %d, %Y')})")
-    if not games:
-        st.info("No scheduled games.")
-        return
-    for g in games:
-        st.markdown(
-            f"<div class='section'>"
-            f"<img src='{g['away_logo']}' width='40'> "
-            f"<b>{g['away_team']}</b> @ "
-            f"<img src='{g['home_logo']}' width='40'> "
-            f"<b>{g['home_team']}</b><br>"
-            f"🕒 {g['time']} &nbsp;&nbsp; 📺 {g['broadcast']}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-render_games_section("🏀 Upcoming Games Tonight", today_games, today)
-render_games_section("🌙 Upcoming Games Tomorrow", tomorrow_games, tomorrow)
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")
@@ -202,7 +126,6 @@ if not df.empty:
         "Steals": "STL_Avg",
         "Turnovers": "TOV_Avg"
     }
-
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
@@ -222,15 +145,12 @@ inj = get_injuries()
 if not inj.empty:
     for _, r in inj.head(25).iterrows():
         scls = "status-active"
-        if "Out" in r["status"]:
-            scls = "status-out"
-        elif "Questionable" in r["status"]:
-            scls = "status-questionable"
+        if "Out" in r["status"]: scls = "status-out"
+        elif "Questionable" in r["status"]: scls = "status-questionable"
         st.markdown(
             f"<div class='section'><b>{r['player']}</b> — {r['team']}<br>"
-            f"<span class='{scls}'>{r['status']}</span> — {r.get('description','')}</div>",
-            unsafe_allow_html=True
-        )
+            f"<span class='{scls}'>{r['status']}</span> — {r.get('description', '')}</div>",
+            unsafe_allow_html=True)
 else:
     st.warning("No injury data available.")
 
@@ -238,9 +158,9 @@ else:
 st.markdown("## 🏆 NBA Standings")
 stand = get_standings()
 if not stand.empty:
-    east = stand[stand["Conference"]=="East"]
-    west = stand[stand["Conference"]=="West"]
-    base = ["TeamCity","TeamName","WINS","LOSSES","WinPCT"]
+    east = stand[stand["Conference"] == "East"]
+    west = stand[stand["Conference"] == "West"]
+    base = ["TeamCity", "TeamName", "WINS", "LOSSES", "WinPCT"]
     cols = [c for c in base if c in east.columns]
     if "Streak" in east.columns:
         cols.append("Streak")

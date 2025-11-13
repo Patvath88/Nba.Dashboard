@@ -227,7 +227,7 @@ st.markdown("""
   100% { text-shadow: 0 0 6px #FF0044, 0 0 12px #007BFF; }
 }
 
-    }
+    
     .game-card {
         background: linear-gradient(180deg, #0B0B0B, #111);
         border-radius: 18px;

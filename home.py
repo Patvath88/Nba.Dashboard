@@ -226,17 +226,7 @@ st.markdown("""
   50% { text-shadow: 0 0 16px #FF0044, 0 0 30px #007BFF; }
   100% { text-shadow: 0 0 6px #FF0044, 0 0 12px #007BFF; }
 }
-</style>
-""", unsafe_allow_html=True)
-def render_games_section(title, games):
-    st.markdown(f"<h2 style='color:#FF3B3B;text-shadow:0 0 10px #0066FF;'>🏟️ {title}</h2>", unsafe_allow_html=True)
-    html = """
-    <style>
-    .game-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 25px;
-        margin-top: 20px;
+
     }
     .game-card {
         background: linear-gradient(180deg, #0B0B0B, #111);

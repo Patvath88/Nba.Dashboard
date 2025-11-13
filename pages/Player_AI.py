@@ -1,72 +1,150 @@
-
 # pages/Player_AI.py
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import requests
+from sklearn.linear_model import LinearRegression
 
-# ---------- PAGE SETUP ----------
+# ---------------------------
+# PAGE CONFIGURATION
+# ---------------------------
 st.set_page_config(page_title="Player AI Dashboard", page_icon="📊")
 
-st.title("📊 Player AI Dashboard")
+st.title("📊 Player AI Dashboard — Real NBA Data")
 st.markdown("""
-Welcome to the **AI-powered NBA Player Analytics Dashboard**.  
-Select a player below to view real stats and AI-predicted performance metrics.
+This dashboard uses **real NBA data** (via [balldontlie.io](https://www.balldontlie.io))  
+and a simple AI model to predict next-game performance.
 """)
 
-# ---------- SAMPLE DATA ----------
-# You can replace this with real player data later
-players = ["LeBron James", "Stephen Curry", "Jayson Tatum", "Giannis Antetokounmpo"]
-data = {
-    "LeBron James": {"PTS": 25.3, "AST": 7.8, "REB": 8.1},
-    "Stephen Curry": {"PTS": 29.7, "AST": 6.4, "REB": 4.3},
-    "Jayson Tatum": {"PTS": 27.1, "AST": 4.6, "REB": 8.8},
-    "Giannis Antetokounmpo": {"PTS": 31.1, "AST": 5.9, "REB": 11.6},
-}
+# ---------------------------
+# HELPER FUNCTIONS
+# ---------------------------
 
-# ---------- PLAYER SELECTION ----------
+@st.cache_data(show_spinner=False)
+def get_player_id(player_name: str):
+    """Fetch player ID from balldontlie API."""
+    url = f"https://www.balldontlie.io/api/v1/players?search={player_name}"
+    r = requests.get(url)
+    data = r.json()
+    if data["data"]:
+        return data["data"][0]["id"]
+    else:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def get_player_game_stats(player_id: int):
+    """Fetch last 20 games for player."""
+    url = f"https://www.balldontlie.io/api/v1/stats?player_ids[]={player_id}&per_page=20"
+    r = requests.get(url)
+    games = r.json()["data"]
+    if not games:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame([
+        {
+            "Game": i + 1,
+            "PTS": g["pts"],
+            "REB": g["reb"],
+            "AST": g["ast"],
+            "STL": g["stl"],
+            "BLK": g["blk"]
+        }
+        for i, g in enumerate(games)
+    ])
+    df = df.iloc[::-1].reset_index(drop=True)  # chronological order
+    return df
+
+
+def predict_next_game(df: pd.DataFrame):
+    """Use simple regression per stat to predict next game performance."""
+    predictions = {}
+    for stat in ["PTS", "REB", "AST", "STL", "BLK"]:
+        X = np.arange(len(df)).reshape(-1, 1)
+        y = df[stat].values
+        model = LinearRegression()
+        model.fit(X, y)
+        next_game = model.predict([[len(df)]])[0]
+        predictions[stat] = round(next_game, 1)
+    return predictions
+
+
+# ---------------------------
+# USER INPUT
+# ---------------------------
+
+players = [
+    "LeBron James", "Stephen Curry", "Jayson Tatum", "Giannis Antetokounmpo",
+    "Luka Doncic", "Kevin Durant", "Nikola Jokic", "Shai Gilgeous-Alexander"
+]
+
 selected_player = st.selectbox("Select a player:", players)
 
-# ---------- DISPLAY CURRENT STATS ----------
-player_stats = data[selected_player]
-st.subheader(f"📈 Current Season Stats for {selected_player}")
-st.metric("Points Per Game", player_stats["PTS"])
-st.metric("Assists Per Game", player_stats["AST"])
-st.metric("Rebounds Per Game", player_stats["REB"])
+# ---------------------------
+# DATA RETRIEVAL
+# ---------------------------
 
-# ---------- SIMPLE AI PREDICTION MODEL ----------
-# (Simulate AI predictions using noise — replace with ML model later)
-st.divider()
-st.subheader("🤖 AI Performance Prediction")
+player_id = get_player_id(selected_player)
 
-np.random.seed(42)
-predictions = {
-    stat: round(val + np.random.normal(0, 1), 1)
-    for stat, val in player_stats.items()
-}
+if player_id is None:
+    st.error("❌ Player not found. Try a different name.")
+    st.stop()
 
-# Show predicted stats
-cols = st.columns(3)
-for i, stat in enumerate(predictions):
+stats_df = get_player_game_stats(player_id)
+
+if stats_df.empty:
+    st.warning("No recent stats found for this player.")
+    st.stop()
+
+# ---------------------------
+# DISPLAY STATS SUMMARY
+# ---------------------------
+
+st.subheader(f"📈 Recent Performance for {selected_player}")
+st.dataframe(stats_df.tail(10), use_container_width=True)
+
+mean_stats = stats_df.mean().round(1)
+cols = st.columns(5)
+for i, stat in enumerate(["PTS", "REB", "AST", "STL", "BLK"]):
     with cols[i]:
-        st.metric(f"Predicted {stat}", predictions[stat])
+        st.metric(stat, mean_stats[stat])
 
-# ---------- CHART VISUALIZATION ----------
+# ---------------------------
+# AI PREDICTION
+# ---------------------------
+
 st.divider()
-st.subheader("📊 Comparison: Actual vs Predicted Stats")
+st.subheader("🤖 AI Predicted Next Game Performance")
 
-actual_vals = list(player_stats.values())
-predicted_vals = list(predictions.values())
+predicted_stats = predict_next_game(stats_df)
+
+cols = st.columns(5)
+for i, stat in enumerate(predicted_stats):
+    with cols[i]:
+        st.metric(f"Predicted {stat}", predicted_stats[stat])
+
+# ---------------------------
+# VISUALIZATION
+# ---------------------------
+
+st.divider()
+st.subheader("📊 Actual vs Predicted Comparison")
 
 fig, ax = plt.subplots()
-x = np.arange(len(player_stats))
+actual = [mean_stats[s] for s in predicted_stats]
+predicted = [predicted_stats[s] for s in predicted_stats]
+
+x = np.arange(len(predicted_stats))
 width = 0.35
-ax.bar(x - width/2, actual_vals, width, label="Actual")
-ax.bar(x + width/2, predicted_vals, width, label="Predicted")
+ax.bar(x - width/2, actual, width, label="Actual (avg last 10 games)")
+ax.bar(x + width/2, predicted, width, label="Predicted Next Game")
 ax.set_xticks(x)
-ax.set_xticklabels(player_stats.keys())
+ax.set_xticklabels(predicted_stats.keys())
 ax.legend()
+ax.set_ylabel("Stat Value")
 st.pyplot(fig)
 
-st.success("✅ AI prediction generated successfully!")
+st.success(f"✅ AI prediction for {selected_player} generated successfully!")
+

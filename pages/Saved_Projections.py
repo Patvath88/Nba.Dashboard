@@ -39,9 +39,7 @@ if data.empty:
 
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
-
 nba_teams = teams.get_teams()
-abbr_map = {t["abbreviation"].lower(): t for t in nba_teams}
 
 # ---------------------- HELPERS ----------------------
 def get_player_photo(pid):
@@ -57,6 +55,31 @@ def get_player_photo(pid):
         except Exception:
             continue
     return None
+
+
+# ESPN team abbreviations mapping (normalize all possibilities)
+TEAM_MAP = {
+    "atl": "atl", "bkn": "bkn", "bos": "bos", "cha": "cha", "chi": "chi", "cle": "cle",
+    "dal": "dal", "den": "den", "det": "det", "gsw": "gsw", "hou": "hou", "ind": "ind",
+    "lac": "lac", "lal": "lal", "mem": "mem", "mia": "mia", "mil": "mil", "min": "min",
+    "nop": "nop", "nyk": "nyk", "okc": "okc", "orl": "orl", "phi": "phi", "phx": "phx",
+    "por": "por", "sac": "sac", "sas": "sas", "tor": "tor", "uta": "uta", "wsh": "wsh",
+    "was": "wsh", "gs": "gsw", "no": "nop"
+}
+
+def normalize_team_abbr(abbr_or_name: str) -> str:
+    """Try to normalize any team name or abbreviation to ESPN's short form."""
+    if not abbr_or_name:
+        return ""
+    abbr = str(abbr_or_name).lower().strip()
+    # If exact match in map
+    if abbr in TEAM_MAP:
+        return TEAM_MAP[abbr]
+    # Try matching full team names (like "Cavaliers" → "cle")
+    for t in nba_teams:
+        if abbr in t["full_name"].lower() or abbr in t["nickname"].lower():
+            return TEAM_MAP.get(t["abbreviation"].lower(), "")
+    return ""
 
 
 @st.cache_data(ttl=600)
@@ -94,18 +117,22 @@ def get_games_from_espn(date_to_fetch: date):
 
 def get_next_game_for_team(team_abbr):
     """Find the next scheduled game for the given team abbreviation."""
+    norm_abbr = normalize_team_abbr(team_abbr)
+    if not norm_abbr:
+        return None
+
     today = date.today()
-    for d in range(0, 5):  # look up to 5 days ahead
+    for d in range(0, 7):  # look up to 7 days ahead
         games = get_games_from_espn(today + timedelta(days=d))
         for g in games:
-            if g["home_abbr"] == team_abbr.lower():
+            if g["home_abbr"] == norm_abbr:
                 return {
                     "date": g["date"],
                     "time": g["time"],
                     "home_away": "Home",
                     "opponent": g["away_team"]
                 }
-            elif g["away_abbr"] == team_abbr.lower():
+            elif g["away_abbr"] == norm_abbr:
                 return {
                     "date": g["date"],
                     "time": g["time"],
@@ -135,8 +162,16 @@ for player_name, group in df_upcoming.groupby("player"):
     if not pid:
         continue
 
-    # Try to determine player's team abbreviation
-    team_abbr = str(group.iloc[-1].get("team_abbr", "")).lower()
+    # Determine player's team from CSV or nba_api
+    team_abbr = str(group.iloc[-1].get("team_abbr", ""))
+    if not team_abbr:
+        # fallback: find player's current team from nba_api
+        pinfo = next((p for p in nba_players if p["full_name"] == player_name), None)
+        if pinfo and "team_id" in pinfo:
+            team_obj = next((t for t in nba_teams if t["id"] == pinfo["team_id"]), None)
+            if team_obj:
+                team_abbr = team_obj["abbreviation"]
+
     next_game = get_next_game_for_team(team_abbr)
     latest_proj = group.iloc[-1].to_dict()
 
@@ -180,4 +215,3 @@ for player_name, group in df_upcoming.groupby("player"):
             )
 
     st.info("🕒 Upcoming game — awaiting actual stats after tip-off.")
-

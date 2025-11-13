@@ -383,23 +383,106 @@ else:
 
 
 # =========================================================
-# 🏆 STANDINGS
+# 🏆 NBA STANDINGS — Enhanced Leaderboard + Bracket
 # =========================================================
-st.markdown("<h2>🏆 NBA Standings</h2>", unsafe_allow_html=True)
+st.markdown("""
+<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
+🏆 NBA Standings
+</h2>
+""", unsafe_allow_html=True)
+
 stand = get_standings()
 if not stand.empty:
-    east = stand[stand["Conference"] == "East"]
-    west = stand[stand["Conference"] == "West"]
-    cols = ["TeamCity", "TeamName", "WINS", "LOSSES", "WinPCT"]
+    east = stand[stand["Conference"] == "East"].sort_values("PlayoffRank")
+    west = stand[stand["Conference"] == "West"].sort_values("PlayoffRank")
+
+    def render_leaderboard(df, conference_name):
+        html = f"""
+        <div style='background:linear-gradient(180deg,#0b0b0b,#121212);
+                    border-radius:12px;padding:20px;margin-bottom:20px;
+                    box-shadow:0 0 20px rgba(255,111,0,0.25);'>
+            <h3 style='color:#FF9F43;text-shadow:0 0 8px #FF9F43;
+                       font-family:"Oswald",sans-serif;text-align:center;'>
+                {conference_name} Conference
+            </h3>
+            <div style='padding:8px 0;'>
+        """
+        for _, row in df.iterrows():
+            team_name = f"{row['TeamCity']} {row['TeamName']}"
+            logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{row['TeamTricode'].lower()}.png"
+            winpct = round(row['WinPCT'] * 100, 1)
+            streak = row.get('Streak', '')
+            html += f"""
+            <div style='display:flex;align-items:center;justify-content:space-between;
+                        margin:6px 0;padding:8px 12px;
+                        background:linear-gradient(90deg,rgba(255,111,0,0.05) {winpct}%,rgba(255,111,0,0.02) {winpct}%);
+                        border-radius:8px;box-shadow:0 0 8px rgba(255,111,0,0.1);'>
+                <div style='display:flex;align-items:center;gap:10px;'>
+                    <img src='{logo_url}' width='30' height='30' style='border-radius:6px;'>
+                    <div style='color:#FFF;font-family:"Oswald",sans-serif;font-size:1.1rem;'>
+                        {team_name}
+                    </div>
+                </div>
+                <div style='color:#FFB266;font-family:"Roboto",sans-serif;'>
+                    <b>{row['WINS']}-{row['LOSSES']}</b>
+                    <span style='color:#66B3FF;font-size:0.85rem;margin-left:8px;'>{winpct}%</span>
+                    <span style='color:#FF6F00;font-size:0.8rem;margin-left:8px;'>{streak}</span>
+                </div>
+            </div>
+            """
+        html += "</div></div>"
+        return html
+
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("### Eastern Conference")
-        st.dataframe(east[cols], use_container_width=True)
+        st.markdown(render_leaderboard(east, "Eastern"), unsafe_allow_html=True)
     with c2:
-        st.markdown("### Western Conference")
-        st.dataframe(west[cols], use_container_width=True)
-else:
-    st.warning("Standings unavailable.")
+        st.markdown(render_leaderboard(west, "Western"), unsafe_allow_html=True)
 
-st.markdown("---")
+    # =========================================================
+    # 🏀 IF THE NBA FINALS STARTED TODAY (Auto Bracket)
+    # =========================================================
+    st.markdown("""
+    <h2 style="color:#FF3B3B;text-shadow:0 0 10px #FF3B3B;font-family:'Oswald',sans-serif;margin-top:30px;">
+    🏀 If The NBA Finals Started Today
+    </h2>
+    """, unsafe_allow_html=True)
+
+    def make_bracket_html(east_df, west_df):
+        def matchup_block(seed1, seed8, side):
+            t1 = f"{seed1['TeamTricode']} ({int(seed1['PlayoffRank'])})"
+            t8 = f"{seed8['TeamTricode']} ({int(seed8['PlayoffRank'])})"
+            color = "#FF3B3B" if side == "East" else "#66B3FF"
+            return f"""
+            <div style='padding:10px;border-left:3px solid {color};
+                        margin-bottom:8px;background:#111;border-radius:8px;
+                        box-shadow:0 0 8px {color}55;'>
+                <b style='color:{color};font-family:"Oswald";font-size:1rem;'>
+                    {t1} vs {t8}
+                </b>
+            </div>
+            """
+
+        bracket_html = "<div style='display:flex;justify-content:space-around;'>"
+
+        # EAST
+        bracket_html += "<div style='width:45%;'>"
+        bracket_html += "<h4 style='color:#FF3B3B;text-shadow:0 0 6px #FF3B3B;'>Eastern Matchups</h4>"
+        for i in range(4):
+            bracket_html += matchup_block(east_df.iloc[i], east_df.iloc[-(i+1)], "East")
+        bracket_html += "</div>"
+
+        # WEST
+        bracket_html += "<div style='width:45%;'>"
+        bracket_html += "<h4 style='color:#66B3FF;text-shadow:0 0 6px #66B3FF;'>Western Matchups</h4>"
+        for i in range(4):
+            bracket_html += matchup_block(west_df.iloc[i], west_df.iloc[-(i+1)], "West")
+        bracket_html += "</div></div>"
+        return bracket_html
+
+    st.markdown(make_bracket_html(east, west), unsafe_allow_html=True)
+
+else:
+    st.warning("Standings currently unavailable.")
+
 st.caption("⚡ Hot Shot Props — Live Data © 2025")

@@ -9,13 +9,13 @@ from io import BytesIO
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="🎯 Upcoming Game Projections", layout="wide")
-st.title("🏀 Upcoming Game Projections")
+st.title("🏀 Upcoming Game Projections (Live Tracker)")
 
+# ---------------------- REFRESH ----------------------
 REFRESH_INTERVAL = 60
 if "last_refresh" not in st.session_state:
     st.session_state["last_refresh"] = time.time()
@@ -65,6 +65,7 @@ def get_player_photo(pid):
             continue
     return None
 
+
 def get_player_team_abbr(player_name: str) -> str:
     try:
         pid = player_map.get(player_name)
@@ -74,6 +75,7 @@ def get_player_team_abbr(player_name: str) -> str:
         return str(info.loc[0, "TEAM_ABBREVIATION"]).lower()
     except Exception:
         return ""
+
 
 @st.cache_data(ttl=600)
 def get_games_from_espn(date_to_fetch: date):
@@ -103,6 +105,7 @@ def get_games_from_espn(date_to_fetch: date):
     except Exception:
         return []
 
+
 def get_next_game_for_team(team_abbr):
     if not team_abbr:
         return None
@@ -115,6 +118,7 @@ def get_next_game_for_team(team_abbr):
             elif g["away_abbr"] == team_abbr.lower():
                 return {"date": g["date"], "time": g["time"], "home_away": "Away", "opponent": g["home_team"]}
     return None
+
 
 def get_latest_player_stats(pid):
     try:
@@ -138,7 +142,9 @@ def get_latest_player_stats(pid):
     except Exception:
         return None
 
+
 def generate_stat_chart(stat_name, proj_value, history_list):
+    """Small inline line chart comparing projection vs actual progression."""
     fig, ax = plt.subplots(figsize=(1.8, 0.8))
     ax.plot(range(len(history_list)), history_list, linewidth=1.8, color="#00FFFF", alpha=0.9)
     ax.axhline(proj_value, color="white", linestyle="--", linewidth=1)
@@ -163,9 +169,8 @@ def log_game_results(player_name, pid, proj_dict):
     results_file = "results_history.csv"
     stats = get_latest_player_stats(pid)
     if not stats or stats["date"] >= date.today():
-        return  # game not finished yet
+        return
 
-    # Load or create results file
     results = pd.read_csv(results_file)
     if ((results["player"] == player_name) & (results["date"] == str(stats["date"]))).any():
         return
@@ -187,10 +192,11 @@ def log_game_results(player_name, pid, proj_dict):
     results = pd.concat([results, pd.DataFrame(new_entries)], ignore_index=True)
     results.to_csv(results_file, index=False)
 
-# ---------------------- DISPLAY ----------------------
+# ---------------------- FILTER UPCOMING ----------------------
 today = pd.Timestamp.now().normalize()
 df_upcoming = data[pd.to_datetime(data["game_date"], errors="coerce") >= today]
 
+# ---------------------- DISPLAY ----------------------
 for player_name, group in df_upcoming.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -201,7 +207,7 @@ for player_name, group in df_upcoming.groupby("player"):
     latest_proj = group.iloc[-1].to_dict()
     live_stats = get_latest_player_stats(pid)
 
-    # Log results when games finish
+    # Log results post-game
     log_game_results(player_name, pid, latest_proj)
 
     if player_name not in st.session_state["player_history"]:
@@ -224,7 +230,6 @@ for player_name, group in df_upcoming.groupby("player"):
         else:
             st.caption("📅 **Game Date:** TBD | 🆚 **Opponent:** TBD")
 
-    # Stat Cards
     compare_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
     cols = st.columns(4)
     for i, stat in enumerate(compare_stats):

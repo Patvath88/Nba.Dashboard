@@ -61,7 +61,10 @@ def player_photo(name):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, news, injuries & standings")
 
-# ---------- LATEST NBA NEWS (HEADLINE FEED) ----------
+# ---------- LATEST NBA NEWS (Clean Text-Only Headlines) ----------
+import feedparser
+from urllib.parse import quote
+
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
            font-family:'Oswald',sans-serif;margin-top:30px;">
@@ -69,85 +72,81 @@ st.markdown("""
 </h2>
 """, unsafe_allow_html=True)
 
+
 @st.cache_data(ttl=900)
-def fetch_latest_nba_news(limit=5):
-    """Fetch latest NBA headlines with summaries."""
+def fetch_latest_nba_news(limit=3):
+    """Get 3 latest NBA news headlines and summaries."""
     feed_url = f"https://news.google.com/rss/search?q={quote('NBA basketball')}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(feed_url)
-    stories = []
+    news_items = []
     for entry in feed.entries[:limit]:
-        summary = entry.summary if hasattr(entry, "summary") else ""
+        title = entry.title.strip()
+        link = entry.link
+        summary = getattr(entry, "summary", "")
         summary = summary.replace("<br>", " ").replace("\n", " ").strip()
         if len(summary) > 200:
             summary = summary[:200].rsplit(" ", 1)[0] + "..."
-        stories.append({
-            "title": entry.title.strip(),
-            "url": entry.link,
-            "summary": summary
-        })
-    return stories
+        news_items.append({"title": title, "link": link, "summary": summary})
+    return news_items
+
 
 news_items = fetch_latest_nba_news()
 
 if not news_items:
-    st.info("🕵️ No fresh NBA headlines available at the moment.")
+    st.info("No NBA headlines available at the moment.")
 else:
     st.markdown("""
     <style>
-    .news-feed {
-        display: flex;
-        flex-direction: column;
-        gap: 20px;
-        margin-top: 15px;
-    }
-    .news-item {
+    .headline-card {
         background: #1C1C1C;
         border-radius: 12px;
-        padding: 18px 22px;
-        box-shadow: 0 0 12px rgba(255,111,0,0.1);
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 0 10px rgba(255,111,0,0.1);
         transition: all 0.25s ease-in-out;
     }
-    .news-item:hover {
+    .headline-card:hover {
         transform: translateY(-3px);
-        box-shadow: 0 0 18px rgba(255,111,0,0.25);
+        box-shadow: 0 0 16px rgba(255,111,0,0.25);
     }
-    .news-title {
+    .headline-title {
         font-family: 'Oswald', sans-serif;
-        font-size: 1.3rem;
+        font-size: 1.25rem;
         color: #FF9F43;
-        margin-bottom: 6px;
-        letter-spacing: 0.5px;
+        margin-bottom: 8px;
     }
-    .news-title a {
+    .headline-title a {
         color: #FF9F43;
         text-decoration: none;
     }
-    .news-title a:hover {
-        text-decoration: underline;
+    .headline-title a:hover {
         color: #FFD480;
+        text-decoration: underline;
     }
-    .news-summary {
-        color: #EAEAEA;
+    .headline-summary {
         font-family: 'Roboto', sans-serif;
         font-size: 0.95rem;
         line-height: 1.5em;
-        margin-bottom: 4px;
+        color: #EAEAEA;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    html = "<div class='news-feed'>"
-    for item in news_items:
-        html += f"""
-        <div class='news-item'>
-            <div class='news-title'>
-                <a href='{item['url']}' target='_blank'>{item['title']}</a>
+    # Render each article as a clean clickable card
+    for article in news_items:
+        st.markdown(
+            f"""
+            <div class='headline-card'>
+                <div class='headline-title'>
+                    <a href="{article['link']}" target="_blank">{article['title']}</a>
+                </div>
+                <div class='headline-summary'>
+                    {article['summary']}
+                </div>
             </div>
-            <div class='news-summary'>{item['summary']}</div>
-        </div>
-        """
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True
+        )
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")

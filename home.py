@@ -148,7 +148,7 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (3x2 Grid + Team Colors) ----------
+# ---------- SEASON LEADERS (True 3x2 Grid + Team Colors) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;text-align:center;">
@@ -165,7 +165,6 @@ if not df.empty:
     df["FG3M_Avg"] = (df["FG3M"] / df["GP"]).round(1)
     df["BLK_Avg"] = (df["BLK"] / df["GP"]).round(1)
     df["STL_Avg"] = (df["STL"] / df["GP"]).round(1)
-    df["TOV_Avg"] = (df["TOV"] / df["GP"]).round(1)
 
     categories = {
         "Points": "PTS_Avg",
@@ -192,35 +191,33 @@ if not df.empty:
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(250px, 1fr));
         gap: 25px;
         justify-items: center;
-        margin-top: 15px;
+        margin: 30px auto;
+        max-width: 1000px;
     }
     @media (max-width: 900px) {
-        .leader-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
+        .leader-grid { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
     }
     @media (max-width: 600px) {
-        .leader-grid {
-            grid-template-columns: 1fr;
-        }
+        .leader-grid { grid-template-columns: 1fr; }
     }
     .leader-card {
         position: relative;
         background: radial-gradient(circle at top, #1a1a1a 0%, #0b0b0b 100%);
         border-radius: 18px;
         padding: 18px 10px;
-        width: 230px;
         text-align: center;
-        box-shadow: 0 0 18px rgba(255,111,0,0.25);
+        box-shadow: 0 0 15px rgba(255,111,0,0.25);
         transition: all 0.25s ease-in-out;
         overflow: hidden;
+        width: 100%;
+        max-width: 250px;
     }
     .leader-card:hover {
         transform: translateY(-5px);
-        box-shadow: 0 0 28px var(--team-color);
+        box-shadow: 0 0 25px var(--team-color);
     }
     .leader-name {
         font-family: 'Oswald', sans-serif;
@@ -238,13 +235,13 @@ if not df.empty:
         z-index: 1;
     }
     .leader-photo {
-        width: 130px;
-        height: 130px;
+        width: 120px;
+        height: 120px;
         border-radius: 50%;
         overflow: hidden;
         margin: 0 auto 10px;
         border: 3px solid var(--team-color);
-        box-shadow: 0 0 20px var(--team-color);
+        box-shadow: 0 0 15px var(--team-color);
         position: relative;
         z-index: 1;
     }
@@ -257,49 +254,50 @@ if not df.empty:
     .leader-cat {
         font-family: 'Oswald', sans-serif;
         color: #FF9F43;
-        font-size: 1.1rem;
+        font-size: 1rem;
         margin-top: 8px;
         position: relative;
         z-index: 1;
     }
     .leader-stat {
         font-family: 'Oswald', sans-serif;
-        font-size: 2.2rem;
+        font-size: 2rem;
         color: var(--team-color);
         font-weight: bold;
-        text-shadow: 0 0 12px var(--team-color);
-        margin-top: 2px;
+        text-shadow: 0 0 10px var(--team-color);
+        margin-top: 4px;
         position: relative;
         z-index: 1;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='leader-grid'>", unsafe_allow_html=True)
+    cards_html = "<div class='leader-grid'>"
+
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
         team_color = team_colors.get(team_abbr, "#FF6F00")
 
-        st.markdown(
-            f"""
-            <div class='leader-card' style="--team-color: {team_color};">
-                <div class='leader-name'>{leader["PLAYER"]}</div>
-                <div class='leader-team'>{leader["TEAM"]}</div>
-                <div class='leader-photo'>
-                    <img src='{photo}' alt='{leader["PLAYER"]}'>
-                </div>
-                <div class='leader-cat'>{cat}</div>
-                <div class='leader-stat'>{leader[key]}</div>
+        cards_html += f"""
+        <div class='leader-card' style="--team-color: {team_color};">
+            <div class='leader-name'>{leader["PLAYER"]}</div>
+            <div class='leader-team'>{leader["TEAM"]}</div>
+            <div class='leader-photo'>
+                <img src='{photo}' alt='{leader["PLAYER"]}'>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
-    st.markdown("</div>", unsafe_allow_html=True)
+            <div class='leader-cat'>{cat}</div>
+            <div class='leader-stat'>{leader[key]}</div>
+        </div>
+        """
+
+    cards_html += "</div>"
+    st.markdown(cards_html, unsafe_allow_html=True)
 
 else:
     st.info("Leader data not available.")
+
 
 # ---------- INJURY REPORT ----------
 import requests

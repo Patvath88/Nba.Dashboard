@@ -148,7 +148,7 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (Vertical Spotlight + Team Logos) ----------
+# ---------- SEASON LEADERS (3x2 Grid + Team Colors) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;text-align:center;">
@@ -176,21 +176,43 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
+    # Team color mapping
+    team_colors = {
+        "ATL": "#E03A3E", "BOS": "#007A33", "BKN": "#000000", "CHA": "#1D1160",
+        "CHI": "#CE1141", "CLE": "#860038", "DAL": "#00538C", "DEN": "#0E2240",
+        "DET": "#C8102E", "GSW": "#1D428A", "HOU": "#CE1141", "IND": "#FDBB30",
+        "LAC": "#C8102E", "LAL": "#552583", "MEM": "#5D76A9", "MIA": "#98002E",
+        "MIL": "#00471B", "MIN": "#0C2340", "NOP": "#0C2340", "NYK": "#F58426",
+        "OKC": "#007AC1", "ORL": "#0077C0", "PHI": "#006BB6", "PHX": "#1D1160",
+        "POR": "#E03A3E", "SAC": "#5A2D81", "SAS": "#C4CED4", "TOR": "#CE1141",
+        "UTA": "#002B5C", "WAS": "#002B5C"
+    }
+
     st.markdown("""
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        grid-template-columns: repeat(3, 1fr);
         gap: 25px;
         justify-items: center;
         margin-top: 15px;
     }
+    @media (max-width: 900px) {
+        .leader-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+    @media (max-width: 600px) {
+        .leader-grid {
+            grid-template-columns: 1fr;
+        }
+    }
     .leader-card {
         position: relative;
-        background: radial-gradient(circle at top, #1a1a1a 0%, #0b0b0b 90%);
+        background: radial-gradient(circle at top, #1a1a1a 0%, #0b0b0b 100%);
         border-radius: 18px;
         padding: 18px 10px;
-        width: 260px;
+        width: 230px;
         text-align: center;
         box-shadow: 0 0 18px rgba(255,111,0,0.25);
         transition: all 0.25s ease-in-out;
@@ -198,20 +220,7 @@ if not df.empty:
     }
     .leader-card:hover {
         transform: translateY(-5px);
-        box-shadow: 0 0 28px rgba(255,111,0,0.45);
-    }
-    .leader-card::before {
-        content: "";
-        background: var(--team-logo);
-        background-size: 80%;
-        background-position: center;
-        background-repeat: no-repeat;
-        opacity: 0.1;
-        position: absolute;
-        top: 0; left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 0;
+        box-shadow: 0 0 28px var(--team-color);
     }
     .leader-name {
         font-family: 'Oswald', sans-serif;
@@ -234,8 +243,8 @@ if not df.empty:
         border-radius: 50%;
         overflow: hidden;
         margin: 0 auto 10px;
-        border: 3px solid #FF6F00;
-        box-shadow: 0 0 20px rgba(255,111,0,0.4);
+        border: 3px solid var(--team-color);
+        box-shadow: 0 0 20px var(--team-color);
         position: relative;
         z-index: 1;
     }
@@ -256,9 +265,9 @@ if not df.empty:
     .leader-stat {
         font-family: 'Oswald', sans-serif;
         font-size: 2.2rem;
-        color: #FF6F00;
+        color: var(--team-color);
         font-weight: bold;
-        text-shadow: 0 0 12px rgba(255,111,0,0.6);
+        text-shadow: 0 0 12px var(--team-color);
         margin-top: 2px;
         position: relative;
         z-index: 1;
@@ -271,11 +280,11 @@ if not df.empty:
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
-        logo_url = f"https://cdn.nba.com/logos/nba/{team_abbr}/primary/L/logo.svg"
+        team_color = team_colors.get(team_abbr, "#FF6F00")
 
         st.markdown(
             f"""
-            <div class='leader-card' style="--team-logo: url('{logo_url}');">
+            <div class='leader-card' style="--team-color: {team_color};">
                 <div class='leader-name'>{leader["PLAYER"]}</div>
                 <div class='leader-team'>{leader["TEAM"]}</div>
                 <div class='leader-photo'>

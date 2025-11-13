@@ -287,7 +287,7 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 🏆 NBA STANDINGS — Corrected & Resilient
+# 🏆 NBA STANDINGS — FIXED HTML RENDERING + LAST GAME INFO
 # =========================================================
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
@@ -299,13 +299,12 @@ stand = get_standings()
 
 @st.cache_data(ttl=300)
 def fetch_recent_games():
-    """Fetch scoreboard data for the last few days and pick the valid team dataframe."""
+    """Fetch recent games with team stats included."""
     all_games = []
     for days_back in range(1, 4):
         date_str = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y-%m-%d")
         try:
             sb = scoreboardv2.ScoreboardV2(game_date=date_str)
-            # find which dataframe contains TEAM_ID
             valid_df = next((df for df in sb.get_data_frames() if "TEAM_ID" in df.columns), None)
             if valid_df is not None:
                 all_games.append(valid_df)
@@ -316,7 +315,6 @@ def fetch_recent_games():
     df = pd.concat(all_games)
     df = df.rename(columns={
         "TEAM_ID": "TeamID",
-        "GAME_ID": "GameID",
         "TEAM_ABBREVIATION": "TeamAbbr",
         "PTS": "Points",
         "PLUS_MINUS": "PlusMinus",
@@ -327,10 +325,7 @@ def fetch_recent_games():
 recent_games = fetch_recent_games()
 
 if not stand.empty:
-    # normalize columns
     stand.columns = [c.replace(" ", "") for c in stand.columns]
-
-    # detect correct team ID column
     team_id_col = next((c for c in stand.columns if "TeamID" in c), None)
     team_abbr_col = next((c for c in stand.columns if c.lower() in ["teamtricode", "teamabbreviation", "teamslug"]), None)
 
@@ -378,11 +373,11 @@ if not stand.empty:
             html += f"""
             <div style='margin:8px 0;padding:10px 12px;
                         border-radius:10px;background:#111;
-                        box-shadow:0 0 8px rgba(255,111,0,0.1);
-                        transition:0.3s ease;'>
+                        box-shadow:0 0 8px rgba(255,111,0,0.15);
+                        transition:all 0.3s ease-in-out;'>
                 <div style='display:flex;align-items:center;justify-content:space-between;'>
                     <div style='display:flex;align-items:center;gap:10px;'>
-                        <img src='{logo_url}' width='34' height='34' style='border-radius:6px;'>
+                        <img src="{logo_url}" width="36" height="36" style="border-radius:6px;">
                         <div style='color:#FFF;font-family:"Oswald",sans-serif;font-size:1.05rem;'>
                             {team_name}
                         </div>

@@ -287,11 +287,14 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 💀 INJURY REPORT
+# 💀 INJURY REPORT (Improved — Filtered + Grouped by Team)
 # =========================================================
-st.markdown("<h2>💀 Injury Report</h2>", unsafe_allow_html=True)
+st.markdown("<h2>💀 Confirmed Injury Report</h2>", unsafe_allow_html=True)
+st.caption("Pulled live from ESPN — only confirmed OUT or long-term injuries shown")
+
 @st.cache_data(ttl=900)
 def fetch_injury_report():
+    """Scrape ESPN NBA injury report with team + confirmed filter."""
     url = "https://www.espn.com/nba/injuries"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
@@ -307,18 +310,61 @@ def fetch_injury_report():
             cols = [c.get_text(strip=True) for c in row.find_all("td")]
             if len(cols) >= 4:
                 player, pos, injury, status = cols[:4]
-                data.append({"team": team_name, "player": player, "position": pos, "injury": injury, "status": status})
+                # filter only confirmed/long-term absences
+                if any(x in status.lower() for x in ["out", "suspended", "indefinite", "season"]):
+                    data.append({
+                        "team": team_name,
+                        "player": player,
+                        "position": pos,
+                        "injury": injury,
+                        "status": status
+                    })
     return pd.DataFrame(data)
 
 inj_df = fetch_injury_report()
-if not inj_df.empty:
-    teams = sorted(inj_df["team"].unique())
-    team = st.selectbox("Select a team to view injuries:", ["All Teams"] + teams)
-    if team != "All Teams":
-        inj_df = inj_df[inj_df["team"] == team]
-    st.dataframe(inj_df, use_container_width=True)
+
+if inj_df.empty:
+    st.warning("No confirmed injuries currently listed.")
 else:
-    st.warning("No injury data currently available from ESPN.")
+    teams = sorted(inj_df["team"].unique())
+    selected_team = st.selectbox("Filter by team:", ["All Teams"] + teams)
+
+    if selected_team != "All Teams":
+        inj_df = inj_df[inj_df["team"] == selected_team]
+
+    st.markdown("""
+    <style>
+    .injury-card {
+        background: linear-gradient(180deg, #0B0B0B, #111);
+        border-radius: 12px;
+        padding: 12px 15px;
+        margin-bottom: 10px;
+        box-shadow: 0 0 15px rgba(255,0,0,0.25);
+        transition: all 0.25s ease-in-out;
+    }
+    .injury-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 0 25px rgba(0,102,255,0.35);
+    }
+    .injury-player { font-weight: bold; color: #FF3B3B; font-size: 1.1rem; }
+    .injury-status { color: #66B3FF; font-weight: bold; }
+    .injury-info { font-size: 0.9rem; color: #EAEAEA; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    for team in sorted(inj_df["team"].unique()):
+        team_data = inj_df[inj_df["team"] == team]
+        if team_data.empty:
+            continue
+        with st.expander(f"🏀 {team} ({len(team_data)} confirmed injuries)", expanded=False):
+            for _, row in team_data.iterrows():
+                st.markdown(f"""
+                    <div class='injury-card'>
+                        <div class='injury-player'>{row['player']} ({row['position']})</div>
+                        <div class='injury-info'>{row['injury']}</div>
+                        <div class='injury-status'>{row['status']}</div>
+                    </div>
+                """, unsafe_allow_html=True)
 
 # =========================================================
 # 🏆 STANDINGS

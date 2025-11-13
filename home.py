@@ -286,3 +286,120 @@ def render_games_section(title, games):
 render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
+# =========================================================
+# 🏆 NBA STANDINGS — Corrected + Last Game Summary
+# =========================================================
+st.markdown("""
+<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
+🏆 NBA Standings
+</h2>
+""", unsafe_allow_html=True)
+
+stand = get_standings()
+
+@st.cache_data(ttl=300)
+def fetch_recent_games():
+    """Fetch recent games from the past 3 days to show last results."""
+    all_games = []
+    for days_back in range(1, 4):
+        date_str = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y-%m-%d")
+        try:
+            data = scoreboardv2.ScoreboardV2(game_date=date_str).get_data_frames()[0]
+            all_games.append(data)
+        except Exception:
+            continue
+    if not all_games:
+        return pd.DataFrame()
+    df = pd.concat(all_games)
+    df = df.rename(columns={
+        "TEAM_ID": "TeamID",
+        "GAME_ID": "GameID",
+        "TEAM_ABBREVIATION": "TeamAbbr",
+        "PTS": "Points",
+        "PLUS_MINUS": "PlusMinus",
+        "MATCHUP": "Matchup"
+    })
+    return df
+
+recent_games = fetch_recent_games()
+
+if not stand.empty:
+    # normalize column names
+    stand.columns = [c.replace(" ", "") for c in stand.columns]
+    # detect valid team ID column
+    team_id_col = next((c for c in stand.columns if "TeamID" in c), None)
+    team_abbr_col = next((c for c in stand.columns if c.lower() in ["teamtricode", "teamabbreviation", "teamslug"]), None)
+
+    east = stand[stand["Conference"] == "East"].sort_values("PlayoffRank")
+    west = stand[stand["Conference"] == "West"].sort_values("PlayoffRank")
+
+    def get_last_game(team_id):
+        """Return opponent, result, and W/L for a given team ID."""
+        if team_id is None or team_id not in recent_games["TeamID"].values:
+            return "—", "No recent game", ""
+        g = recent_games[recent_games["TeamID"] == team_id].iloc[-1]
+        opp_team = g["Matchup"].replace(g["TeamAbbr"], "").replace("vs.", "").replace("@", "").strip()
+        result = f"{int(g['Points'])}–{int(g['Points'] - g['PlusMinus'])}"
+        status = "Won" if g["PlusMinus"] > 0 else "Lost"
+        return opp_team, f"{status} {result}", status
+
+    def render_leaderboard(df, conference_name):
+        html = f"""
+        <div style='background:linear-gradient(180deg,#0b0b0b,#121212);
+                    border-radius:12px;padding:20px;margin-bottom:20px;
+                    box-shadow:0 0 20px rgba(255,111,0,0.25);'>
+            <h3 style='color:#FF9F43;text-shadow:0 0 8px #FF9F43;
+                       font-family:"Oswald",sans-serif;text-align:center;'>
+                {conference_name} Conference
+            </h3>
+            <div style='padding:8px 0;'>
+        """
+        for _, row in df.iterrows():
+            team_id = row.get(team_id_col)
+            team_abbr = str(row.get(team_abbr_col, "")).lower()
+            logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{team_abbr}.png"
+            team_name = f"{row.get('TeamCity', '')} {row.get('TeamName', '')}"
+            opp_team, result, status = get_last_game(team_id)
+
+            winpct = round(row.get('WinPCT', 0) * 100, 1)
+            streak = row.get('Streak', '—')
+            status_color = "#00FF80" if "Won" in result else "#FF5252"
+
+            html += f"""
+            <div style='margin:8px 0;padding:10px 12px;
+                        border-radius:10px;background:#111;
+                        box-shadow:0 0 8px rgba(255,111,0,0.1);
+                        transition:0.3s ease;'>
+                <div style='display:flex;align-items:center;justify-content:space-between;'>
+                    <div style='display:flex;align-items:center;gap:10px;'>
+                        <img src='{logo_url}' width='34' height='34' style='border-radius:6px;'>
+                        <div style='color:#FFF;font-family:"Oswald",sans-serif;font-size:1.05rem;'>
+                            {team_name}
+                        </div>
+                    </div>
+                    <div style='color:#FFB266;font-family:"Roboto",sans-serif;'>
+                        <b>{row.get('WINS', 0)}-{row.get('LOSSES', 0)}</b>
+                        <span style='color:#66B3FF;font-size:0.85rem;margin-left:8px;'>{winpct}%</span>
+                    </div>
+                </div>
+                <div style='margin-left:44px;margin-top:6px;color:{status_color};
+                            font-family:"Roboto";font-size:0.9rem;'>
+                    Last Game: {result} vs {opp_team}
+                </div>
+                <div style='margin-left:44px;color:#FF9F43;font-size:0.9rem;
+                            font-family:"Oswald";margin-top:2px;'>
+                    Streak: {streak}
+                </div>
+            </div>
+            """
+        html += "</div></div>"
+        return html
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(render_leaderboard(east, "Eastern"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(render_leaderboard(west, "Western"), unsafe_allow_html=True)
+
+else:
+    st.warning("Standings currently unavailable.")

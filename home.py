@@ -7,6 +7,7 @@ from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboard
 from nba_api.stats.static import players, teams
 from zoneinfo import ZoneInfo
 import os
+import feedparser  # For Google News fallback
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="Hot Shot Props | NBA Home Hub", page_icon="🏀", layout="wide")
@@ -45,49 +46,71 @@ def get_games_today():
 @st.cache_data(ttl=600)
 def get_injuries():
     try:
-        url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
-        return pd.DataFrame(requests.get(url, timeout=10).json()["league"]["injuries"])
-    except:
+        url="https://cdn.nba.com/static/json/injury/injury_2025.json"
+        return pd.DataFrame(requests.get(url,timeout=10).json()["league"]["injuries"])
+    except: 
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def player_id_map():
-    return {p["full_name"]: p["id"] for p in players.get_active_players()}
+    return {p["full_name"]:p["id"] for p in players.get_active_players()}
 
 def player_photo(name):
-    pid = player_id_map().get(name)
+    pid=player_id_map().get(name)
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
            "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
 def team_logo(abbr):
     return f"https://cdn.nba.com/logos/nba/{abbr}/primary/L/logo.svg"
 
-# ---------- LATEST NBA NEWS ----------
-st.markdown("## 🔔 Latest NBA News")
 
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "YOUR_API_KEY_HERE")
+# ---------- HEADER ----------
+st.title("🏠 Hot Shot Props — NBA Home Hub")
+st.caption("Live leaders, games, injuries & standings")
+
+# ---------- LATEST NBA NEWS (moved below header) ----------
+st.markdown("## 📰 Latest NBA News")
+
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "2c85c76c2b2a434d9dd402e2380db754")
 
 @st.cache_data(ttl=300)
-def fetch_nba_news(api_key, count=3):
-    url = f"https://newsapi.org/v2/everything?q=NBA&language=en&sortBy=publishedAt&pageSize={count}&apiKey={api_key}"
+def fetch_news_from_newsapi(api_key, count=5):
+    url = f"https://newsapi.org/v2/everything?q=NBA%20basketball&language=en&sortBy=publishedAt&pageSize={count}&apiKey={api_key}"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
             return []
-        articles = r.json().get("articles", [])
-        news = []
-        for art in articles:
-            image = art.get("urlToImage") or ""
-            news.append({
-                "title": art.get("title", ""),
-                "url": art.get("url", ""),
-                "image": image
-            })
-        return news
+        data = r.json().get("articles", [])
+        if not data:
+            return []
+        return [{"title": a.get("title"), "url": a.get("url"), "image": a.get("urlToImage")} for a in data if a.get("url")]
     except Exception:
         return []
 
-news_items = fetch_nba_news(NEWSAPI_KEY, count=3)
+@st.cache_data(ttl=300)
+def fetch_news_from_google(count=5):
+    """Fallback to Google News RSS feed"""
+    feed = feedparser.parse("https://news.google.com/rss/search?q=NBA&hl=en-US&gl=US&ceid=US:en")
+    items = []
+    for entry in feed.entries[:count]:
+        # Extract image if available
+        img_url = ""
+        if "media_content" in entry:
+            img_url = entry.media_content[0]['url']
+        elif "links" in entry and len(entry.links) > 1 and 'image' in entry.links[1].type:
+            img_url = entry.links[1].href
+        items.append({
+            "title": entry.title,
+            "url": entry.link,
+            "image": img_url or "https://cdn-icons-png.flaticon.com/512/814/814513.png"
+        })
+    return items
+
+# Try NewsAPI first, fallback to Google News
+news_items = fetch_news_from_newsapi(NEWSAPI_KEY, 4)
+if not news_items:
+    news_items = fetch_news_from_google(4)
+
 if not news_items:
     st.info("No recent NBA news found.")
 else:
@@ -100,10 +123,6 @@ else:
                 f"</a><br><small>{item['title']}</small>",
                 unsafe_allow_html=True
             )
-
-# ---------- HEADER ----------
-st.title("🏠 Hot Shot Props — NBA Home Hub")
-st.caption("Live leaders, games, injuries & standings")
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")
@@ -126,6 +145,7 @@ if not df.empty:
         "Steals": "STL_Avg",
         "Turnovers": "TOV_Avg"
     }
+
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
@@ -149,7 +169,7 @@ if not inj.empty:
         elif "Questionable" in r["status"]: scls = "status-questionable"
         st.markdown(
             f"<div class='section'><b>{r['player']}</b> — {r['team']}<br>"
-            f"<span class='{scls}'>{r['status']}</span> — {r.get('description', '')}</div>",
+            f"<span class='{scls}'>{r['status']}</span> — {r.get('description','')}</div>",
             unsafe_allow_html=True)
 else:
     st.warning("No injury data available.")

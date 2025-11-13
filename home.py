@@ -287,7 +287,7 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 🩻 LATEST INJURY NEWS (Top 3 Live from ESPN)
+# 🩻 LATEST CONFIRMED INJURY NEWS (Filtered ESPN Feed)
 # =========================================================
 st.markdown("""
 <h2 style="color:#FF3B3B;text-shadow:0 0 10px #FF3B3B;font-family:'Oswald',sans-serif;">
@@ -296,35 +296,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def fetch_latest_injury_news(limit=3):
-    """Pull the latest NBA injury headlines from ESPN."""
+def fetch_filtered_injury_news(limit=5):
+    """Fetch only true injury-related news from ESPN feed."""
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?category=injury"
+    keywords = ["injury", "out", "ankle", "knee", "foot", "hand", "wrist", "elbow",
+                "shoulder", "groin", "hamstring", "quad", "torn", "surgery",
+                "illness", "back", "leg", "day-to-day", "questionable", "fracture"]
     news_items = []
     try:
         res = requests.get(url, timeout=10).json()
         articles = res.get("articles", [])
-        for a in articles[:limit]:
-            headline = a.get("headline", "No headline")
-            description = a.get("description", "No description available.")
-            link = a.get("links", {}).get("web", {}).get("href", "")
-            date = a.get("published", "")[:10]
-            team_name = a.get("teams", [{}])[0].get("displayName", "Unknown Team")
-
-            news_items.append({
-                "headline": headline,
-                "desc": description,
-                "link": link,
-                "date": date,
-                "team": team_name
-            })
+        for a in articles:
+            headline = a.get("headline", "").strip()
+            description = a.get("description", "").strip()
+            full_text = f"{headline.lower()} {description.lower()}"
+            if any(word in full_text for word in keywords):
+                link = a.get("links", {}).get("web", {}).get("href", "")
+                date = a.get("published", "")[:10]
+                team = a.get("teams", [{}])[0].get("displayName", "Unknown Team")
+                news_items.append({
+                    "headline": headline,
+                    "desc": description,
+                    "link": link,
+                    "date": date,
+                    "team": team
+                })
+            if len(news_items) >= limit:
+                break
     except Exception as e:
-        st.error(f"Error fetching injury news: {e}")
+        st.error(f"Error fetching filtered injury news: {e}")
     return news_items
 
-news_items = fetch_latest_injury_news()
+news_items = fetch_filtered_injury_news(limit=3)
 
 if not news_items:
-    st.info("No recent NBA injury news available at this moment.")
+    st.warning("No recent confirmed NBA injury news found.")
 else:
     st.markdown("""
     <style>

@@ -13,7 +13,7 @@ st.set_page_config(page_title="🎯 Upcoming Game Projections", layout="wide")
 st.title("🏀 Upcoming Game Projections")
 
 # ---------------------- REFRESH ----------------------
-REFRESH_INTERVAL = 300
+REFRESH_INTERVAL = 300  # seconds
 if "last_refresh" not in st.session_state:
     st.session_state["last_refresh"] = time.time()
 if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
@@ -41,7 +41,6 @@ nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
 
 nba_teams = teams.get_teams()
-team_map = {t["full_name"]: t for t in nba_teams}
 abbr_map = {t["abbreviation"].lower(): t for t in nba_teams}
 
 # ---------------------- HELPERS ----------------------
@@ -78,19 +77,14 @@ def get_games_from_espn(date_to_fetch: date):
 
             utc_time = datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
             est_time = utc_time.astimezone(ZoneInfo("America/New_York"))
-            time_str = est_time.strftime("%I:%M %p ET")
-
-            broadcast = (comp.get("broadcasts")[0]["names"][0]
-                         if comp.get("broadcasts") else "TBD")
 
             games.append({
                 "date": est_time.date(),
-                "time": time_str,
+                "time": est_time.strftime("%I:%M %p ET"),
                 "home_team": home["team"]["displayName"],
                 "home_abbr": home["team"]["abbreviation"].lower(),
                 "away_team": away["team"]["displayName"],
                 "away_abbr": away["team"]["abbreviation"].lower(),
-                "broadcast": broadcast
             })
         return games
     except Exception as e:
@@ -99,18 +93,28 @@ def get_games_from_espn(date_to_fetch: date):
 
 
 def get_next_game_for_team(team_abbr):
-    """Find the next upcoming game for a given team abbreviation."""
+    """Find the next scheduled game for the given team abbreviation."""
     today = date.today()
-    for d in range(0, 4):  # look up to 3 days ahead
+    for d in range(0, 5):  # look up to 5 days ahead
         games = get_games_from_espn(today + timedelta(days=d))
         for g in games:
-            if g["home_abbr"] == team_abbr.lower() or g["away_abbr"] == team_abbr.lower():
-                opponent = g["away_team"] if g["home_abbr"] == team_abbr.lower() else g["home_team"]
-                return g["date"], opponent
-    return None, None
+            if g["home_abbr"] == team_abbr.lower():
+                return {
+                    "date": g["date"],
+                    "time": g["time"],
+                    "home_away": "Home",
+                    "opponent": g["away_team"]
+                }
+            elif g["away_abbr"] == team_abbr.lower():
+                return {
+                    "date": g["date"],
+                    "time": g["time"],
+                    "home_away": "Away",
+                    "opponent": g["home_team"]
+                }
+    return None
 
-
-# ---------------------- DISPLAY UPCOMING ----------------------
+# ---------------------- FILTER UPCOMING ----------------------
 today = pd.Timestamp.now().normalize()
 upcoming_games = []
 
@@ -133,8 +137,7 @@ for player_name, group in df_upcoming.groupby("player"):
 
     # Try to determine player's team abbreviation
     team_abbr = str(group.iloc[-1].get("team_abbr", "")).lower()
-    game_date, opponent = get_next_game_for_team(team_abbr)
-
+    next_game = get_next_game_for_team(team_abbr)
     latest_proj = group.iloc[-1].to_dict()
 
     st.markdown("---")
@@ -143,11 +146,18 @@ for player_name, group in df_upcoming.groupby("player"):
         photo = get_player_photo(pid)
         if photo:
             st.image(photo, width=180)
+
     with col_info:
         st.subheader(player_name)
-        st.caption(f"📅 **Game Date:** {game_date or 'TBD'} | 🆚 **Opponent:** {opponent or 'TBD'}")
+        if next_game:
+            st.caption(
+                f"📅 **Game Date:** {next_game['date']} | 🕒 {next_game['time']} | "
+                f"🏠 **{next_game['home_away']}** | 🆚 **{next_game['opponent']}**"
+            )
+        else:
+            st.caption("📅 **Game Date:** TBD | 🆚 **Opponent:** TBD")
 
-    compare_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
+    compare_stats = ["PTS", "REB", "AST", "FG3M", "STL", "BLK", "TOV", "PRA"]
     cols = st.columns(4)
     for i, stat in enumerate(compare_stats):
         val = latest_proj.get(stat, 0)
@@ -170,3 +180,4 @@ for player_name, group in df_upcoming.groupby("player"):
             )
 
     st.info("🕒 Upcoming game — awaiting actual stats after tip-off.")
+

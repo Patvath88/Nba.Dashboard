@@ -190,119 +190,90 @@ import requests
 from bs4 import BeautifulSoup
 
 st.markdown("## 💀 Injury Report")
-st.caption("Data sourced live from ESPN.com")
+st.caption("Live injury data — pulled directly from ESPN.com")
 
 @st.cache_data(ttl=900)
 def fetch_injury_report():
-    """Scrape ESPN NBA injury report by team."""
+    """Scrape ESPN NBA injury report (team + player)."""
     url = "https://www.espn.com/nba/injuries"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    tables = soup.find_all("table", class_="Table")
-    if not tables:
-        return pd.DataFrame()
+    data = []
+    # Each team section is wrapped in a div with class "Wrapper"
+    sections = soup.find_all("section", class_="Card")
+    for sec in sections:
+        team_header = sec.find("h2")
+        team_name = team_header.get_text(strip=True) if team_header else "Unknown Team"
 
-    all_rows = []
-    for table in tables:
-        team_header = table.find_previous("h2")
-        team_name = team_header.text.strip() if team_header else "Unknown Team"
-
-        for row in table.find_all("tr")[1:]:
-            cols = [c.text.strip() for c in row.find_all("td")]
+        table = sec.find("table")
+        if not table:
+            continue
+        rows = table.find_all("tr")[1:]
+        for r_ in rows:
+            cols = [c.get_text(strip=True) for c in r_.find_all("td")]
             if len(cols) >= 4:
                 player, pos, injury, status = cols[:4]
-                all_rows.append({
+                data.append({
                     "team": team_name,
                     "player": player,
                     "position": pos,
                     "injury": injury,
                     "status": status
                 })
+    return pd.DataFrame(data)
 
-    return pd.DataFrame(all_rows)
 
 inj_df = fetch_injury_report()
 
 if inj_df.empty:
-    st.warning("No current injury data available from ESPN.")
+    st.warning("No injury data currently available from ESPN.")
 else:
-    st.markdown("""
-    <style>
-    .inj-card {
-        background: #1C1C1C;
-        border-radius: 10px;
-        padding: 12px 16px;
-        margin-bottom: 10px;
-        box-shadow: 0 0 8px rgba(255,111,0,0.1);
-        transition: all 0.25s ease-in-out;
-    }
-    .inj-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 0 14px rgba(255,111,0,0.25);
-    }
-    .inj-title {
-        font-family: 'Oswald', sans-serif;
-        color: #FF6F00;
-        font-size: 1rem;
-        margin-bottom: 4px;
-    }
-    .inj-text {
-        color: #EAEAEA;
-        font-family: 'Roboto', sans-serif;
-        font-size: 0.9rem;
-        line-height: 1.3em;
-    }
-    .inj-status {
-        font-weight: bold;
-    }
-    .inj-out { color: #FF5252; }
-    .inj-questionable { color: #FFD700; }
-    .inj-active { color: #00FF80; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # --- Team Filter ---
+    # --- Dropdown filter ---
     teams = sorted(inj_df["team"].unique())
     selected_team = st.selectbox("Select a team to view injuries:", ["All Teams"] + teams)
 
     if selected_team != "All Teams":
         inj_df = inj_df[inj_df["team"] == selected_team]
 
-    # --- Compact Scrollable Display ---
-    container = st.container()
-    with container:
-        for _, row in inj_df.iterrows():
-            status_class = "inj-active"
-            if "Out" in row["status"]:
-                status_class = "inj-out"
-            elif "Questionable" in row["status"] or "Day-To-Day" in row["status"]:
-                status_class = "inj-questionable"
-
-            st.markdown(
-                f"""
-                <div class='inj-card'>
-                    <div class='inj-title'>{row['player']} <span style='font-size:0.9em;'>({row['position']})</span></div>
-                    <div class='inj-text'>
-                        <b>Injury:</b> {row['injury']}<br>
-                        <b>Status:</b> <span class='inj-status {status_class}'>{row['status']}</span><br>
-                        <b>Team:</b> {row['team']}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    # Add scrollbar for long lists
+    # --- Compact styled table ---
     st.markdown("""
-    <style>
-    .stContainer {
-        overflow-y: auto !important;
-        max-height: 700px;
-    }
-    </style>
+        <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            background-color: #FF6F00;
+            color: white;
+            font-family: 'Oswald', sans-serif;
+            padding: 10px;
+            text-align: left;
+            font-size: 1rem;
+        }
+        td {
+            background-color: #1C1C1C;
+            color: #EAEAEA;
+            padding: 8px 10px;
+            border-bottom: 1px solid #333;
+            font-size: 0.9rem;
+            font-family: 'Roboto', sans-serif;
+        }
+        tr:hover td {
+            background-color: #2A2A2A;
+        }
+        </style>
     """, unsafe_allow_html=True)
+
+    # Display team name as section header
+    if selected_team != "All Teams":
+        st.markdown(f"### 🏀 {selected_team}")
+
+    # Convert to HTML table (for styling control)
+    html_table = inj_df.to_html(index=False, escape=False)
+    st.markdown(html_table, unsafe_allow_html=True)
+
 
 
 # ---------- STANDINGS ----------

@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import time
-from nba_api.stats.static import players, teams
+from nba_api.stats.endpoints import commonplayerinfo
+from nba_api.stats.static import players
 from PIL import Image
 import requests
 from io import BytesIO
@@ -25,7 +26,7 @@ if st.button("🔁 Manual Refresh Now"):
     st.session_state["last_refresh"] = time.time()
     st.rerun()
 
-# ---------------------- LOAD DATA ----------------------
+# ---------------------- LOAD PROJECTIONS ----------------------
 path = "saved_projections.csv"
 try:
     data = pd.read_csv(path)
@@ -39,7 +40,6 @@ if data.empty:
 
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
-nba_teams = teams.get_teams()
 
 # ---------------------- HELPERS ----------------------
 def get_player_photo(pid):
@@ -57,29 +57,17 @@ def get_player_photo(pid):
     return None
 
 
-# ESPN team abbreviations mapping (normalize all possibilities)
-TEAM_MAP = {
-    "atl": "atl", "bkn": "bkn", "bos": "bos", "cha": "cha", "chi": "chi", "cle": "cle",
-    "dal": "dal", "den": "den", "det": "det", "gsw": "gsw", "hou": "hou", "ind": "ind",
-    "lac": "lac", "lal": "lal", "mem": "mem", "mia": "mia", "mil": "mil", "min": "min",
-    "nop": "nop", "nyk": "nyk", "okc": "okc", "orl": "orl", "phi": "phi", "phx": "phx",
-    "por": "por", "sac": "sac", "sas": "sas", "tor": "tor", "uta": "uta", "wsh": "wsh",
-    "was": "wsh", "gs": "gsw", "no": "nop"
-}
-
-def normalize_team_abbr(abbr_or_name: str) -> str:
-    """Try to normalize any team name or abbreviation to ESPN's short form."""
-    if not abbr_or_name:
+def get_player_team_abbr(player_name: str) -> str:
+    """Get player's current team abbreviation directly from NBA API."""
+    try:
+        pid = player_map.get(player_name)
+        if not pid:
+            return ""
+        info = commonplayerinfo.CommonPlayerInfo(player_id=pid).get_data_frames()[0]
+        team_abbr = str(info.loc[0, "TEAM_ABBREVIATION"]).lower()
+        return team_abbr
+    except Exception:
         return ""
-    abbr = str(abbr_or_name).lower().strip()
-    # If exact match in map
-    if abbr in TEAM_MAP:
-        return TEAM_MAP[abbr]
-    # Try matching full team names (like "Cavaliers" → "cle")
-    for t in nba_teams:
-        if abbr in t["full_name"].lower() or abbr in t["nickname"].lower():
-            return TEAM_MAP.get(t["abbreviation"].lower(), "")
-    return ""
 
 
 @st.cache_data(ttl=600)
@@ -110,29 +98,27 @@ def get_games_from_espn(date_to_fetch: date):
                 "away_abbr": away["team"]["abbreviation"].lower(),
             })
         return games
-    except Exception as e:
-        st.error(f"Error fetching ESPN data: {e}")
+    except Exception:
         return []
 
 
 def get_next_game_for_team(team_abbr):
-    """Find the next scheduled game for the given team abbreviation."""
-    norm_abbr = normalize_team_abbr(team_abbr)
-    if not norm_abbr:
+    """Find the next scheduled game for a given team abbreviation."""
+    if not team_abbr:
         return None
 
     today = date.today()
-    for d in range(0, 7):  # look up to 7 days ahead
+    for d in range(0, 7):  # look up to a week ahead
         games = get_games_from_espn(today + timedelta(days=d))
         for g in games:
-            if g["home_abbr"] == norm_abbr:
+            if g["home_abbr"] == team_abbr.lower():
                 return {
                     "date": g["date"],
                     "time": g["time"],
                     "home_away": "Home",
                     "opponent": g["away_team"]
                 }
-            elif g["away_abbr"] == norm_abbr:
+            elif g["away_abbr"] == team_abbr.lower():
                 return {
                     "date": g["date"],
                     "time": g["time"],
@@ -141,14 +127,14 @@ def get_next_game_for_team(team_abbr):
                 }
     return None
 
-# ---------------------- FILTER UPCOMING ----------------------
-today = pd.Timestamp.now().normalize()
-upcoming_games = []
 
-for _, row in data.iterrows():
-    proj_date = pd.to_datetime(row.get("game_date"), errors="coerce")
-    if pd.isna(proj_date) or proj_date >= today:
-        upcoming_games.append(row)
+# ---------------------- UPCOMING GAMES ----------------------
+today = pd.Timestamp.now().normalize()
+upcoming_games = [
+    row for _, row in data.iterrows()
+    if pd.isna(pd.to_datetime(row.get("game_date"), errors="coerce")) or
+    pd.to_datetime(row.get("game_date"), errors="coerce") >= today
+]
 
 if not upcoming_games:
     st.info("No upcoming games with saved projections.")
@@ -156,22 +142,13 @@ if not upcoming_games:
 
 df_upcoming = pd.DataFrame(upcoming_games)
 
-# ---------------------- DISPLAY PLAYER PROJECTIONS ----------------------
+# ---------------------- DISPLAY ----------------------
 for player_name, group in df_upcoming.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
         continue
 
-    # Determine player's team from CSV or nba_api
-    team_abbr = str(group.iloc[-1].get("team_abbr", ""))
-    if not team_abbr:
-        # fallback: find player's current team from nba_api
-        pinfo = next((p for p in nba_players if p["full_name"] == player_name), None)
-        if pinfo and "team_id" in pinfo:
-            team_obj = next((t for t in nba_teams if t["id"] == pinfo["team_id"]), None)
-            if team_obj:
-                team_abbr = team_obj["abbreviation"]
-
+    team_abbr = get_player_team_abbr(player_name)
     next_game = get_next_game_for_team(team_abbr)
     latest_proj = group.iloc[-1].to_dict()
 

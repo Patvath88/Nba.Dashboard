@@ -148,6 +148,8 @@ else:
             unsafe_allow_html=True
         )
 
+import streamlit.components.v1 as components
+
 # ---------- SEASON LEADERS (3x2 Grid + Team Colors) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
@@ -186,18 +188,23 @@ if not df.empty:
         "UTA": "#002B5C", "WAS": "#002B5C"
     }
 
-    st.markdown("""
+    html = """
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        grid-template-columns: repeat(3, minmax(230px, 1fr));
         gap: 25px;
         justify-items: center;
-        margin: 30px auto;
+        margin: 25px auto;
         max-width: 1000px;
     }
+    @media (max-width: 900px) {
+        .leader-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+        .leader-grid { grid-template-columns: 1fr; }
+    }
     .leader-card {
-        position: relative;
         background: radial-gradient(circle at top, #1a1a1a 0%, #0b0b0b 100%);
         border-radius: 18px;
         padding: 18px 10px;
@@ -205,8 +212,7 @@ if not df.empty:
         box-shadow: 0 0 15px rgba(255,111,0,0.25);
         transition: all 0.25s ease-in-out;
         overflow: hidden;
-        width: 100%;
-        max-width: 250px;
+        width: 230px;
     }
     .leader-card:hover {
         transform: translateY(-5px);
@@ -231,10 +237,6 @@ if not df.empty:
         margin: 0 auto 10px;
         border: 3px solid var(--team-color);
         box-shadow: 0 0 15px var(--team-color);
-        transition: transform 0.2s ease;
-    }
-    .leader-photo:hover {
-        transform: scale(1.05);
     }
     .leader-photo img {
         width: 100%;
@@ -257,17 +259,16 @@ if not df.empty:
         margin-top: 4px;
     }
     </style>
-    """, unsafe_allow_html=True)
+    <div class='leader-grid'>
+    """
 
-    # Create grid layout correctly
-    cards = []
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
         team_color = team_colors.get(team_abbr, "#FF6F00")
 
-        card_html = f"""
+        html += f"""
         <div class='leader-card' style="--team-color: {team_color};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
@@ -278,11 +279,11 @@ if not df.empty:
             <div class='leader-stat'>{leader[key]}</div>
         </div>
         """
-        cards.append(card_html)
 
-    grid_html = "<div class='leader-grid'>" + "".join(cards) + "</div>"
-    st.markdown(grid_html, unsafe_allow_html=True)
+    html += "</div>"
 
+    # Use components.html to render true HTML layout
+    components.html(html, height=800, scrolling=True)
 else:
     st.info("Leader data not available.")
 

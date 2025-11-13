@@ -1,11 +1,10 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA HOME HUB (Final Neon Edition)
+# HOT SHOT PROPS — NBA HOME HUB (Final Polished Neon Edition)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import datetime
 import requests
-import json
 from bs4 import BeautifulSoup
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3
 from nba_api.stats.static import players
@@ -14,8 +13,7 @@ import feedparser
 import streamlit.components.v1 as components
 
 # ---------- PAGE CONFIG ----------
-st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
-                   page_icon="🏀", layout="wide")
+st.set_page_config(page_title="Hot Shot Props | NBA Home Hub", page_icon="🏀", layout="wide")
 
 # ---------- GLOBAL STYLE ----------
 st.markdown("""
@@ -64,7 +62,6 @@ def player_photo(name):
 
 # ---------- ESPN GAME DATA ----------
 def fetch_espn_games(days_ahead=0):
-    """Pull live game data from ESPN's scoreboard API."""
     base_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
     date = (datetime.datetime.now() + datetime.timedelta(days=days_ahead)).strftime("%Y%m%d")
     url = f"{base_url}?dates={date}"
@@ -162,20 +159,29 @@ if not df.empty:
     .leader-photo img {
         width: 120px; height: 120px;
         border-radius: 50%;
-        border: 3px solid var(--team-primary);
+        aspect-ratio: 1 / 1;
+        object-fit: cover;
+        border: 4px solid var(--team-primary);
         box-shadow: 0 0 25px var(--team-secondary);
     }
     .leader-name {
         font-family: 'Oswald';
-        font-size: 1.2rem;
+        font-size: 1.25rem;
         color: var(--team-primary);
         text-shadow: 0 0 6px var(--team-secondary);
+        margin-top: 8px;
     }
-    .leader-team { font-size: 0.9rem; color: var(--team-secondary); }
+    .leader-team {
+        font-size: 0.9rem;
+        color: var(--team-secondary);
+        margin-bottom: 5px;
+    }
     .leader-stat {
         font-size: 3rem;
         color: var(--team-primary);
         -webkit-text-stroke: 1px var(--team-secondary);
+        text-shadow: 0 0 10px var(--team-secondary);
+        margin-top: 8px;
     }
     </style>
     <div class='leader-grid'>
@@ -188,22 +194,21 @@ if not df.empty:
         primary, secondary = team_colors.get(team_abbr, ("#FF3B3B", "#0066FF"))
         html += f"""
         <div class='leader-card' style="--team-primary:{primary};--team-secondary:{secondary};">
+            <div class='leader-photo'><img src='{photo}'></div>
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
-            <div class='leader-photo'><img src='{photo}'></div>
             <div class='leader-stat'>{leader[key]}</div>
             <div>{cat}</div>
         </div>
         """
     html += "</div>"
-    components.html(html, height=800, scrolling=True)
+    components.html(html, height=850, scrolling=True)
 
 # =========================================================
-# 🕒 GAMES TONIGHT + TOMORROW (ESPN LIVE)
+# 🕒 GAMES TONIGHT + TOMORROW
 # =========================================================
 def render_games_section(title, games):
     st.markdown(f"<h2 style='color:#FF3B3B;text-shadow:0 0 10px #0066FF;'>🏟️ {title}</h2>", unsafe_allow_html=True)
-
     html = """
     <style>
     .game-grid {
@@ -229,16 +234,8 @@ def render_games_section(title, games):
         border-radius: 50%;
         margin: 0 8px;
     }
-    .team-name {
-        color: var(--team-primary);
-        font-weight: bold;
-        font-size: 1rem;
-    }
-    .game-info {
-        color: #EAEAEA;
-        font-size: 0.9rem;
-        margin-top: 5px;
-    }
+    .team-name { color: var(--team-primary); font-weight: bold; font-size: 1rem; }
+    .game-info { color: #EAEAEA; font-size: 0.9rem; margin-top: 5px; }
     </style>
     <div class='game-grid'>
     """
@@ -248,7 +245,6 @@ def render_games_section(title, games):
         competitors = comp.get("competitors", [])
         if len(competitors) < 2:
             continue
-
         home = next(c for c in competitors if c["homeAway"] == "home")
         away = next(c for c in competitors if c["homeAway"] == "away")
         home_team, away_team = home["team"], away["team"]
@@ -256,8 +252,21 @@ def render_games_section(title, games):
         away_color = "#" + away_team.get("color", "0066FF")
 
         venue = comp.get("venue", {}).get("fullName", "Unknown Arena")
-        broadcast = ", ".join([c["shortName"] for c in comp.get("broadcasts", [])]) or "TBD"
-        date = datetime.datetime.fromisoformat(game["date"][:-1])
+
+        # --- SAFER BROADCAST HANDLING ---
+        broadcasts = comp.get("broadcasts", [])
+        if broadcasts:
+            names = []
+            for b in broadcasts:
+                if "shortName" in b:
+                    names.append(b["shortName"])
+                elif "name" in b:
+                    names.append(b["name"])
+            broadcast = ", ".join(names)
+        else:
+            broadcast = "TBD"
+
+        date = datetime.datetime.fromisoformat(game["date"].replace("Z", "+00:00"))
         time_est = date.astimezone(datetime.timezone(datetime.timedelta(hours=-5))).strftime("%I:%M %p EST")
 
         html += f"""
@@ -266,7 +275,6 @@ def render_games_section(title, games):
                 <img src='{away_team["logo"]}'><img src='{home_team["logo"]}'>
             </div>
             <div class='team-name'>{away_team["displayName"]} @ {home_team["displayName"]}</div>
-            <div class='game-info'>{away_team["record"]["summary"]} ({away_team["standingSummary"]}) vs {home_team["record"]["summary"]} ({home_team["standingSummary"]})</div>
             <div class='game-info'><b>Tipoff:</b> {time_est}</div>
             <div class='game-info'><b>Network:</b> {broadcast}</div>
             <div class='game-info'><b>Arena:</b> {venue}</div>
@@ -275,7 +283,6 @@ def render_games_section(title, games):
     html += "</div>"
     components.html(html, height=900, scrolling=True)
 
-# Live pull — no cache
 render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 

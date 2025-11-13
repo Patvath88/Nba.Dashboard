@@ -23,15 +23,35 @@ and a simple AI model to predict next-game performance.
 # ---------------------------
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def get_player_id(player_name: str):
-    """Fetch player ID from balldontlie API."""
-    url = f"https://www.balldontlie.io/api/v1/players?search={player_name}"
-    r = requests.get(url)
-    data = r.json()
-    if data["data"]:
-        return data["data"][0]["id"]
-    else:
+    """Fetch player ID from balldontlie API safely."""
+    try:
+        url = f"https://www.balldontlie.io/api/v1/players?search={player_name}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            st.warning(f"⚠️ API request failed with status {r.status_code}")
+            return None
+
+        # Sometimes empty responses return ''
+        if not r.text.strip():
+            st.warning("⚠️ Empty response from API. Possibly offline mode.")
+            return None
+
+        data = r.json()
+        if data.get("data"):
+            return data["data"][0]["id"]
+        else:
+            st.warning(f"❌ Player '{player_name}' not found in API.")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"🌐 Network error while fetching player data: {e}")
         return None
+    except ValueError:
+        st.error("❌ Failed to decode JSON from API (possibly offline).")
+        return None
+
 
 
 @st.cache_data(show_spinner=False)

@@ -1,5 +1,5 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA HOME HUB (Full Restored + News Feed)
+# HOT SHOT PROPS — NBA HOME HUB (Full Restored + Enhanced)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
@@ -9,6 +9,8 @@ from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboard
 from nba_api.stats.static import players
 from urllib.parse import quote
 import feedparser
+from bs4 import BeautifulSoup
+import streamlit.components.v1 as components
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
@@ -21,8 +23,6 @@ body {background:#121212;color:#EAEAEA;font-family:'Roboto',sans-serif;}
 h1,h2,h3 {color:#FF6F00;text-shadow:0 0 8px #FF9F43;font-family:'Oswald',sans-serif;}
 .section {background:#1C1C1C;border-radius:12px;padding:15px;margin-bottom:20px;
           box-shadow:0 0 12px rgba(255,111,0,0.1);}
-.leader {display:flex;align-items:center;gap:18px;margin-bottom:18px;}
-.leader img {width:110px;height:110px;border-radius:50%;border:3px solid #FF6F00;object-fit:cover;}
 .status-active{color:#00FF80;font-weight:bold;}
 .status-questionable{color:#FFD700;font-weight:bold;}
 .status-out{color:#FF5252;font-weight:bold;}
@@ -43,17 +43,17 @@ def get_standings():
 @st.cache_data(ttl=600)
 def get_injuries():
     try:
-        url="https://cdn.nba.com/static/json/injury/injury_2025.json"
-        return pd.DataFrame(requests.get(url,timeout=10).json()["league"]["injuries"])
+        url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
+        return pd.DataFrame(requests.get(url, timeout=10).json()["league"]["injuries"])
     except:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def player_id_map():
-    return {p["full_name"]:p["id"] for p in players.get_active_players()}
+    return {p["full_name"]: p["id"] for p in players.get_active_players()}
 
 def player_photo(name):
-    pid=player_id_map().get(name)
+    pid = player_id_map().get(name)
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
            "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
@@ -61,10 +61,9 @@ def player_photo(name):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, news, injuries & standings")
 
-# ---------- LATEST NBA NEWS (Clean Text-Only Headlines) ----------
-import feedparser
-from urllib.parse import quote
-
+# =========================================================
+# 📰 LATEST NBA NEWS (GOOGLE RSS)
+# =========================================================
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
            font-family:'Oswald',sans-serif;margin-top:30px;">
@@ -72,10 +71,8 @@ st.markdown("""
 </h2>
 """, unsafe_allow_html=True)
 
-
 @st.cache_data(ttl=900)
 def fetch_latest_nba_news(limit=3):
-    """Get 3 latest NBA news headlines and summaries."""
     feed_url = f"https://news.google.com/rss/search?q={quote('NBA basketball')}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(feed_url)
     news_items = []
@@ -88,7 +85,6 @@ def fetch_latest_nba_news(limit=3):
             summary = summary[:200].rsplit(" ", 1)[0] + "..."
         news_items.append({"title": title, "link": link, "summary": summary})
     return news_items
-
 
 news_items = fetch_latest_nba_news()
 
@@ -132,7 +128,6 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-    # Render each article as a clean clickable card
     for article in news_items:
         st.markdown(
             f"""
@@ -148,20 +143,10 @@ else:
             unsafe_allow_html=True
         )
 
-import streamlit.components.v1 as components
-
-import streamlit.components.v1 as components
-
-# ---------- SEASON LEADERS (3x2 Grid + Dual Team Colors) ----------
-st.markdown("""
-<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
-           font-family:'Oswald',sans-serif;text-align:center;">
-🏀 Top Performers (Per Game Averages)
-</h2>
-""", unsafe_allow_html=True)
-
+# =========================================================
+# 🏀 TOP PERFORMERS (Enhanced Dual Color + Animated Text)
+# =========================================================
 df = get_leaders()
-
 if not df.empty:
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
     df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
@@ -179,7 +164,6 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
-    # Primary and secondary colors (official NBA palette)
     team_colors = {
         "ATL": ("#E03A3E", "#C1D32F"), "BOS": ("#007A33", "#BA9653"),
         "BKN": ("#000000", "#FFFFFF"), "CHA": ("#1D1160", "#00788C"),
@@ -200,6 +184,11 @@ if not df.empty:
 
     html = """
     <style>
+    @keyframes shimmer {
+        0% { text-shadow: 0 0 8px var(--team-primary); }
+        50% { text-shadow: 0 0 18px var(--team-secondary); }
+        100% { text-shadow: 0 0 8px var(--team-primary); }
+    }
     .leader-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(230px, 1fr));
@@ -207,12 +196,6 @@ if not df.empty:
         justify-items: center;
         margin: 25px auto;
         max-width: 1000px;
-    }
-    @media (max-width: 900px) {
-        .leader-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-    @media (max-width: 600px) {
-        .leader-grid { grid-template-columns: 1fr; }
     }
     .leader-card {
         background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
@@ -225,21 +208,24 @@ if not df.empty:
         width: 230px;
         border: 1px solid rgba(255,255,255,0.05);
     }
-    .leader-card:hover {
-        transform: translateY(-6px);
-        box-shadow: 0 0 35px var(--team-primary);
+    .leader-name, .leader-team {
+        animation: shimmer 3s infinite alternate;
     }
     .leader-name {
         font-family: 'Oswald', sans-serif;
         font-size: 1.3rem;
-        color: #FFFFFF;
+        font-weight: 700;
+        color: var(--team-primary);
         margin-bottom: 2px;
-        letter-spacing: 0.5px;
-        text-shadow: 0 0 6px rgba(255,255,255,0.4);
+        -webkit-text-stroke: 0.8px var(--team-secondary);
     }
     .leader-team {
-        color: #FFB266;
+        font-family: 'Oswald', sans-serif;
         font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--team-primary);
+        -webkit-text-stroke: 0.7px var(--team-secondary);
+        text-transform: uppercase;
         margin-bottom: 8px;
     }
     .leader-photo {
@@ -251,42 +237,24 @@ if not df.empty:
         border: 3px solid var(--team-primary);
         box-shadow: 0 0 25px var(--team-primary);
     }
-    .leader-photo img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        border-radius: 50%;
-    }
     .leader-cat {
         font-family: 'Oswald', sans-serif;
         color: #FF9F43;
         font-size: 1.1rem;
         margin-top: 8px;
-        letter-spacing: 0.5px;
         text-transform: uppercase;
-        text-shadow: 0 0 10px #FF9F43AA;
     }
     .leader-stat {
         font-family: 'Bebas Neue', 'Oswald', sans-serif;
         font-size: 3rem;
         font-weight: 900;
         color: var(--team-primary);
-        letter-spacing: 1px;
         -webkit-text-stroke: 1.2px var(--team-secondary);
         text-shadow:
             0 0 6px var(--team-primary),
             0 0 14px var(--team-secondary),
             0 0 24px rgba(255,255,255,0.15);
         margin-top: 6px;
-        margin-bottom: 6px;
-        transition: transform 0.2s ease, text-shadow 0.2s ease;
-    }
-    .leader-card:hover .leader-stat {
-        transform: scale(1.1);
-        text-shadow:
-            0 0 8px var(--team-primary),
-            0 0 18px var(--team-secondary),
-            0 0 32px rgba(255,255,255,0.2);
     }
     </style>
     <div class='leader-grid'>
@@ -297,135 +265,73 @@ if not df.empty:
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
         primary, secondary = team_colors.get(team_abbr, ("#FF6F00", "#FFD580"))
-
         html += f"""
-        <div class='leader-card' style="--team-primary: {primary}; --team-secondary: {secondary};">
+        <div class='leader-card' style="--team-primary:{primary};--team-secondary:{secondary};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
-            <div class='leader-photo'>
-                <img src='{photo}' alt='{leader["PLAYER"]}'>
-            </div>
+            <div class='leader-photo'><img src='{photo}'></div>
             <div class='leader-cat'>{cat}</div>
             <div class='leader-stat'>{leader[key]}</div>
         </div>
         """
-
     html += "</div>"
-
     components.html(html, height=800, scrolling=True)
-else:
-    st.info("Leader data not available.")
 
-
-
-# ---------- INJURY REPORT ----------
-import requests
-from bs4 import BeautifulSoup
-
+# =========================================================
+# 💀 INJURY REPORT
+# =========================================================
 st.markdown("## 💀 Injury Report")
 st.caption("Live injury data — pulled directly from ESPN.com")
 
 @st.cache_data(ttl=900)
 def fetch_injury_report():
-    """Scrape ESPN NBA injury report (team + player)."""
     url = "https://www.espn.com/nba/injuries"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(r.text, "html.parser")
-
     data = []
-    # Each team section is wrapped in a div with class "Wrapper"
-    sections = soup.find_all("section", class_="Card")
-    for sec in sections:
+    for sec in soup.find_all("section", class_="Card"):
         team_header = sec.find("h2")
-        team_name = team_header.get_text(strip=True) if team_header else "Unknown Team"
-
+        team_name = team_header.get_text(strip=True) if team_header else "Unknown"
         table = sec.find("table")
         if not table:
             continue
-        rows = table.find_all("tr")[1:]
-        for r_ in rows:
-            cols = [c.get_text(strip=True) for c in r_.find_all("td")]
+        for row in table.find_all("tr")[1:]:
+            cols = [c.get_text(strip=True) for c in row.find_all("td")]
             if len(cols) >= 4:
                 player, pos, injury, status = cols[:4]
-                data.append({
-                    "team": team_name,
-                    "player": player,
-                    "position": pos,
-                    "injury": injury,
-                    "status": status
-                })
+                data.append({"team": team_name, "player": player, "position": pos,
+                             "injury": injury, "status": status})
     return pd.DataFrame(data)
 
-
 inj_df = fetch_injury_report()
-
-if inj_df.empty:
-    st.warning("No injury data currently available from ESPN.")
-else:
-    # --- Dropdown filter ---
+if not inj_df.empty:
     teams = sorted(inj_df["team"].unique())
-    selected_team = st.selectbox("Select a team to view injuries:", ["All Teams"] + teams)
+    team = st.selectbox("Select a team to view injuries:", ["All Teams"] + teams)
+    if team != "All Teams":
+        inj_df = inj_df[inj_df["team"] == team]
+    st.dataframe(inj_df, use_container_width=True)
+else:
+    st.warning("No injury data currently available from ESPN.")
 
-    if selected_team != "All Teams":
-        inj_df = inj_df[inj_df["team"] == selected_team]
-
-    # --- Compact styled table ---
-    st.markdown("""
-        <style>
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th {
-            background-color: #FF6F00;
-            color: white;
-            font-family: 'Oswald', sans-serif;
-            padding: 10px;
-            text-align: left;
-            font-size: 1rem;
-        }
-        td {
-            background-color: #1C1C1C;
-            color: #EAEAEA;
-            padding: 8px 10px;
-            border-bottom: 1px solid #333;
-            font-size: 0.9rem;
-            font-family: 'Roboto', sans-serif;
-        }
-        tr:hover td {
-            background-color: #2A2A2A;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # Display team name as section header
-    if selected_team != "All Teams":
-        st.markdown(f"### 🏀 {selected_team}")
-
-    # Convert to HTML table (for styling control)
-    html_table = inj_df.to_html(index=False, escape=False)
-    st.markdown(html_table, unsafe_allow_html=True)
-
-
-
-# ---------- STANDINGS ----------
+# =========================================================
+# 🏆 NBA STANDINGS
+# =========================================================
 st.markdown("## 🏆 NBA Standings")
 stand = get_standings()
 if not stand.empty:
     east = stand[stand["Conference"] == "East"]
     west = stand[stand["Conference"] == "West"]
-    base = ["TeamCity", "TeamName", "WINS", "LOSSES", "WinPCT"]
-    cols = [c for c in base if c in east.columns]
+    cols = ["TeamCity", "TeamName", "WINS", "LOSSES", "WinPCT"]
     if "Streak" in east.columns:
         cols.append("Streak")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### Eastern Conference")
-        st.dataframe(east[cols], width="stretch")
+        st.dataframe(east[cols], use_container_width=True)
     with c2:
         st.markdown("### Western Conference")
-        st.dataframe(west[cols], width="stretch")
+        st.dataframe(west[cols], use_container_width=True)
 else:
     st.warning("Standings unavailable.")
 

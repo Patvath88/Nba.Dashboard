@@ -1,16 +1,18 @@
+# -------------------------------------------------
+# HOT SHOT PROPS — NBA HOME HUB (Full Restored + News Feed)
+# -------------------------------------------------
 import streamlit as st
-import requests
-import time
 import pandas as pd
-from datetime import datetime, date
+import datetime
+import requests
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
-from nba_api.stats.static import players, teams
-from zoneinfo import ZoneInfo
-import os
-import feedparser  # For Google News fallback
+from nba_api.stats.static import players
+from urllib.parse import quote
+import feedparser
 
-# ---------------------- CONFIG ----------------------
-st.set_page_config(page_title="Hot Shot Props | NBA Home Hub", page_icon="🏀", layout="wide")
+# ---------- PAGE CONFIG ----------
+st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
+                   page_icon="🏀", layout="wide")
 
 # ---------- STYLE ----------
 st.markdown("""
@@ -39,16 +41,11 @@ def get_standings():
     return leaguestandingsv3.LeagueStandingsV3(season="2025-26").get_data_frames()[0]
 
 @st.cache_data(ttl=600)
-def get_games_today():
-    today = datetime.now().strftime("%Y-%m-%d")
-    return scoreboardv2.ScoreboardV2(game_date=today).get_data_frames()
-
-@st.cache_data(ttl=600)
 def get_injuries():
     try:
         url="https://cdn.nba.com/static/json/injury/injury_2025.json"
         return pd.DataFrame(requests.get(url,timeout=10).json()["league"]["injuries"])
-    except: 
+    except:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
@@ -60,18 +57,11 @@ def player_photo(name):
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
            "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
-def team_logo(abbr):
-    return f"https://cdn.nba.com/logos/nba/{abbr}/primary/L/logo.svg"
-
-
 # ---------- HEADER ----------
 st.title("🏠 Hot Shot Props — NBA Home Hub")
-st.caption("Live leaders, games, injuries & standings")
+st.caption("Live leaders, news, injuries & standings")
 
-# ---------- LATEST NBA NEWS (5 Image Cards, Clean Layout) ----------
-import feedparser
-from urllib.parse import quote
-
+# ---------- LATEST NBA NEWS (HEADLINE FEED) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
            font-family:'Oswald',sans-serif;margin-top:30px;">
@@ -79,111 +69,122 @@ st.markdown("""
 </h2>
 """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=600)
-def fetch_latest_nba_news(limit=8):
-    """Fetch top NBA news with working images."""
+@st.cache_data(ttl=900)
+def fetch_latest_nba_news(limit=5):
+    """Fetch latest NBA headlines with summaries."""
     feed_url = f"https://news.google.com/rss/search?q={quote('NBA basketball')}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(feed_url)
     stories = []
-    for entry in feed.entries:
-        image = None
-        # Prefer media_content image if available
-        if "media_content" in entry and len(entry.media_content) > 0:
-            image = entry.media_content[0].get("url")
-        # Fallback: try embedded links
-        elif hasattr(entry, "links"):
-            for link in entry.links:
-                if hasattr(link, "type") and "image" in link.type:
-                    image = link.href
-                    break
-        # Only keep if there’s a valid image
-        if image and image.startswith("http"):
-            stories.append({
-                "title": entry.title.strip(),
-                "url": entry.link,
-                "image": image
-            })
-        # Stop if enough valid image stories found
-        if len(stories) >= limit:
-            break
+    for entry in feed.entries[:limit]:
+        summary = entry.summary if hasattr(entry, "summary") else ""
+        summary = summary.replace("<br>", " ").replace("\n", " ").strip()
+        if len(summary) > 200:
+            summary = summary[:200].rsplit(" ", 1)[0] + "..."
+        stories.append({
+            "title": entry.title.strip(),
+            "url": entry.link,
+            "summary": summary
+        })
     return stories
 
-news = fetch_latest_nba_news(limit=5)
+news_items = fetch_latest_nba_news()
 
-if not news:
-    st.info("🕵️ No NBA news found with images right now.")
+if not news_items:
+    st.info("🕵️ No fresh NBA headlines available at the moment.")
 else:
     st.markdown("""
     <style>
-    .news-container {
+    .news-feed {
         display: flex;
-        justify-content: space-between;
-        flex-wrap: wrap;
+        flex-direction: column;
         gap: 20px;
-        margin-top: 10px;
+        margin-top: 15px;
     }
-    .news-card {
+    .news-item {
         background: #1C1C1C;
         border-radius: 12px;
-        width: calc(20% - 12px);
-        min-width: 250px;
+        padding: 18px 22px;
         box-shadow: 0 0 12px rgba(255,111,0,0.1);
-        overflow: hidden;
         transition: all 0.25s ease-in-out;
     }
-    .news-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 0 18px rgba(255,111,0,0.3);
+    .news-item:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 0 18px rgba(255,111,0,0.25);
     }
-    .news-card img {
-        width: 100%;
-        height: 160px;
-        object-fit: cover;
-        display: block;
-        border-bottom: 1px solid #333;
+    .news-title {
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.3rem;
+        color: #FF9F43;
+        margin-bottom: 6px;
+        letter-spacing: 0.5px;
     }
-    .news-card .title {
-        color: #EAEAEA;
-        font-family: 'Roboto', sans-serif;
-        font-size: 0.9rem;
-        padding: 10px 14px;
-        line-height: 1.3em;
-        height: 70px;
-        overflow: hidden;
-    }
-    .news-card .title a {
+    .news-title a {
         color: #FF9F43;
         text-decoration: none;
-        font-weight: 500;
     }
-    .news-card .title a:hover {
+    .news-title a:hover {
         text-decoration: underline;
+        color: #FFD480;
     }
-    @media (max-width: 1000px){
-        .news-card { width: calc(50% - 12px); }
-    }
-    @media (max-width: 600px){
-        .news-card { width: 100%; }
+    .news-summary {
+        color: #EAEAEA;
+        font-family: 'Roboto', sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.5em;
+        margin-bottom: 4px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    html = "<div class='news-container'>"
-    for item in news:
+    html = "<div class='news-feed'>"
+    for item in news_items:
         html += f"""
-        <div class='news-card'>
-            <a href='{item['url']}' target='_blank'>
-                <img src='{item['image']}' alt='NBA news image'/>
-            </a>
-            <div class='title'>
+        <div class='news-item'>
+            <div class='news-title'>
                 <a href='{item['url']}' target='_blank'>{item['title']}</a>
             </div>
+            <div class='news-summary'>{item['summary']}</div>
         </div>
         """
     html += "</div>"
     st.markdown(html, unsafe_allow_html=True)
 
+# ---------- SEASON LEADERS ----------
+st.markdown("## 🏀 Top Performers (Per Game Averages)")
 
+df = get_leaders()
+
+if not df.empty:
+    df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
+    df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
+    df["AST_Avg"] = (df["AST"] / df["GP"]).round(1)
+    df["FG3M_Avg"] = (df["FG3M"] / df["GP"]).round(1)
+    df["BLK_Avg"] = (df["BLK"] / df["GP"]).round(1)
+    df["STL_Avg"] = (df["STL"] / df["GP"]).round(1)
+    df["TOV_Avg"] = (df["TOV"] / df["GP"]).round(1)
+
+    categories = {
+        "Points": "PTS_Avg",
+        "Rebounds": "REB_Avg",
+        "Assists": "AST_Avg",
+        "3PT Field Goals Made": "FG3M_Avg",
+        "Blocks": "BLK_Avg",
+        "Steals": "STL_Avg",
+        "Turnovers": "TOV_Avg"
+    }
+
+    for cat, key in categories.items():
+        leader = df.loc[df[key].idxmax()]
+        photo = player_photo(leader["PLAYER"])
+        st.markdown(
+            f"<div class='section leader'>"
+            f"<img src='{photo}'>"
+            f"<div><b>{leader['PLAYER']}</b><br>"
+            f"{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
+            unsafe_allow_html=True
+        )
+else:
+    st.info("Leader data not available.")
 
 # ---------- INJURY REPORT ----------
 st.markdown("## 💀 Injury Report")

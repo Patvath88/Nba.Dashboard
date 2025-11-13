@@ -107,21 +107,72 @@ else:
     st.info("Leader data not available.")
 
 # ---------- GAMES TONIGHT ----------
-st.markdown("## 📅 Games Tonight")
-st.markdown("[🔗 Click here to view tonight's full NBA schedule on NBA.com](https://www.nba.com/schedule)")
+# ---------- UPCOMING GAMES (ESPN DATA) ----------
+st.markdown("## 🗓️ Upcoming Games")
 
-try:
-    _, games, *_ = get_games_today()
-    if not games.empty:
-        for _,g in games.iterrows():
-            st.markdown(
-              f"<div class='section'><img src='{team_logo(g['VISITOR_TEAM_ID'])}' width='40'> "
-              f"<b>{g['VISITOR_TEAM_NAME']}</b> @ "
-              f"<img src='{team_logo(g['HOME_TEAM_ID'])}' width='40'> "
-              f"<b>{g['HOME_TEAM_NAME']}</b> — <i>{g['GAME_STATUS_TEXT']}</i></div>",
-              unsafe_allow_html=True)
-except Exception:
-    st.warning("Couldn't load schedule.")
+@st.cache_data(ttl=600)
+def get_games_from_espn(date: datetime.date):
+    """Fetch NBA schedule from ESPN public API for a given date."""
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date.strftime('%Y%m%d')}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        games = []
+        for event in data.get("events", []):
+            comp = event["competitions"][0]
+            competitors = comp["competitors"]
+            home = next(c for c in competitors if c["homeAway"] == "home")
+            away = next(c for c in competitors if c["homeAway"] == "away")
+
+            # Extract metadata
+            game_time = datetime.datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
+            broadcast = (
+                comp["broadcasts"][0]["names"][0]
+                if comp.get("broadcasts") else "TBD"
+            )
+            games.append({
+                "home_team": home["team"]["displayName"],
+                "home_logo": home["team"]["logo"],
+                "away_team": away["team"]["displayName"],
+                "away_logo": away["team"]["logo"],
+                "time": game_time.strftime("%I:%M %p ET"),
+                "broadcast": broadcast
+            })
+        return games
+    except Exception as e:
+        st.error(f"Error fetching ESPN data: {e}")
+        return []
+
+
+# ----------- TODAY & TOMORROW -----------
+today = datetime.date.today()
+tomorrow = today + datetime.timedelta(days=1)
+
+today_games = get_games_from_espn(today)
+tomorrow_games = get_games_from_espn(tomorrow)
+
+def render_games_section(title: str, games: list):
+    st.markdown(f"### {title} ({today.strftime('%B %d, %Y') if 'Tonight' in title else tomorrow.strftime('%B %d, %Y')})")
+    if not games:
+        st.info("No scheduled games.")
+    for g in games:
+        st.markdown(
+            f"<div class='section'>"
+            f"<img src='{g['away_logo']}' width='40'> "
+            f"<b>{g['away_team']}</b> @ "
+            f"<img src='{g['home_logo']}' width='40'> "
+            f"<b>{g['home_team']}</b><br>"
+            f"🕒 {g['time']} &nbsp;&nbsp; 📺 {g['broadcast']}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+# Render sections
+render_games_section(f"🏀 Upcoming Games Tonight", today_games)
+render_games_section(f"🌙 Upcoming Games Tomorrow", tomorrow_games)
+
 
 # ---------- INJURY REPORT ----------
 st.markdown("## 💀 Injury Report")

@@ -383,7 +383,7 @@ else:
 
 
 # =========================================================
-# 🏆 NBA STANDINGS — Enhanced Leaderboard + Bracket (Fixed)
+# 🏆 NBA STANDINGS — Enhanced Leaderboard with Recent Games
 # =========================================================
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
@@ -393,14 +393,39 @@ st.markdown("""
 
 stand = get_standings()
 
-if not stand.empty:
-    # Normalize the column names for safety
-    stand.columns = [c.replace(" ", "") for c in stand.columns]
-    # Determine abbreviation column (try multiple options)
-    team_col = next((c for c in stand.columns if c.lower() in ["teamtricode", "teamabbreviation", "teamslug"]), None)
+@st.cache_data(ttl=300)
+def fetch_recent_games():
+    """Fetch scoreboard data for the last few days to find recent games for each team."""
+    games = []
+    for days_back in range(1, 4):  # look back 3 days
+        date_str = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y-%m-%d")
+        try:
+            data = scoreboardv2.ScoreboardV2(game_date=date_str).get_data_frames()[0]
+            games.append(data)
+        except Exception:
+            continue
+    if not games:
+        return pd.DataFrame()
+    df = pd.concat(games)
+    df = df.rename(columns={"TEAM_ID": "TeamID", "GAME_ID": "GameID", "TEAM_ABBREVIATION": "TeamAbbr"})
+    return df
 
+recent_games = fetch_recent_games()
+
+if not stand.empty:
     east = stand[stand["Conference"] == "East"].sort_values("PlayoffRank")
     west = stand[stand["Conference"] == "West"].sort_values("PlayoffRank")
+
+    def get_last_game(team_id):
+        """Find the last game played for this team."""
+        team_games = recent_games[recent_games["TeamID"] == team_id]
+        if team_games.empty:
+            return "—", "No recent game", ""
+        game = team_games.iloc[-1]
+        opp_team = game["MATCHUP"].replace(game["TEAM_ABBREVIATION"], "").replace("vs.", "").replace("@", "").strip()
+        result = f"{int(game['PTS'])}–{int(game['PTS'] - game['PLUS_MINUS'])}"
+        status = "Won" if game["PLUS_MINUS"] > 0 else "Lost"
+        return opp_team, f"{status} {result}", status
 
     def render_leaderboard(df, conference_name):
         html = f"""
@@ -414,27 +439,41 @@ if not stand.empty:
             <div style='padding:8px 0;'>
         """
         for _, row in df.iterrows():
-            team_abbr = str(row.get(team_col, "nba")).lower()
-            team_name = f"{row.get('TeamCity', '')} {row.get('TeamName', '')}"
+            team_id = row["TeamID"]
+            team_name = f"{row['TeamCity']} {row['TeamName']}"
+            team_abbr = row.get("TeamTricode", row.get("TeamAbbreviation", "")).lower()
             logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{team_abbr}.png"
+            opp_team, result, status = get_last_game(team_id)
 
-            winpct = round(row.get('WinPCT', 0) * 100, 1)
-            streak = row.get('Streak', '')
+            winpct = round(row['WinPCT'] * 100, 1)
+            streak = row.get('Streak', '—')
+
+            status_color = "#00FF80" if "Won" in result else "#FF5252"
+
             html += f"""
-            <div style='display:flex;align-items:center;justify-content:space-between;
-                        margin:6px 0;padding:8px 12px;
-                        background:linear-gradient(90deg,rgba(255,111,0,0.05) {winpct}%,rgba(255,111,0,0.02) {winpct}%);
-                        border-radius:8px;box-shadow:0 0 8px rgba(255,111,0,0.1);'>
-                <div style='display:flex;align-items:center;gap:10px;'>
-                    <img src='{logo_url}' width='30' height='30' style='border-radius:6px;'>
-                    <div style='color:#FFF;font-family:"Oswald",sans-serif;font-size:1.1rem;'>
-                        {team_name}
+            <div style='margin:8px 0;padding:10px 12px;
+                        border-radius:10px;background:#111;
+                        box-shadow:0 0 8px rgba(255,111,0,0.1);
+                        transition:0.3s ease;'>
+                <div style='display:flex;align-items:center;justify-content:space-between;'>
+                    <div style='display:flex;align-items:center;gap:10px;'>
+                        <img src='{logo_url}' width='34' height='34' style='border-radius:6px;'>
+                        <div style='color:#FFF;font-family:"Oswald",sans-serif;font-size:1.05rem;'>
+                            {team_name}
+                        </div>
+                    </div>
+                    <div style='color:#FFB266;font-family:"Roboto",sans-serif;'>
+                        <b>{row['WINS']}-{row['LOSSES']}</b>
+                        <span style='color:#66B3FF;font-size:0.85rem;margin-left:8px;'>{winpct}%</span>
                     </div>
                 </div>
-                <div style='color:#FFB266;font-family:"Roboto",sans-serif;'>
-                    <b>{row.get('WINS', 0)}-{row.get('LOSSES', 0)}</b>
-                    <span style='color:#66B3FF;font-size:0.85rem;margin-left:8px;'>{winpct}%</span>
-                    <span style='color:#FF6F00;font-size:0.8rem;margin-left:8px;'>{streak}</span>
+                <div style='margin-left:44px;margin-top:6px;color:{status_color};
+                            font-family:"Roboto";font-size:0.9rem;'>
+                    Last Game: {result} vs {opp_team}
+                </div>
+                <div style='margin-left:44px;color:#FF9F43;font-size:0.9rem;
+                            font-family:"Oswald";margin-top:2px;'>
+                    Streak: {streak}
                 </div>
             </div>
             """
@@ -446,49 +485,5 @@ if not stand.empty:
         st.markdown(render_leaderboard(east, "Eastern"), unsafe_allow_html=True)
     with c2:
         st.markdown(render_leaderboard(west, "Western"), unsafe_allow_html=True)
-
-    # =========================================================
-    # 🏀 IF THE NBA FINALS STARTED TODAY (Auto Bracket)
-    # =========================================================
-    st.markdown("""
-    <h2 style="color:#FF3B3B;text-shadow:0 0 10px #FF3B3B;font-family:'Oswald',sans-serif;margin-top:30px;">
-    🏀 If The NBA Finals Started Today
-    </h2>
-    """, unsafe_allow_html=True)
-
-    def make_bracket_html(east_df, west_df):
-        def matchup_block(seed1, seed8, side):
-            color = "#FF3B3B" if side == "East" else "#66B3FF"
-            t1 = f"{seed1.get('TeamName', seed1.get('TeamCity', ''))} ({int(seed1['PlayoffRank'])})"
-            t8 = f"{seed8.get('TeamName', seed8.get('TeamCity', ''))} ({int(seed8['PlayoffRank'])})"
-            return f"""
-            <div style='padding:10px;border-left:3px solid {color};
-                        margin-bottom:8px;background:#111;border-radius:8px;
-                        box-shadow:0 0 8px {color}55;'>
-                <b style='color:{color};font-family:"Oswald";font-size:1rem;'>
-                    {t1} vs {t8}
-                </b>
-            </div>
-            """
-
-        bracket_html = "<div style='display:flex;justify-content:space-around;'>"
-
-        # EAST
-        bracket_html += "<div style='width:45%;'>"
-        bracket_html += "<h4 style='color:#FF3B3B;text-shadow:0 0 6px #FF3B3B;'>Eastern Matchups</h4>"
-        for i in range(4):
-            bracket_html += matchup_block(east_df.iloc[i], east_df.iloc[-(i+1)], "East")
-        bracket_html += "</div>"
-
-        # WEST
-        bracket_html += "<div style='width:45%;'>"
-        bracket_html += "<h4 style='color:#66B3FF;text-shadow:0 0 6px #66B3FF;'>Western Matchups</h4>"
-        for i in range(4):
-            bracket_html += matchup_block(west_df.iloc[i], west_df.iloc[-(i+1)], "West")
-        bracket_html += "</div></div>"
-        return bracket_html
-
-    st.markdown(make_bracket_html(east, west), unsafe_allow_html=True)
-
 else:
     st.warning("Standings currently unavailable.")

@@ -207,6 +207,30 @@ if not df.empty:
 # =========================================================
 # 🕒 GAMES TONIGHT + TOMORROW
 # =========================================================
+# =========================================================
+# 🔗 LIVE STREAM LINK BELOW HEADER
+# =========================================================
+st.markdown("""
+<h2 style="color:#FF3B3B;text-shadow:0 0 10px #0066FF;font-family:'Oswald',sans-serif;">
+🏟️ Games Tonight
+</h2>
+
+<p style="font-family:'Roboto',sans-serif;font-size:1.1rem;text-align:center;margin-top:-10px;">
+    <a href="https://thetvapp.to/nba" target="_blank"
+       style="color:#FF4B2B;text-shadow:0 0 8px #FF0044;text-decoration:none;font-weight:bold;
+              animation: pulse 1.5s infinite;">
+        🔴 Watch Live NBA Streams Here
+    </a>
+</p>
+
+<style>
+@keyframes pulse {
+  0% { text-shadow: 0 0 6px #FF0044, 0 0 12px #007BFF; }
+  50% { text-shadow: 0 0 16px #FF0044, 0 0 30px #007BFF; }
+  100% { text-shadow: 0 0 6px #FF0044, 0 0 12px #007BFF; }
+}
+</style>
+""", unsafe_allow_html=True)
 def render_games_section(title, games):
     st.markdown(f"<h2 style='color:#FF3B3B;text-shadow:0 0 10px #0066FF;'>🏟️ {title}</h2>", unsafe_allow_html=True)
     html = """

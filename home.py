@@ -108,11 +108,12 @@ else:
 
 # ---------- GAMES TONIGHT ----------
 # ---------- UPCOMING GAMES (ESPN DATA) ----------
-st.markdown("## 🗓️ Upcoming Games")
+# ---------- UPCOMING GAMES (ESPN DATA, EST CONVERSION) ----------
+from zoneinfo import ZoneInfo
 
 @st.cache_data(ttl=600)
 def get_games_from_espn(date: datetime.date):
-    """Fetch NBA schedule from ESPN public API for a given date."""
+    """Fetch NBA schedule from ESPN public API for a given date and convert to EST."""
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date.strftime('%Y%m%d')}"
         r = requests.get(url, timeout=10)
@@ -126,18 +127,22 @@ def get_games_from_espn(date: datetime.date):
             home = next(c for c in competitors if c["homeAway"] == "home")
             away = next(c for c in competitors if c["homeAway"] == "away")
 
-            # Extract metadata
-            game_time = datetime.datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
+            # Convert UTC to Eastern Time
+            utc_time = datetime.datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
+            est_time = utc_time.astimezone(ZoneInfo("America/New_York"))
+            time_str = est_time.strftime("%I:%M %p ET")
+
             broadcast = (
                 comp["broadcasts"][0]["names"][0]
                 if comp.get("broadcasts") else "TBD"
             )
+
             games.append({
                 "home_team": home["team"]["displayName"],
                 "home_logo": home["team"]["logo"],
                 "away_team": away["team"]["displayName"],
                 "away_logo": away["team"]["logo"],
-                "time": game_time.strftime("%I:%M %p ET"),
+                "time": time_str,
                 "broadcast": broadcast
             })
         return games
@@ -154,9 +159,11 @@ today_games = get_games_from_espn(today)
 tomorrow_games = get_games_from_espn(tomorrow)
 
 def render_games_section(title: str, games: list):
-    st.markdown(f"### {title} ({today.strftime('%B %d, %Y') if 'Tonight' in title else tomorrow.strftime('%B %d, %Y')})")
+    date_display = today.strftime('%B %d, %Y') if 'Tonight' in title else tomorrow.strftime('%B %d, %Y')
+    st.markdown(f"### {title} ({date_display})")
     if not games:
         st.info("No scheduled games.")
+        return
     for g in games:
         st.markdown(
             f"<div class='section'>"

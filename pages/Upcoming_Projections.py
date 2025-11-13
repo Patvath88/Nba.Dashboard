@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import time
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog
+from nba_api.stats.static import players, teams
 from PIL import Image
 import requests
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="🎯 Upcoming Game Projections", layout="wide")
@@ -40,6 +40,10 @@ if data.empty:
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
 
+nba_teams = teams.get_teams()
+team_map = {t["full_name"]: t for t in nba_teams}
+abbr_map = {t["abbreviation"].lower(): t for t in nba_teams}
+
 # ---------------------- HELPERS ----------------------
 def get_player_photo(pid):
     urls = [
@@ -54,6 +58,57 @@ def get_player_photo(pid):
         except Exception:
             continue
     return None
+
+
+@st.cache_data(ttl=600)
+def get_games_from_espn(date_to_fetch: date):
+    """Fetch NBA games for a given date (EST) from ESPN public API."""
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_to_fetch.strftime('%Y%m%d')}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        games = []
+        for event in data.get("events", []):
+            comp = event["competitions"][0]
+            competitors = comp["competitors"]
+            home = next(c for c in competitors if c["homeAway"] == "home")
+            away = next(c for c in competitors if c["homeAway"] == "away")
+
+            utc_time = datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
+            est_time = utc_time.astimezone(ZoneInfo("America/New_York"))
+            time_str = est_time.strftime("%I:%M %p ET")
+
+            broadcast = (comp.get("broadcasts")[0]["names"][0]
+                         if comp.get("broadcasts") else "TBD")
+
+            games.append({
+                "date": est_time.date(),
+                "time": time_str,
+                "home_team": home["team"]["displayName"],
+                "home_abbr": home["team"]["abbreviation"].lower(),
+                "away_team": away["team"]["displayName"],
+                "away_abbr": away["team"]["abbreviation"].lower(),
+                "broadcast": broadcast
+            })
+        return games
+    except Exception as e:
+        st.error(f"Error fetching ESPN data: {e}")
+        return []
+
+
+def get_next_game_for_team(team_abbr):
+    """Find the next upcoming game for a given team abbreviation."""
+    today = date.today()
+    for d in range(0, 4):  # look up to 3 days ahead
+        games = get_games_from_espn(today + timedelta(days=d))
+        for g in games:
+            if g["home_abbr"] == team_abbr.lower() or g["away_abbr"] == team_abbr.lower():
+                opponent = g["away_team"] if g["home_abbr"] == team_abbr.lower() else g["home_team"]
+                return g["date"], opponent
+    return None, None
+
 
 # ---------------------- DISPLAY UPCOMING ----------------------
 today = pd.Timestamp.now().normalize()
@@ -70,14 +125,17 @@ if not upcoming_games:
 
 df_upcoming = pd.DataFrame(upcoming_games)
 
+# ---------------------- DISPLAY PLAYER PROJECTIONS ----------------------
 for player_name, group in df_upcoming.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
         continue
 
+    # Try to determine player's team abbreviation
+    team_abbr = str(group.iloc[-1].get("team_abbr", "")).lower()
+    game_date, opponent = get_next_game_for_team(team_abbr)
+
     latest_proj = group.iloc[-1].to_dict()
-    game_date = latest_proj.get("game_date", "")
-    opponent = latest_proj.get("opponent", "")
 
     st.markdown("---")
     col_photo, col_info = st.columns([1, 3])

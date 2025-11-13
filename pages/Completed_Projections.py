@@ -27,9 +27,11 @@ if st.button("🔁 Manual Refresh Now"):
     st.rerun()
 
 # ---------------------- LOAD DATA ----------------------
-path = "saved_projections.csv"
+proj_path = "saved_projections.csv"
+results_path = "results_history.csv"
+
 try:
-    data = pd.read_csv(path)
+    data = pd.read_csv(proj_path)
 except FileNotFoundError:
     st.info("No saved projections yet.")
     st.stop()
@@ -37,6 +39,15 @@ except FileNotFoundError:
 if data.empty:
     st.info("No projection data available.")
     st.stop()
+
+# Load results history (optional file)
+if results_path:
+    try:
+        results = pd.read_csv(results_path)
+    except FileNotFoundError:
+        results = pd.DataFrame(columns=["player", "date", "stat", "projection", "actual", "result"])
+else:
+    results = pd.DataFrame(columns=["player", "date", "stat", "projection", "actual", "result"])
 
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
@@ -56,7 +67,7 @@ def get_player_photo(pid):
             continue
     return None
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=300)
 def get_gamelog(pid):
     try:
         df = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
@@ -65,7 +76,7 @@ def get_gamelog(pid):
     except Exception:
         return pd.DataFrame()
 
-# ---------------------- DISPLAY COMPLETED ----------------------
+# ---------------------- FIND COMPLETED ----------------------
 today = pd.Timestamp.now().normalize()
 completed = []
 
@@ -80,6 +91,7 @@ if not completed:
 
 df_completed = pd.DataFrame(completed)
 
+# ---------------------- DISPLAY ----------------------
 for player_name, group in df_completed.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -90,18 +102,25 @@ for player_name, group in df_completed.groupby("player"):
     opponent = latest_proj.get("opponent", "")
     proj_date = pd.to_datetime(game_date, errors="coerce")
 
-    # Fetch actual game log
-    gl = get_gamelog(pid)
-    act = gl[gl["GAME_DATE"] == proj_date]
-    if act.empty:
-        continue
-    row_act = act.iloc[0]
-    actual_stats = {
-        "PTS": row_act["PTS"], "REB": row_act["REB"], "AST": row_act["AST"], "FG3M": row_act["FG3M"],
-        "STL": row_act["STL"], "BLK": row_act["BLK"], "TOV": row_act["TOV"],
-        "PRA": row_act["PTS"] + row_act["REB"] + row_act["AST"]
-    }
+    # Fetch from results_history.csv if available
+    player_results = results[(results["player"] == player_name) & (results["date"] == str(proj_date.date()))]
+    if not player_results.empty:
+        # Use logged final results
+        actual_stats = {r["stat"]: r["actual"] for _, r in player_results.iterrows()}
+    else:
+        # Fallback: live NBA API boxscore
+        gl = get_gamelog(pid)
+        act = gl[gl["GAME_DATE"] == proj_date]
+        if act.empty:
+            continue
+        row_act = act.iloc[0]
+        actual_stats = {
+            "PTS": row_act["PTS"], "REB": row_act["REB"], "AST": row_act["AST"], "FG3M": row_act["FG3M"],
+            "STL": row_act["STL"], "BLK": row_act["BLK"], "TOV": row_act["TOV"],
+            "PRA": row_act["PTS"] + row_act["REB"] + row_act["AST"]
+        }
 
+    # ---------- DISPLAY ----------
     st.markdown("---")
     col_photo, col_info = st.columns([1, 3])
     with col_photo:
@@ -112,7 +131,7 @@ for player_name, group in df_completed.groupby("player"):
         st.subheader(player_name)
         st.caption(f"📅 **Game Date:** {game_date or 'TBD'} | 🆚 **Opponent:** {opponent or 'TBD'}")
 
-    # Display cards
+    # Metric cards
     compare_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
     cols = st.columns(4)
     for i, stat in enumerate(compare_stats):
@@ -135,21 +154,31 @@ for player_name, group in df_completed.groupby("player"):
                     <b>{stat}</b><br>
                     <span style='color:#00FFFF'>Proj: {pred}</span><br>
                     <span style='color:#E50914'>Actual: {act_val}</span><br>
-                    <small>Δ {diff}</small>
+                    <small>Δ {diff} ({'✅ Hit' if hit else '❌ Miss'})</small>
                 </div>
                 """, unsafe_allow_html=True
             )
 
     # Bar chart
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=compare_stats, y=[latest_proj.get(s,0) for s in compare_stats],
-                         name="AI Projection", marker_color="#E50914"))
-    fig.add_trace(go.Bar(x=compare_stats, y=[actual_stats.get(s,0) for s in compare_stats],
-                         name="Actual", marker_color="#00FFFF"))
-    fig.update_layout(title=f"{player_name}: Projection vs Actual ({opponent})",
-                      barmode="group",
-                      plot_bgcolor="rgba(0,0,0,0)",
-                      paper_bgcolor="rgba(0,0,0,0)",
-                      font=dict(color="white"),
-                      height=350)
+    fig.add_trace(go.Bar(
+        x=compare_stats,
+        y=[latest_proj.get(s,0) for s in compare_stats],
+        name="AI Projection", marker_color="#E50914"
+    ))
+    fig.add_trace(go.Bar(
+        x=compare_stats,
+        y=[actual_stats.get(s,0) for s in compare_stats],
+        name="Actual", marker_color="#00FFFF"
+    ))
+    fig.update_layout(
+        title=f"{player_name}: Projection vs Actual ({opponent})",
+        barmode="group",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="white"),
+        height=350
+    )
     st.plotly_chart(fig, use_container_width=True)
+
+st.success("✅ All finished projections are now displayed here automatically once games are completed.")

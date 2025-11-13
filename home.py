@@ -68,22 +68,18 @@ def team_logo(abbr):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
 
-# ---------- LATEST NBA NEWS (Polished Front-Page Style) ----------
-st.markdown("""
-    <h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
-               font-family:'Oswald',sans-serif;">
-        📰 Latest NBA News
-    </h2>
-""", unsafe_allow_html=True)
+# ---------- LATEST NBA NEWS (Clean Magazine Layout) ----------
+st.markdown("## 📰 Latest NBA News")
 
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "2c85c76c2b2a434d9dd402e2380db754")
+import feedparser
+from urllib.parse import quote
 
 @st.cache_data(ttl=300)
-def fetch_news_from_google(count=6):
-    """Fetch top NBA stories via Google News RSS."""
-    import feedparser
-    feed = feedparser.parse("https://news.google.com/rss/search?q=NBA&hl=en-US&gl=US&ceid=US:en")
-    items = []
+def fetch_google_news(count=5):
+    """Pulls top NBA headlines directly from Google News RSS feed."""
+    feed_url = f"https://news.google.com/rss/search?q={quote('NBA basketball')}&hl=en-US&gl=US&ceid=US:en"
+    feed = feedparser.parse(feed_url)
+    stories = []
     for entry in feed.entries[:count]:
         img = "https://cdn-icons-png.flaticon.com/512/814/814513.png"
         if "media_content" in entry:
@@ -92,72 +88,31 @@ def fetch_news_from_google(count=6):
             for l in entry.links:
                 if "image" in l.type:
                     img = l.href
-        items.append({
-            "title": entry.title,
+        stories.append({
+            "title": entry.title.strip(),
             "url": entry.link,
             "image": img
         })
-    return items
+    return stories
 
-news_items = fetch_news_from_google()
+news_items = fetch_google_news()
 
 if not news_items:
-    st.info("No current NBA headlines available.")
+    st.info("🕵️ No fresh NBA headlines found — try again later.")
 else:
-    st.markdown("""
-    <style>
-    .news-container {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 20px;
-        margin-top: 10px;
-    }
-    .news-card {
-        background: #1c1c1c;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 0 12px rgba(255,111,0,0.1);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }
-    .news-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 0 18px rgba(255,111,0,0.25);
-    }
-    .news-img {
-        width: 100%;
-        height: 160px;
-        object-fit: cover;
-    }
-    .news-text {
-        padding: 10px 14px;
-        font-size: 0.9rem;
-        color: #EAEAEA;
-    }
-    .news-text a {
-        color: #FF9F43;
-        text-decoration: none;
-        font-weight: 500;
-    }
-    .news-text a:hover {
-        text-decoration: underline;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    html = "<div class='news-container'>"
-    for n in news_items:
-        html += f"""
-        <div class='news-card'>
-            <a href='{n['url']}' target='_blank'>
-                <img src='{n['image']}' class='news-img'/>
-            </a>
-            <div class='news-text'>
-                <a href='{n['url']}' target='_blank'>{n['title']}</a>
-            </div>
-        </div>
-        """
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
+    for i, story in enumerate(news_items):
+        col1, col2 = st.columns([1.2, 3.5])
+        with col1:
+            st.image(story["image"], use_container_width=True)
+        with col2:
+            st.markdown(
+                f"<a href='{story['url']}' target='_blank' style='text-decoration:none;'>"
+                f"<h4 style='margin-bottom:5px;color:#FF9F43;'>{story['title']}</h4>"
+                f"</a>",
+                unsafe_allow_html=True
+            )
+        if i < len(news_items) - 1:
+            st.divider()
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")

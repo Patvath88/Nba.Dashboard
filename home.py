@@ -287,57 +287,93 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 💀 PLAYER INJURY SEARCH (Live NBA Feed)
+# 🩻 LATEST INJURY NEWS (Top 3 Live from ESPN)
 # =========================================================
-st.markdown("<h2>💀 Player Injury Lookup</h2>", unsafe_allow_html=True)
-st.caption("Search any NBA player to check current injury status — powered by NBA.com")
+st.markdown("""
+<h2 style="color:#FF3B3B;text-shadow:0 0 10px #FF3B3B;font-family:'Oswald',sans-serif;">
+🩻 Latest Injury News
+</h2>
+""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def fetch_all_injuries():
-    """Fetch complete injury list directly from NBA.com."""
-    url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
+def fetch_latest_injury_news(limit=3):
+    """Pull the latest NBA injury headlines from ESPN."""
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?category=injury"
+    news_items = []
     try:
-        r = requests.get(url, timeout=10).json()
-        injuries = r.get("league", {}).get("injuries", [])
-        return pd.DataFrame(injuries)
+        res = requests.get(url, timeout=10).json()
+        articles = res.get("articles", [])
+        for a in articles[:limit]:
+            headline = a.get("headline", "No headline")
+            description = a.get("description", "No description available.")
+            link = a.get("links", {}).get("web", {}).get("href", "")
+            date = a.get("published", "")[:10]
+            team_name = a.get("teams", [{}])[0].get("displayName", "Unknown Team")
+
+            news_items.append({
+                "headline": headline,
+                "desc": description,
+                "link": link,
+                "date": date,
+                "team": team_name
+            })
     except Exception as e:
-        st.error(f"Error fetching NBA injury data: {e}")
-        return pd.DataFrame()
+        st.error(f"Error fetching injury news: {e}")
+    return news_items
 
-inj_df = fetch_all_injuries()
+news_items = fetch_latest_injury_news()
 
-if inj_df.empty:
-    st.warning("Unable to load injury data from NBA.com right now.")
+if not news_items:
+    st.info("No recent NBA injury news available at this moment.")
 else:
-    inj_df["playerName"] = inj_df["person"].apply(lambda x: x.get("displayName", "Unknown") if isinstance(x, dict) else "Unknown")
-    inj_df["team"] = inj_df["team"].apply(lambda x: x.get("displayName", "Unknown") if isinstance(x, dict) else "Unknown")
-    inj_df["status"] = inj_df["status"].apply(lambda x: x.get("description", "Unknown") if isinstance(x, dict) else "Unknown")
-    inj_df["updateDate"] = inj_df["dateUpdated"].apply(lambda x: x.split("T")[0] if isinstance(x, str) else "N/A")
+    st.markdown("""
+    <style>
+    .injury-news-card {
+        background: linear-gradient(180deg, #0b0b0b, #121212);
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 18px;
+        border-left: 4px solid #FF3B3B;
+        box-shadow: 0 0 15px rgba(255,59,59,0.25);
+        transition: all 0.25s ease-in-out;
+    }
+    .injury-news-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 0 25px rgba(255,59,59,0.4);
+    }
+    .injury-title {
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.2rem;
+        color: #FF9F43;
+        margin-bottom: 5px;
+    }
+    .injury-desc {
+        font-family: 'Roboto', sans-serif;
+        font-size: 0.95rem;
+        color: #EAEAEA;
+        line-height: 1.4em;
+    }
+    .injury-meta {
+        font-size: 0.85rem;
+        color: #66B3FF;
+        margin-top: 6px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    # Player Search
-    player_names = sorted(inj_df["playerName"].unique())
-    with st.expander("🔍 Search Player Injury Status", expanded=True):
-        search = st.selectbox("Select a player:", player_names, index=None, placeholder="Type or select a player")
+    for n in news_items:
+        st.markdown(f"""
+        <div class='injury-news-card'>
+            <div class='injury-title'>
+                <a href="{n['link']}" target="_blank" style="color:#FF9F43;text-decoration:none;">
+                    {n['headline']}
+                </a>
+            </div>
+            <div class='injury-desc'>{n['desc']}</div>
+            <div class='injury-meta'>{n['team']} — {n['date']}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if search:
-            player_info = inj_df[inj_df["playerName"].str.lower() == search.lower()]
-            if player_info.empty:
-                st.info(f"No injury info currently listed for **{search}**.")
-            else:
-                for _, p in player_info.iterrows():
-                    st.markdown(f"""
-                    <div style='background:linear-gradient(180deg,#0b0b0b,#111);
-                                border-radius:12px;
-                                padding:15px;
-                                margin-bottom:15px;
-                                border-left:4px solid #FF3B3B;
-                                box-shadow:0 0 20px rgba(255,0,0,0.3);'>
-                        <div style='font-weight:bold;font-size:1.2rem;color:#FF3B3B;'>{p['playerName']}</div>
-                        <div style='color:#EAEAEA;font-size:0.95rem;'>{p['team']}</div>
-                        <div style='color:#FF9F43;margin-top:6px;'>Status: <b>{p['status']}</b></div>
-                        <div style='color:#66B3FF;font-size:0.85rem;'>Last Updated: {p['updateDate']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
 
 
 # =========================================================

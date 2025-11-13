@@ -1,0 +1,7 @@
+player,date,stat,projection,actual,result
+LeBron James,2025-11-12,PTS,25.5,28,Hit
+LeBron James,2025-11-12,REB,8.0,9,Hit
+LeBron James,2025-11-12,AST,7.0,6,Miss
+Jayson Tatum,2025-11-12,PTS,29.3,31,Hit
+Jayson Tatum,2025-11-12,REB,8.1,6,Miss
+Jayson Tatum,2025-11-12,AST,4.3,5,Hit

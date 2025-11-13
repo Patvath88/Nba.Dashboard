@@ -287,48 +287,54 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 💀 INJURY REPORT (Improved — Filtered + Grouped by Team)
+# 💀 CONFIRMED INJURY REPORT (JSON Source — Fixed & Complete)
 # =========================================================
 st.markdown("<h2>💀 Confirmed Injury Report</h2>", unsafe_allow_html=True)
-st.caption("Pulled live from ESPN — only confirmed OUT or long-term injuries shown")
+st.caption("Live data from ESPN API — showing confirmed OUT or long-term injuries by team")
 
 @st.cache_data(ttl=900)
-def fetch_injury_report():
-    """Scrape ESPN NBA injury report with team + confirmed filter."""
-    url = "https://www.espn.com/nba/injuries"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=10)
-    soup = BeautifulSoup(r.text, "html.parser")
+def fetch_injury_report_json():
+    """Fetch team injury data directly from ESPN API (avoids missing teams)."""
+    base_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams"
     data = []
-    for sec in soup.find_all("section", class_="Card"):
-        team_header = sec.find("h2")
-        team_name = team_header.get_text(strip=True) if team_header else "Unknown"
-        table = sec.find("table")
-        if not table:
-            continue
-        for row in table.find_all("tr")[1:]:
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if len(cols) >= 4:
-                player, pos, injury, status = cols[:4]
-                # filter only confirmed/long-term absences
+    try:
+        res = requests.get(base_url, timeout=10).json()
+        teams = res.get("sports", [])[0].get("leagues", [])[0].get("teams", [])
+        for team_entry in teams:
+            team = team_entry.get("team", {})
+            team_name = team.get("displayName", "Unknown Team")
+            abbrev = team.get("abbreviation", "")
+            color = "#" + team.get("color", "FF3B3B")
+            injuries = team.get("injuries", [])
+            for inj in injuries:
+                player = inj.get("athlete", {}).get("displayName", "Unknown Player")
+                pos = inj.get("athlete", {}).get("position", {}).get("abbreviation", "")
+                injury = inj.get("type", "")
+                status = inj.get("status", "")
+                date = inj.get("date", "")
+                # Filter only OUT / Long-term statuses
                 if any(x in status.lower() for x in ["out", "suspended", "indefinite", "season"]):
                     data.append({
                         "team": team_name,
+                        "abbrev": abbrev,
+                        "color": color,
                         "player": player,
                         "position": pos,
                         "injury": injury,
-                        "status": status
+                        "status": status,
+                        "date": date
                     })
+    except Exception as e:
+        st.error(f"Error fetching injury data: {e}")
     return pd.DataFrame(data)
 
-inj_df = fetch_injury_report()
+inj_df = fetch_injury_report_json()
 
 if inj_df.empty:
-    st.warning("No confirmed injuries currently listed.")
+    st.warning("No confirmed injuries available right now.")
 else:
     teams = sorted(inj_df["team"].unique())
     selected_team = st.selectbox("Filter by team:", ["All Teams"] + teams)
-
     if selected_team != "All Teams":
         inj_df = inj_df[inj_df["team"] == selected_team]
 
@@ -340,6 +346,7 @@ else:
         padding: 12px 15px;
         margin-bottom: 10px;
         box-shadow: 0 0 15px rgba(255,0,0,0.25);
+        border: 1px solid rgba(255,255,255,0.05);
         transition: all 0.25s ease-in-out;
     }
     .injury-card:hover {
@@ -356,13 +363,14 @@ else:
         team_data = inj_df[inj_df["team"] == team]
         if team_data.empty:
             continue
+        team_color = team_data.iloc[0]["color"]
         with st.expander(f"🏀 {team} ({len(team_data)} confirmed injuries)", expanded=False):
             for _, row in team_data.iterrows():
                 st.markdown(f"""
-                    <div class='injury-card'>
+                    <div class='injury-card' style='border-left:4px solid {team_color};'>
                         <div class='injury-player'>{row['player']} ({row['position']})</div>
                         <div class='injury-info'>{row['injury']}</div>
-                        <div class='injury-status'>{row['status']}</div>
+                        <div class='injury-status'>{row['status']} • {row['date']}</div>
                     </div>
                 """, unsafe_allow_html=True)
 

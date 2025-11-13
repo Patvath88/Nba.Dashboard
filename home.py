@@ -148,10 +148,10 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (Clean ESPN-Style Cards) ----------
+# ---------- SEASON LEADERS (Vertical Spotlight Cards) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
-           font-family:'Oswald',sans-serif;">
+           font-family:'Oswald',sans-serif;text-align:center;">
 🏀 Top Performers (Per Game Averages)
 </h2>
 """, unsafe_allow_html=True)
@@ -178,43 +178,46 @@ if not df.empty:
 
     st.markdown("""
     <style>
+    .leader-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 25px;
+        justify-items: center;
+        margin-top: 15px;
+    }
     .leader-card {
-        position: relative;
-        display: flex;
-        align-items: center;
-        background: linear-gradient(160deg, #1a1a1a 0%, #0f0f0f 100%);
-        border-radius: 14px;
-        padding: 12px 18px;
-        margin-bottom: 14px;
-        box-shadow: 0 0 15px rgba(255,111,0,0.2);
-        overflow: hidden;
+        background: linear-gradient(160deg, #181818 0%, #0c0c0c 100%);
+        border-radius: 18px;
+        padding: 18px 10px;
+        width: 230px;
+        text-align: center;
+        box-shadow: 0 0 15px rgba(255,111,0,0.25);
         transition: all 0.25s ease-in-out;
+        position: relative;
     }
     .leader-card:hover {
-        box-shadow: 0 0 25px rgba(255,111,0,0.4);
-        transform: translateY(-2px);
+        transform: translateY(-5px);
+        box-shadow: 0 0 25px rgba(255,111,0,0.5);
+    }
+    .leader-name {
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.2rem;
+        color: #FFFFFF;
+        margin-bottom: 2px;
+    }
+    .leader-team {
+        color: #FFB266;
+        font-size: 0.9rem;
+        margin-bottom: 8px;
     }
     .leader-photo {
-        width: 95px;
-        height: 95px;
+        width: 130px;
+        height: 130px;
         border-radius: 50%;
         overflow: hidden;
-        margin-right: 20px;
-        flex-shrink: 0;
+        margin: 0 auto 10px;
         border: 3px solid #FF6F00;
-        background: radial-gradient(circle at center, #222 0%, #000 100%);
-        position: relative;
-    }
-    .leader-photo::after {
-        content: "";
-        background: url('https://cdn-icons-png.flaticon.com/512/1055/1055646.png') no-repeat center;
-        background-size: 75%;
-        opacity: 0.08;
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
+        box-shadow: 0 0 20px rgba(255,111,0,0.4);
     }
     .leader-photo img {
         width: 100%;
@@ -222,62 +225,42 @@ if not df.empty:
         object-fit: cover;
         border-radius: 50%;
     }
-    .leader-info {
-        flex-grow: 1;
-        color: #EAEAEA;
-        font-family: 'Roboto', sans-serif;
-        position: relative;
-    }
-    .leader-name {
-        font-family: 'Oswald', sans-serif;
-        font-size: 1.3rem;
-        color: #FFF;
-        margin-bottom: 4px;
-        text-shadow: 0 0 6px rgba(0,0,0,0.8);
-    }
-    .leader-team {
-        font-size: 0.95rem;
-        color: #FFB266;
-        margin-bottom: 4px;
-    }
     .leader-cat {
-        font-weight: bold;
-        color: #FF6F00;
-        text-transform: uppercase;
-        font-size: 0.9rem;
+        font-family: 'Oswald', sans-serif;
+        color: #FF9F43;
+        font-size: 1.1rem;
+        margin-top: 8px;
     }
     .leader-stat {
-        position: absolute;
-        top: -10px;
-        left: 110px;
         font-family: 'Oswald', sans-serif;
         font-size: 2.2rem;
         color: #FF6F00;
         font-weight: bold;
-        text-shadow: 0 0 10px rgba(255,111,0,0.4);
+        text-shadow: 0 0 12px rgba(255,111,0,0.6);
+        margin-top: 2px;
     }
     </style>
     """, unsafe_allow_html=True)
 
+    st.markdown("<div class='leader-grid'>", unsafe_allow_html=True)
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         st.markdown(
             f"""
             <div class='leader-card'>
+                <div class='leader-name'>{leader["PLAYER"]}</div>
+                <div class='leader-team'>{leader["TEAM"]}</div>
                 <div class='leader-photo'>
                     <img src='{photo}' alt='{leader["PLAYER"]}'>
                 </div>
+                <div class='leader-cat'>{cat}</div>
                 <div class='leader-stat'>{leader[key]}</div>
-                <div class='leader-info'>
-                    <div class='leader-name'>{leader["PLAYER"]}</div>
-                    <div class='leader-team'>{leader["TEAM"]}</div>
-                    <div class='leader-cat'>{cat}</div>
-                </div>
             </div>
             """,
             unsafe_allow_html=True
         )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 else:
     st.info("Leader data not available.")

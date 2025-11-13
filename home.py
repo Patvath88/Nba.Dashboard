@@ -129,11 +129,18 @@ try:
 except Exception:
     st.warning("Couldn't load today's schedule.")
 
-# =========================================================
-# 🏀 TOP PERFORMERS
-# =========================================================
-st.markdown("<h2>🏀 Top Performers (Per Game Averages)</h2>", unsafe_allow_html=True)
+import streamlit.components.v1 as components
+
+# ---------- SEASON LEADERS (3x2 Grid + Dual Team Colors) ----------
+st.markdown("""
+<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
+           font-family:'Oswald',sans-serif;text-align:center;">
+🏀 Top Performers (Per Game Averages)
+</h2>
+""", unsafe_allow_html=True)
+
 df = get_leaders()
+
 if not df.empty:
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
     df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
@@ -151,56 +158,114 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
+    # Primary and secondary colors (official NBA palette)
     team_colors = {
-        "LAL": ("#552583", "#FDB927"), "GSW": ("#1D428A", "#FFC72C"),
-        "BOS": ("#007A33", "#BA9653"), "DAL": ("#00538C", "#002B5E"),
-        "MIA": ("#98002E", "#F9A01B"), "MIL": ("#00471B", "#EEE1C6"),
-        "DEN": ("#0E2240", "#FEC524"), "NYK": ("#F58426", "#006BB6"),
-        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020")
+        "ATL": ("#E03A3E", "#C1D32F"), "BOS": ("#007A33", "#BA9653"),
+        "BKN": ("#000000", "#FFFFFF"), "CHA": ("#1D1160", "#00788C"),
+        "CHI": ("#CE1141", "#000000"), "CLE": ("#860038", "#FDBB30"),
+        "DAL": ("#00538C", "#002B5E"), "DEN": ("#0E2240", "#FEC524"),
+        "DET": ("#C8102E", "#1D42BA"), "GSW": ("#1D428A", "#FFC72C"),
+        "HOU": ("#CE1141", "#C4CED4"), "IND": ("#002D62", "#FDBB30"),
+        "LAC": ("#C8102E", "#1D428A"), "LAL": ("#552583", "#FDB927"),
+        "MEM": ("#5D76A9", "#12173F"), "MIA": ("#98002E", "#F9A01B"),
+        "MIL": ("#00471B", "#EEE1C6"), "MIN": ("#0C2340", "#236192"),
+        "NOP": ("#0C2340", "#85714D"), "NYK": ("#F58426", "#006BB6"),
+        "OKC": ("#007AC1", "#EF3B24"), "ORL": ("#0077C0", "#C4CED4"),
+        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020"),
+        "POR": ("#E03A3E", "#000000"), "SAC": ("#5A2D81", "#63727A"),
+        "SAS": ("#C4CED4", "#000000"), "TOR": ("#CE1141", "#A1A1A4"),
+        "UTA": ("#002B5C", "#F9A01B"), "WAS": ("#002B5C", "#E31837")
     }
 
     html = """
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(230px, 1fr));
         gap: 25px;
-        margin-top: 20px;
+        justify-items: center;
+        margin: 25px auto;
+        max-width: 1000px;
+    }
+    @media (max-width: 900px) {
+        .leader-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+        .leader-grid { grid-template-columns: 1fr; }
     }
     .leader-card {
-        background: linear-gradient(180deg, #0B0B0B, #111);
+        background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
         border-radius: 18px;
-        padding: 18px;
+        padding: 18px 10px;
         text-align: center;
-        box-shadow: 0 0 30px rgba(255,0,0,0.2);
+        box-shadow: 0 0 25px rgba(255,111,0,0.2);
         transition: all 0.25s ease-in-out;
-        width: 100%;
+        overflow: hidden;
+        width: 230px;
+        border: 1px solid rgba(255,255,255,0.05);
     }
     .leader-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 0 40px var(--team-primary);
-    }
-    .leader-photo img {
-        width: 120px; height: 120px;
-        border-radius: 50%;
-        border: 3px solid var(--team-primary);
-        box-shadow: 0 0 25px var(--team-secondary);
+        transform: translateY(-6px);
+        box-shadow: 0 0 35px var(--team-primary);
     }
     .leader-name {
-        font-family: 'Oswald';
-        font-size: 1.2rem;
-        font-weight: bold;
-        color: var(--team-primary);
-        text-shadow: 0 0 6px var(--team-secondary);
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.3rem;
+        color: #FFFFFF;
+        margin-bottom: 2px;
+        letter-spacing: 0.5px;
+        text-shadow: 0 0 6px rgba(255,255,255,0.4);
     }
     .leader-team {
+        color: #FFB266;
         font-size: 0.9rem;
-        color: var(--team-secondary);
+        margin-bottom: 8px;
+    }
+    .leader-photo {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        overflow: hidden;
+        margin: 0 auto 10px;
+        border: 3px solid var(--team-primary);
+        box-shadow: 0 0 25px var(--team-primary);
+    }
+    .leader-photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 50%;
+    }
+    .leader-cat {
+        font-family: 'Oswald', sans-serif;
+        color: #FF9F43;
+        font-size: 1.1rem;
+        margin-top: 8px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        text-shadow: 0 0 10px #FF9F43AA;
     }
     .leader-stat {
+        font-family: 'Bebas Neue', 'Oswald', sans-serif;
         font-size: 3rem;
+        font-weight: 900;
         color: var(--team-primary);
-        -webkit-text-stroke: 1px var(--team-secondary);
+        letter-spacing: 1px;
+        -webkit-text-stroke: 1.2px var(--team-secondary);
+        text-shadow:
+            0 0 6px var(--team-primary),
+            0 0 14px var(--team-secondary),
+            0 0 24px rgba(255,255,255,0.15);
+        margin-top: 6px;
+        margin-bottom: 6px;
+        transition: transform 0.2s ease, text-shadow 0.2s ease;
+    }
+    .leader-card:hover .leader-stat {
+        transform: scale(1.1);
+        text-shadow:
+            0 0 8px var(--team-primary),
+            0 0 18px var(--team-secondary),
+            0 0 32px rgba(255,255,255,0.2);
     }
     </style>
     <div class='leader-grid'>
@@ -210,20 +275,25 @@ if not df.empty:
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
-        primary, secondary = team_colors.get(team_abbr, ("#FF3B3B", "#0066FF"))
+        primary, secondary = team_colors.get(team_abbr, ("#FF6F00", "#FFD580"))
+
         html += f"""
-        <div class='leader-card' style="--team-primary:{primary};--team-secondary:{secondary};">
+        <div class='leader-card' style="--team-primary: {primary}; --team-secondary: {secondary};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
-            <div class='leader-photo'><img src='{photo}'></div>
+            <div class='leader-photo'>
+                <img src='{photo}' alt='{leader["PLAYER"]}'>
+            </div>
+            <div class='leader-cat'>{cat}</div>
             <div class='leader-stat'>{leader[key]}</div>
-            <div>{cat}</div>
         </div>
         """
+
     html += "</div>"
+
     components.html(html, height=800, scrolling=True)
 else:
-    st.warning("Leader data not available.")
+    st.info("Leader data not available.")
 
 # =========================================================
 # 💀 INJURY REPORT

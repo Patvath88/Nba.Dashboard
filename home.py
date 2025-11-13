@@ -68,8 +68,7 @@ def team_logo(abbr):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
 
-# ---------- LATEST NBA NEWS (Clean Magazine Layout) ----------
-# ---------- LATEST NBA NEWS (Clean Newspaper Layout) ----------
+# ---------- LATEST NBA NEWS (3 Clean Cards Across) ----------
 import feedparser
 from urllib.parse import quote
 
@@ -81,93 +80,97 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
-def fetch_google_news(count=6):
-    """Pulls top NBA headlines from Google News RSS feed."""
+def fetch_latest_nba_news(limit=3):
+    """Fetch top NBA stories from Google News RSS (limited to 3)."""
     feed_url = f"https://news.google.com/rss/search?q={quote('NBA basketball')}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(feed_url)
     stories = []
-    for entry in feed.entries[:count]:
-        # Choose a reasonable default image
-        img = "https://cdn-icons-png.flaticon.com/512/814/814513.png"
+    for entry in feed.entries[:limit]:
+        image = "https://cdn-icons-png.flaticon.com/512/814/814513.png"
         if "media_content" in entry:
-            img = entry.media_content[0].get("url", img)
+            image = entry.media_content[0].get("url", image)
         elif hasattr(entry, "links"):
             for link in entry.links:
                 if hasattr(link, "type") and "image" in link.type:
-                    img = link.href
+                    image = link.href
                     break
         stories.append({
             "title": entry.title.strip(),
             "url": entry.link,
-            "image": img
+            "image": image
         })
     return stories
 
-news_items = fetch_google_news()
+news = fetch_latest_nba_news()
 
-if not news_items:
-    st.info("🕵️ No fresh NBA headlines found — try again later.")
+if not news:
+    st.info("🕵️ No NBA news found at the moment.")
 else:
-    # Apply consistent visual formatting
+    # --- Style ---
     st.markdown("""
     <style>
-    .news-wrapper {
+    .news-row {
         display: flex;
-        flex-wrap: wrap;
+        justify-content: space-between;
         gap: 20px;
+        flex-wrap: wrap;
         margin-top: 10px;
     }
-    .news-card {
-        background: #1e1e1e;
+    .news-box {
+        background: #1C1C1C;
         border-radius: 12px;
-        overflow: hidden;
+        width: 32%;
+        min-width: 300px;
         box-shadow: 0 0 12px rgba(255,111,0,0.1);
-        width: 360px;
-        transition: all 0.2s ease-in-out;
+        overflow: hidden;
+        transition: all 0.25s ease-in-out;
     }
-    .news-card:hover {
+    .news-box:hover {
         transform: translateY(-5px);
-        box-shadow: 0 0 16px rgba(255,111,0,0.25);
+        box-shadow: 0 0 18px rgba(255,111,0,0.3);
     }
-    .news-card img {
+    .news-img {
         width: 100%;
         height: 180px;
         object-fit: cover;
         border-bottom: 1px solid #333;
     }
-    .news-card .title {
-        padding: 12px;
-        color: #FF9F43;
-        font-size: 0.95rem;
+    .news-title {
+        color: #EAEAEA;
         font-family: 'Roboto', sans-serif;
+        font-size: 0.95rem;
+        padding: 12px 15px;
         line-height: 1.3em;
     }
-    .news-card .title a {
+    .news-title a {
         color: #FF9F43;
         text-decoration: none;
+        font-weight: 500;
     }
-    .news-card .title a:hover {
+    .news-title a:hover {
         text-decoration: underline;
     }
-    @media (max-width: 800px){
-        .news-card { width: 100%; }
+    @media (max-width: 800px) {
+        .news-box { width: 100%; }
     }
     </style>
     """, unsafe_allow_html=True)
 
-    html = "<div class='news-wrapper'>"
-    for n in news_items:
+    # --- Render neatly ---
+    html = "<div class='news-row'>"
+    for item in news:
         html += f"""
-        <div class='news-card'>
-            <a href='{n['url']}' target='_blank'>
-                <img src='{n['image']}' alt='NBA news image'/>
+        <div class='news-box'>
+            <a href='{item['url']}' target='_blank'>
+                <img src='{item['image']}' class='news-img' alt='NBA news image'/>
             </a>
-            <div class='title'>
-                <a href='{n['url']}' target='_blank'>{n['title']}</a>
+            <div class='news-title'>
+                <a href='{item['url']}' target='_blank'>{item['title']}</a>
             </div>
         </div>
         """
     html += "</div>"
+
     st.markdown(html, unsafe_allow_html=True)
 
 

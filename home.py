@@ -287,92 +287,58 @@ render_games_section("Games Tonight", fetch_espn_games(0))
 render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
-# 💀 CONFIRMED INJURY REPORT (LIVE ESPN Feed — Verified Working)
+# 💀 PLAYER INJURY SEARCH (Live NBA Feed)
 # =========================================================
-st.markdown("<h2>💀 Confirmed Injury Report</h2>", unsafe_allow_html=True)
-st.caption("Live from ESPN Injury Feed — showing confirmed OUT / long-term injuries only")
+st.markdown("<h2>💀 Player Injury Lookup</h2>", unsafe_allow_html=True)
+st.caption("Search any NBA player to check current injury status — powered by NBA.com")
 
 @st.cache_data(ttl=600)
-def fetch_injury_report_live():
-    """Fetch live injury news directly from ESPN's JSON feed."""
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?category=injury"
-    data = []
+def fetch_all_injuries():
+    """Fetch complete injury list directly from NBA.com."""
+    url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
     try:
-        res = requests.get(url, timeout=10).json()
-        articles = res.get("articles", [])
-        for a in articles:
-            headline = a.get("headline", "")
-            desc = a.get("description", "")
-            teams = a.get("teams", [])
-            date = a.get("published", "")[:10]
-
-            if not teams:
-                continue
-
-            for t in teams:
-                team = t.get("displayName", "Unknown Team")
-                abbrev = t.get("abbreviation", "")
-                color = "#" + t.get("color", "FF3B3B")
-
-                # Parse the player & status from the headline if possible
-                player = headline.split(":")[0].strip() if ":" in headline else headline
-                if any(x in desc.lower() for x in ["out", "surgery", "injury", "fracture", "torn", "miss", "season", "indefinite"]):
-                    data.append({
-                        "team": team,
-                        "abbrev": abbrev,
-                        "color": color,
-                        "player": player,
-                        "injury": desc.strip(),
-                        "status": "Out",
-                        "date": date
-                    })
+        r = requests.get(url, timeout=10).json()
+        injuries = r.get("league", {}).get("injuries", [])
+        return pd.DataFrame(injuries)
     except Exception as e:
-        st.error(f"Error fetching injury data: {e}")
-    return pd.DataFrame(data)
+        st.error(f"Error fetching NBA injury data: {e}")
+        return pd.DataFrame()
 
-inj_df = fetch_injury_report_live()
+inj_df = fetch_all_injuries()
 
 if inj_df.empty:
-    st.warning("No confirmed injuries currently listed on ESPN’s live feed.")
+    st.warning("Unable to load injury data from NBA.com right now.")
 else:
-    teams = sorted(inj_df["team"].unique())
-    selected_team = st.selectbox("Filter by team:", ["All Teams"] + teams)
-    if selected_team != "All Teams":
-        inj_df = inj_df[inj_df["team"] == selected_team]
+    inj_df["playerName"] = inj_df["person"].apply(lambda x: x.get("displayName", "Unknown") if isinstance(x, dict) else "Unknown")
+    inj_df["team"] = inj_df["team"].apply(lambda x: x.get("displayName", "Unknown") if isinstance(x, dict) else "Unknown")
+    inj_df["status"] = inj_df["status"].apply(lambda x: x.get("description", "Unknown") if isinstance(x, dict) else "Unknown")
+    inj_df["updateDate"] = inj_df["dateUpdated"].apply(lambda x: x.split("T")[0] if isinstance(x, str) else "N/A")
 
-    st.markdown("""
-    <style>
-    .injury-card {
-        background: linear-gradient(180deg, #0B0B0B, #111);
-        border-radius: 12px;
-        padding: 12px 15px;
-        margin-bottom: 10px;
-        box-shadow: 0 0 15px rgba(255,0,0,0.25);
-        border: 1px solid rgba(255,255,255,0.05);
-        transition: all 0.25s ease-in-out;
-    }
-    .injury-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 0 25px rgba(0,102,255,0.35);
-    }
-    .injury-player { font-weight: bold; color: #FF3B3B; font-size: 1.1rem; }
-    .injury-status { color: #66B3FF; font-weight: bold; }
-    .injury-info { font-size: 0.9rem; color: #EAEAEA; }
-    </style>
-    """, unsafe_allow_html=True)
+    # Player Search
+    player_names = sorted(inj_df["playerName"].unique())
+    with st.expander("🔍 Search Player Injury Status", expanded=True):
+        search = st.selectbox("Select a player:", player_names, index=None, placeholder="Type or select a player")
 
-    for team in sorted(inj_df["team"].unique()):
-        team_data = inj_df[inj_df["team"] == team]
-        team_color = team_data.iloc[0]["color"]
-        with st.expander(f"🏀 {team} ({len(team_data)} confirmed injuries)", expanded=False):
-            for _, row in team_data.iterrows():
-                st.markdown(f"""
-                    <div class='injury-card' style='border-left:4px solid {team_color};'>
-                        <div class='injury-player'>{row['player']}</div>
-                        <div class='injury-info'>{row['injury']}</div>
-                        <div class='injury-status'>{row['status']} • {row['date']}</div>
+        if search:
+            player_info = inj_df[inj_df["playerName"].str.lower() == search.lower()]
+            if player_info.empty:
+                st.info(f"No injury info currently listed for **{search}**.")
+            else:
+                for _, p in player_info.iterrows():
+                    st.markdown(f"""
+                    <div style='background:linear-gradient(180deg,#0b0b0b,#111);
+                                border-radius:12px;
+                                padding:15px;
+                                margin-bottom:15px;
+                                border-left:4px solid #FF3B3B;
+                                box-shadow:0 0 20px rgba(255,0,0,0.3);'>
+                        <div style='font-weight:bold;font-size:1.2rem;color:#FF3B3B;'>{p['playerName']}</div>
+                        <div style='color:#EAEAEA;font-size:0.95rem;'>{p['team']}</div>
+                        <div style='color:#FF9F43;margin-top:6px;'>Status: <b>{p['status']}</b></div>
+                        <div style='color:#66B3FF;font-size:0.85rem;'>Last Updated: {p['updateDate']}</div>
                     </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+
 
 # =========================================================
 # 🏆 STANDINGS

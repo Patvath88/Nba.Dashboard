@@ -186,19 +186,104 @@ else:
     st.info("Leader data not available.")
 
 # ---------- INJURY REPORT ----------
+import requests
+from bs4 import BeautifulSoup
+
 st.markdown("## 💀 Injury Report")
-inj = get_injuries()
-if not inj.empty:
-    for _, r in inj.head(25).iterrows():
-        scls = "status-active"
-        if "Out" in r["status"]: scls = "status-out"
-        elif "Questionable" in r["status"]: scls = "status-questionable"
-        st.markdown(
-            f"<div class='section'><b>{r['player']}</b> — {r['team']}<br>"
-            f"<span class='{scls}'>{r['status']}</span> — {r.get('description','')}</div>",
-            unsafe_allow_html=True)
+st.caption("Data sourced live from ESPN.com")
+
+@st.cache_data(ttl=900)
+def fetch_injury_report():
+    """Scrape the ESPN NBA injury report table."""
+    url = "https://www.espn.com/nba/injuries"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=10)
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    tables = soup.find_all("table", class_="Table")
+    if not tables:
+        return pd.DataFrame()
+
+    all_rows = []
+    for table in tables:
+        team_header = table.find_previous("h2")
+        team_name = team_header.text.strip() if team_header else "Unknown Team"
+
+        for row in table.find_all("tr")[1:]:
+            cols = [c.text.strip() for c in row.find_all("td")]
+            if len(cols) >= 4:
+                player, pos, injury, status = cols[:4]
+                all_rows.append({
+                    "team": team_name,
+                    "player": player,
+                    "position": pos,
+                    "injury": injury,
+                    "status": status
+                })
+
+    return pd.DataFrame(all_rows)
+
+inj_df = fetch_injury_report()
+
+if inj_df.empty:
+    st.warning("No current injury data available from ESPN.")
 else:
-    st.warning("No injury data available.")
+    st.markdown("""
+    <style>
+    .inj-card {
+        background: #1C1C1C;
+        border-radius: 12px;
+        padding: 15px 18px;
+        margin-bottom: 15px;
+        box-shadow: 0 0 10px rgba(255,111,0,0.1);
+        transition: all 0.25s ease-in-out;
+    }
+    .inj-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 0 18px rgba(255,111,0,0.25);
+    }
+    .inj-title {
+        font-family: 'Oswald', sans-serif;
+        color: #FF6F00;
+        font-size: 1.1rem;
+        margin-bottom: 4px;
+    }
+    .inj-text {
+        color: #EAEAEA;
+        font-family: 'Roboto', sans-serif;
+        font-size: 0.9rem;
+        line-height: 1.4em;
+    }
+    .inj-status {
+        font-weight: bold;
+    }
+    .inj-out { color: #FF5252; }
+    .inj-questionable { color: #FFD700; }
+    .inj-active { color: #00FF80; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    for _, row in inj_df.iterrows():
+        status_class = "inj-active"
+        if "Out" in row["status"]:
+            status_class = "inj-out"
+        elif "Questionable" in row["status"] or "Day-To-Day" in row["status"]:
+            status_class = "inj-questionable"
+
+        st.markdown(
+            f"""
+            <div class='inj-card'>
+                <div class='inj-title'>{row['player']} — {row['team']}</div>
+                <div class='inj-text'>
+                    <b>Position:</b> {row['position']}<br>
+                    <b>Injury:</b> {row['injury']}<br>
+                    <b>Status:</b> <span class='inj-status {status_class}'>{row['status']}</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
 
 # ---------- STANDINGS ----------
 st.markdown("## 🏆 NBA Standings")

@@ -207,8 +207,10 @@ if not df.empty:
 # =========================================================
 # 🕒 GAMES TONIGHT + TOMORROW
 # =========================================================
+
+# --- Header with Stream Link ---
 st.markdown("""
-<h2 style="color:#FF3B3B;text-shadow:0 0 10px #0066FF;font-family:'Oswald',sans-serif;">
+<h2 style="color:#FF3B3B;text-shadow:0 0 10px #0066FF;font-family:'Oswald',sans-serif;text-align:center;">
 🏟️ Games Tonight
 </h2>
 
@@ -226,8 +228,19 @@ st.markdown("""
   50% { text-shadow: 0 0 16px #FF0044, 0 0 30px #007BFF; }
   100% { text-shadow: 0 0 6px #FF0044, 0 0 12px #007BFF; }
 }
+</style>
+""", unsafe_allow_html=True)
 
-    
+# --- Render Function ---
+def render_games_section(title, games):
+    html = """
+    <style>
+    .game-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 25px;
+        margin-top: 20px;
+    }
     .game-card {
         background: linear-gradient(180deg, #0B0B0B, #111);
         border-radius: 18px;
@@ -245,8 +258,17 @@ st.markdown("""
         border-radius: 50%;
         margin: 0 8px;
     }
-    .team-name { color: var(--team-primary); font-weight: bold; font-size: 1rem; }
-    .game-info { color: #EAEAEA; font-size: 0.9rem; margin-top: 5px; }
+    .team-name {
+        color: var(--team-primary);
+        font-weight: bold;
+        font-size: 1rem;
+        margin-top: 10px;
+    }
+    .game-info {
+        color: #EAEAEA;
+        font-size: 0.9rem;
+        margin-top: 5px;
+    }
     </style>
     <div class='game-grid'>
     """
@@ -264,7 +286,6 @@ st.markdown("""
 
         venue = comp.get("venue", {}).get("fullName", "Unknown Arena")
 
-        # --- SAFER BROADCAST HANDLING ---
         broadcasts = comp.get("broadcasts", [])
         if broadcasts:
             names = []
@@ -293,6 +314,13 @@ st.markdown("""
     html += "</div>"
     components.html(html, height=900, scrolling=True)
 
+# --- Render Both Sections ---
 render_games_section("Games Tonight", fetch_espn_games(0))
-render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
+st.markdown("""
+<h2 style="color:#FF3B3B;text-shadow:0 0 10px #0066FF;font-family:'Oswald',sans-serif;text-align:center;margin-top:40px;">
+📅 Tomorrow’s Games
+</h2>
+""", unsafe_allow_html=True)
+
+render_games_section("Tomorrow’s Games", fetch_espn_games(1))

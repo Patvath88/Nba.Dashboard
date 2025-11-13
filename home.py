@@ -148,7 +148,7 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (Vertical Spotlight Cards) ----------
+# ---------- SEASON LEADERS (Vertical Spotlight + Team Logos) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;text-align:center;">
@@ -180,35 +180,53 @@ if not df.empty:
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         gap: 25px;
         justify-items: center;
         margin-top: 15px;
     }
     .leader-card {
-        background: linear-gradient(160deg, #181818 0%, #0c0c0c 100%);
+        position: relative;
+        background: radial-gradient(circle at top, #1a1a1a 0%, #0b0b0b 90%);
         border-radius: 18px;
         padding: 18px 10px;
-        width: 230px;
+        width: 260px;
         text-align: center;
-        box-shadow: 0 0 15px rgba(255,111,0,0.25);
+        box-shadow: 0 0 18px rgba(255,111,0,0.25);
         transition: all 0.25s ease-in-out;
-        position: relative;
+        overflow: hidden;
     }
     .leader-card:hover {
         transform: translateY(-5px);
-        box-shadow: 0 0 25px rgba(255,111,0,0.5);
+        box-shadow: 0 0 28px rgba(255,111,0,0.45);
+    }
+    .leader-card::before {
+        content: "";
+        background: var(--team-logo);
+        background-size: 80%;
+        background-position: center;
+        background-repeat: no-repeat;
+        opacity: 0.1;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
     }
     .leader-name {
         font-family: 'Oswald', sans-serif;
         font-size: 1.2rem;
         color: #FFFFFF;
         margin-bottom: 2px;
+        position: relative;
+        z-index: 1;
     }
     .leader-team {
         color: #FFB266;
         font-size: 0.9rem;
         margin-bottom: 8px;
+        position: relative;
+        z-index: 1;
     }
     .leader-photo {
         width: 130px;
@@ -218,6 +236,8 @@ if not df.empty:
         margin: 0 auto 10px;
         border: 3px solid #FF6F00;
         box-shadow: 0 0 20px rgba(255,111,0,0.4);
+        position: relative;
+        z-index: 1;
     }
     .leader-photo img {
         width: 100%;
@@ -230,6 +250,8 @@ if not df.empty:
         color: #FF9F43;
         font-size: 1.1rem;
         margin-top: 8px;
+        position: relative;
+        z-index: 1;
     }
     .leader-stat {
         font-family: 'Oswald', sans-serif;
@@ -238,6 +260,8 @@ if not df.empty:
         font-weight: bold;
         text-shadow: 0 0 12px rgba(255,111,0,0.6);
         margin-top: 2px;
+        position: relative;
+        z-index: 1;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -246,9 +270,12 @@ if not df.empty:
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
+        team_abbr = leader["TEAM"]
+        logo_url = f"https://cdn.nba.com/logos/nba/{team_abbr}/primary/L/logo.svg"
+
         st.markdown(
             f"""
-            <div class='leader-card'>
+            <div class='leader-card' style="--team-logo: url('{logo_url}');">
                 <div class='leader-name'>{leader["PLAYER"]}</div>
                 <div class='leader-team'>{leader["TEAM"]}</div>
                 <div class='leader-photo'>

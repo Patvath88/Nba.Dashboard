@@ -150,7 +150,9 @@ else:
 
 import streamlit.components.v1 as components
 
-# ---------- SEASON LEADERS (3x2 Grid + Team Colors) ----------
+import streamlit.components.v1 as components
+
+# ---------- SEASON LEADERS (3x2 Grid + Dual Team Colors) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;text-align:center;">
@@ -177,108 +179,116 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
+    # Primary and secondary colors (official NBA palette)
     team_colors = {
-        "ATL": "#E03A3E", "BOS": "#007A33", "BKN": "#000000", "CHA": "#1D1160",
-        "CHI": "#CE1141", "CLE": "#860038", "DAL": "#00538C", "DEN": "#0E2240",
-        "DET": "#C8102E", "GSW": "#1D428A", "HOU": "#CE1141", "IND": "#FDBB30",
-        "LAC": "#C8102E", "LAL": "#552583", "MEM": "#5D76A9", "MIA": "#98002E",
-        "MIL": "#00471B", "MIN": "#0C2340", "NOP": "#0C2340", "NYK": "#F58426",
-        "OKC": "#007AC1", "ORL": "#0077C0", "PHI": "#006BB6", "PHX": "#1D1160",
-        "POR": "#E03A3E", "SAC": "#5A2D81", "SAS": "#C4CED4", "TOR": "#CE1141",
-        "UTA": "#002B5C", "WAS": "#002B5C"
+        "ATL": ("#E03A3E", "#C1D32F"), "BOS": ("#007A33", "#BA9653"),
+        "BKN": ("#000000", "#FFFFFF"), "CHA": ("#1D1160", "#00788C"),
+        "CHI": ("#CE1141", "#000000"), "CLE": ("#860038", "#FDBB30"),
+        "DAL": ("#00538C", "#002B5E"), "DEN": ("#0E2240", "#FEC524"),
+        "DET": ("#C8102E", "#1D42BA"), "GSW": ("#1D428A", "#FFC72C"),
+        "HOU": ("#CE1141", "#C4CED4"), "IND": ("#002D62", "#FDBB30"),
+        "LAC": ("#C8102E", "#1D428A"), "LAL": ("#552583", "#FDB927"),
+        "MEM": ("#5D76A9", "#12173F"), "MIA": ("#98002E", "#F9A01B"),
+        "MIL": ("#00471B", "#EEE1C6"), "MIN": ("#0C2340", "#236192"),
+        "NOP": ("#0C2340", "#85714D"), "NYK": ("#F58426", "#006BB6"),
+        "OKC": ("#007AC1", "#EF3B24"), "ORL": ("#0077C0", "#C4CED4"),
+        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020"),
+        "POR": ("#E03A3E", "#000000"), "SAC": ("#5A2D81", "#63727A"),
+        "SAS": ("#C4CED4", "#000000"), "TOR": ("#CE1141", "#A1A1A4"),
+        "UTA": ("#002B5C", "#F9A01B"), "WAS": ("#002B5C", "#E31837")
     }
 
     html = """
     <style>
-.leader-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(230px, 1fr));
-    gap: 25px;
-    justify-items: center;
-    margin: 25px auto;
-    max-width: 1000px;
-}
-@media (max-width: 900px) {
-    .leader-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 600px) {
-    .leader-grid { grid-template-columns: 1fr; }
-}
-.leader-card {
-    background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
-    border-radius: 18px;
-    padding: 18px 10px;
-    text-align: center;
-    box-shadow: 0 0 25px rgba(255,111,0,0.2);
-    transition: all 0.25s ease-in-out;
-    overflow: hidden;
-    width: 230px;
-    border: 1px solid rgba(255,255,255,0.05);
-}
-.leader-card:hover {
-    transform: translateY(-6px);
-    box-shadow: 0 0 35px var(--team-color);
-}
-.leader-name {
-    font-family: 'Oswald', sans-serif;
-    font-size: 1.3rem;
-    color: #FFFFFF;
-    margin-bottom: 2px;
-    letter-spacing: 0.5px;
-    text-shadow: 0 0 6px rgba(255,255,255,0.4);
-}
-.leader-team {
-    color: #FFB266;
-    font-size: 0.9rem;
-    margin-bottom: 8px;
-}
-.leader-photo {
-    width: 120px;
-    height: 120px;
-    border-radius: 50%;
-    overflow: hidden;
-    margin: 0 auto 10px;
-    border: 3px solid var(--team-color);
-    box-shadow: 0 0 25px var(--team-color);
-}
-.leader-photo img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: 50%;
-}
-.leader-cat {
-    font-family: 'Oswald', sans-serif;
-    color: #FF9F43;
-    font-size: 1.1rem;
-    margin-top: 8px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    text-shadow: 0 0 10px #FF9F43AA;
-}
-.leader-stat {
-    font-family: 'Bebas Neue', 'Oswald', sans-serif;
-    font-size: 2.8rem;
-    font-weight: 900;
-    color: var(--team-color);
-    letter-spacing: 1px;
-    text-shadow:
-        0 0 6px var(--team-color),
-        0 0 12px var(--team-color),
-        0 0 24px rgba(255,255,255,0.1);
-    margin-top: 6px;
-    margin-bottom: 6px;
-    transition: transform 0.2s ease, text-shadow 0.2s ease;
-}
-.leader-card:hover .leader-stat {
-    transform: scale(1.1);
-    text-shadow:
-        0 0 8px var(--team-color),
-        0 0 16px var(--team-color),
-        0 0 32px rgba(255,255,255,0.2);
-}
-</style>
-
+    .leader-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(230px, 1fr));
+        gap: 25px;
+        justify-items: center;
+        margin: 25px auto;
+        max-width: 1000px;
+    }
+    @media (max-width: 900px) {
+        .leader-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+        .leader-grid { grid-template-columns: 1fr; }
+    }
+    .leader-card {
+        background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
+        border-radius: 18px;
+        padding: 18px 10px;
+        text-align: center;
+        box-shadow: 0 0 25px rgba(255,111,0,0.2);
+        transition: all 0.25s ease-in-out;
+        overflow: hidden;
+        width: 230px;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .leader-card:hover {
+        transform: translateY(-6px);
+        box-shadow: 0 0 35px var(--team-primary);
+    }
+    .leader-name {
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.3rem;
+        color: #FFFFFF;
+        margin-bottom: 2px;
+        letter-spacing: 0.5px;
+        text-shadow: 0 0 6px rgba(255,255,255,0.4);
+    }
+    .leader-team {
+        color: #FFB266;
+        font-size: 0.9rem;
+        margin-bottom: 8px;
+    }
+    .leader-photo {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        overflow: hidden;
+        margin: 0 auto 10px;
+        border: 3px solid var(--team-primary);
+        box-shadow: 0 0 25px var(--team-primary);
+    }
+    .leader-photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 50%;
+    }
+    .leader-cat {
+        font-family: 'Oswald', sans-serif;
+        color: #FF9F43;
+        font-size: 1.1rem;
+        margin-top: 8px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        text-shadow: 0 0 10px #FF9F43AA;
+    }
+    .leader-stat {
+        font-family: 'Bebas Neue', 'Oswald', sans-serif;
+        font-size: 3rem;
+        font-weight: 900;
+        color: var(--team-primary);
+        letter-spacing: 1px;
+        -webkit-text-stroke: 1.2px var(--team-secondary);
+        text-shadow:
+            0 0 6px var(--team-primary),
+            0 0 14px var(--team-secondary),
+            0 0 24px rgba(255,255,255,0.15);
+        margin-top: 6px;
+        margin-bottom: 6px;
+        transition: transform 0.2s ease, text-shadow 0.2s ease;
+    }
+    .leader-card:hover .leader-stat {
+        transform: scale(1.1);
+        text-shadow:
+            0 0 8px var(--team-primary),
+            0 0 18px var(--team-secondary),
+            0 0 32px rgba(255,255,255,0.2);
+    }
+    </style>
     <div class='leader-grid'>
     """
 
@@ -286,10 +296,10 @@ if not df.empty:
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
-        team_color = team_colors.get(team_abbr, "#FF6F00")
+        primary, secondary = team_colors.get(team_abbr, ("#FF6F00", "#FFD580"))
 
         html += f"""
-        <div class='leader-card' style="--team-color: {team_color};">
+        <div class='leader-card' style="--team-primary: {primary}; --team-secondary: {secondary};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
             <div class='leader-photo'>
@@ -302,10 +312,10 @@ if not df.empty:
 
     html += "</div>"
 
-    # Use components.html to render true HTML layout
     components.html(html, height=800, scrolling=True)
 else:
     st.info("Leader data not available.")
+
 
 
 # ---------- INJURY REPORT ----------

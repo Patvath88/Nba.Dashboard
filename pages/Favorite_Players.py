@@ -1,198 +1,132 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import json
-import os
 import requests
-from datetime import datetime
-from io import BytesIO
-from PIL import Image
-from sklearn.ensemble import RandomForestRegressor
+import datetime
+import time
+from nba_api.stats.endpoints import playergamelog, commonplayerinfo
 from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="⭐ Favorite Players", layout="wide")
-st.title("⭐ Favorite Players Tracker")
+# ------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------
+st.set_page_config(page_title="⭐ Favorite Players Tracker", layout="wide")
+st.title("⭐ Favorite Players Live Tracker")
 
-FAV_PATH = "favorite_players.json"
-PROJ_PATH = "saved_projections.csv"
+REFRESH_INTERVAL = 60
+if "last_refresh" not in st.session_state:
+    st.session_state["last_refresh"] = time.time()
+if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
+    st.session_state["last_refresh"] = time.time()
+    st.rerun()
 
-# ---------------- UTILITIES ----------------
-def load_favorites():
-    if os.path.exists(FAV_PATH):
-        with open(FAV_PATH, "r") as f:
-            return json.load(f)
-    return []
+st.caption(f"🔄 Auto-refresh every {REFRESH_INTERVAL}s | Last updated: {datetime.datetime.now().strftime('%I:%M:%S %p')}")
 
-def save_favorites(favs):
-    with open(FAV_PATH, "w") as f:
-        json.dump(favs, f, indent=2)
-
-def get_player_photo(pid):
-    urls = [
-        f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png",
-        f"https://stats.nba.com/media/players/headshot/{pid}.png"
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=5)
-            if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
-                return Image.open(BytesIO(r.content))
-        except Exception:
-            continue
-    return None
-
-# ---------------- NBA HELPERS ----------------
+# ------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------
 @st.cache_data(ttl=3600)
-def get_next_game_info(player_id):
-    """
-    Uses NBA's live JSON scoreboard feed to find the next scheduled game
-    for the player's team. Fully accurate (no more NaN).
-    """
-    import datetime as dt
+def get_player_id_map():
+    return {p["full_name"]: p["id"] for p in players.get_active_players()}
 
+@st.cache_data(ttl=600)
+def get_live_boxscores():
+    """Pull live box scores from ESPN feed."""
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
     try:
-        # Fetch player's recent team code
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season="2025-26").get_data_frames()[0]
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        team_code = gl.iloc[0]["MATCHUP"].split(" ")[0]
-
-        today = dt.datetime.now().date()
-        for offset in range(0, 10):
-            date_check = today + dt.timedelta(days=offset)
-            date_str = date_check.strftime("%Y-%m-%d")
-            url = f"https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_{date_str}.json"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code != 200:
-                continue
-
-            games = resp.json().get("scoreboard", {}).get("games", [])
-            for game in games:
-                home = game["homeTeam"]["teamTricode"]
-                away = game["awayTeam"]["teamTricode"]
-                game_date = pd.to_datetime(game["gameTimeUTC"]).strftime("%Y-%m-%d")
-
-                if home == team_code or away == team_code:
-                    matchup = f"{home} vs {away}"
-                    return game_date, matchup
-        return "", ""
-    except Exception as e:
-        st.warning(f"Could not fetch next game info: {e}")
-        return "", ""
-
-@st.cache_data(ttl=3600)
-def get_games(player_id, season="2025-26"):
-    try:
-        gl = playergamelog.PlayerGameLog(player_id=player_id, season=season).get_data_frames()[0]
-        gl["GAME_DATE"] = pd.to_datetime(gl["GAME_DATE"])
-        gl = gl.sort_values("GAME_DATE")
-        return gl
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return data.get("events", [])
     except Exception:
+        return []
+
+@st.cache_data(ttl=3600)
+def get_player_projection_data():
+    """Load projections dataset (use your research/projection CSV)."""
+    try:
+        return pd.read_csv("data/results_history.csv")
+    except:
         return pd.DataFrame()
 
-def enrich(df):
-    if df.empty:
-        return df
-    df["P+R"] = df["PTS"] + df["REB"]
-    df["P+A"] = df["PTS"] + df["AST"]
-    df["R+A"] = df["REB"] + df["AST"]
-    df["PRA"] = df["PTS"] + df["REB"] + df["AST"]
-    return df
+def get_player_stats(player_name):
+    """Fetch season game log and compute last-game + averages."""
+    pid = get_player_id_map().get(player_name)
+    if not pid:
+        return {}
+    logs = playergamelog.PlayerGameLog(player_id=pid, season="2025-26").get_data_frames()[0]
+    last_game = logs.iloc[0]
+    last_5 = logs.head(5)
+    season_avg = logs.mean(numeric_only=True)
 
-def predict_next(df):
-    if df is None or len(df) < 3:
-        return 0
-    X = np.arange(len(df)).reshape(-1, 1)
-    y = df.values
-    model = RandomForestRegressor(n_estimators=150, random_state=42)
-    model.fit(X, y)
-    return round(float(model.predict([[len(df)]])[0]), 1)
+    return {
+        "PTS": {"Last": last_game["PTS"], "L5": last_5["PTS"].mean(), "Season": season_avg["PTS"]},
+        "REB": {"Last": last_game["REB"], "L5": last_5["REB"].mean(), "Season": season_avg["REB"]},
+        "AST": {"Last": last_game["AST"], "L5": last_5["AST"].mean(), "Season": season_avg["AST"]},
+        "FG3M": {"Last": last_game["FG3M"], "L5": last_5["FG3M"].mean(), "Season": season_avg["FG3M"]},
+        "BLK": {"Last": last_game["BLK"], "L5": last_5["BLK"].mean(), "Season": season_avg["BLK"]},
+        "STL": {"Last": last_game["STL"], "L5": last_5["STL"].mean(), "Season": season_avg["STL"]}
+    }
 
-# ---------------- FAVORITE PLAYER MANAGEMENT ----------------
-nba_players = players.get_active_players()
-player_map = {p["full_name"]: p["id"] for p in nba_players}
-player_list = sorted(player_map.keys())
+def get_live_stats(player_name):
+    """Scrape live stats for given player from ESPN feed."""
+    games = get_live_boxscores()
+    for g in games:
+        for comp in g.get("competitions", []):
+            for team in comp.get("competitors", []):
+                for p in team.get("leaders", []):
+                    leader = p.get("leaders", [])
+                    if not leader:
+                        continue
+                    for entry in leader:
+                        athlete = entry.get("athlete", {})
+                        if athlete.get("displayName", "").lower() == player_name.lower():
+                            return entry
+    return {}
 
-favorites = load_favorites()
+# ------------------------------------------------------
+# PLAYER SELECTION
+# ------------------------------------------------------
+player_id_map = get_player_id_map()
+projection_df = get_player_projection_data()
 
-col1, col2 = st.columns([2, 1])
-with col1:
-    new_fav = st.selectbox("Add a player to your favorites:", [""] + player_list)
-    if new_fav and st.button("➕ Add Player"):
-        if new_fav not in favorites:
-            favorites.append(new_fav)
-            save_favorites(favorites)
-            st.success(f"{new_fav} added to favorites!")
+if projection_df.empty:
+    st.warning("No projection data found. Please ensure `results_history.csv` is loaded.")
+else:
+    player_names = sorted(projection_df["PLAYER"].unique())
+    selected_players = st.multiselect("Select Favorite Players", player_names, default=player_names[:3])
+
+# ------------------------------------------------------
+# DISPLAY LIVE METRIC CARDS
+# ------------------------------------------------------
+if selected_players:
+    for player in selected_players:
+        st.markdown(f"<h2 style='color:#FF3B3B;text-shadow:0 0 8px #0066FF;'>{player}</h2>", unsafe_allow_html=True)
+
+        player_stats = get_player_stats(player)
+        player_proj = projection_df[projection_df["PLAYER"] == player].iloc[-1] if not projection_df.empty else None
+
+        if not player_proj.empty:
+            cols = st.columns(6)
+            metrics = ["PTS", "REB", "AST", "FG3M", "BLK", "STL"]
+
+            for i, m in enumerate(metrics):
+                live_stat = get_live_stats(player)
+                live_value = live_stat.get("value", player_stats[m]["Last"])
+                projected = player_proj.get(m, 0)
+
+                with cols[i]:
+                    st.metric(label=f"{m}", value=f"{live_value:.1f}", delta=f"Proj: {projected:.1f}")
+
+            # Subtext rows: Last Game / L5 / Season averages
+            sub_cols = st.columns(6)
+            for i, m in enumerate(metrics):
+                with sub_cols[i]:
+                    st.caption(
+                        f"🕐 Last: {player_stats[m]['Last']:.1f} | 📊 L5: {player_stats[m]['L5']:.1f} | 🔁 Season: {player_stats[m]['Season']:.1f}"
+                    )
         else:
-            st.info("Already in your favorites.")
-
-with col2:
-    if st.button("🗑️ Clear All Favorites"):
-        save_favorites([])
-        st.warning("All favorites cleared.")
-        st.stop()
+            st.warning("No projection data available for this player.")
+else:
+    st.info("Select players to begin tracking their live stats.")
 
 st.markdown("---")
-
-if not favorites:
-    st.info("No favorite players yet. Add some above!")
-    st.stop()
-
-# ---------------- DISPLAY FAVORITES ----------------
-st.subheader("💫 Your Favorite Players")
-for fav in favorites:
-    pid = player_map.get(fav)
-    photo = get_player_photo(pid)
-    col_img, col_txt, col_btn = st.columns([1, 3, 1])
-    with col_img:
-        if photo:
-            st.image(photo, width=100)
-    with col_txt:
-        st.markdown(f"### {fav}")
-    with col_btn:
-        if st.button(f"❌ Remove {fav}", key=fav):
-            favorites.remove(fav)
-            save_favorites(favorites)
-            st.rerun()
-
-st.markdown("---")
-st.info("📡 Auto-updating projections for favorite players...")
-
-# ---------------- AUTO-SAVE DAILY PROJECTIONS ----------------
-def save_projection(player_name, projections, game_date, opponent):
-    df = pd.DataFrame([{
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "player": player_name,
-        "game_date": game_date,
-        "opponent": opponent,
-        **projections
-    }])
-    if os.path.exists(PROJ_PATH):
-        existing = pd.read_csv(PROJ_PATH)
-        duplicate = existing[
-            (existing["player"] == player_name) & (existing["game_date"] == game_date)
-        ]
-        if not duplicate.empty:
-            return
-        df = pd.concat([existing, df], ignore_index=True)
-    df.to_csv(PROJ_PATH, index=False)
-
-# ---------------- UPDATE PROJECTIONS FOR FAVORITES ----------------
-for fav in favorites:
-    pid = player_map.get(fav)
-    current = enrich(get_games(pid))
-    if current.empty:
-        continue
-
-    next_game_date, next_matchup = get_next_game_info(pid)
-    if not next_game_date or not next_matchup:
-        continue
-
-    pred_next = {}
-    for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA","P+R","P+A","R+A"]:
-        pred_next[stat] = predict_next(current[stat])
-
-    save_projection(fav, pred_next, next_game_date, next_matchup)
-
-st.success("✅ Favorite player projections synced successfully!")
+st.caption("⚡ Hot Shot Props — Favorite Players Live Tracker © 2025")

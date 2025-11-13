@@ -1,12 +1,13 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA HOME HUB (Final Restored Edition)
+# HOT SHOT PROPS — NBA HOME HUB (Final Neon Edition)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import datetime
 import requests
+import json
 from bs4 import BeautifulSoup
-from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
+from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3
 from nba_api.stats.static import players
 from urllib.parse import quote
 import feedparser
@@ -26,7 +27,7 @@ body {
 }
 h1, h2, h3 {
     color: #FF3B3B;
-    text-shadow: 0 0 8px #0066FF;
+    text-shadow: 0 0 8px #0066FF, 0 0 14px #FF3B3B;
     font-family: 'Oswald', sans-serif;
 }
 .section {
@@ -34,14 +35,10 @@ h1, h2, h3 {
     border-radius: 12px;
     padding: 15px;
     margin-bottom: 20px;
-    box-shadow: 0 0 20px rgba(0,102,255,0.2);
+    box-shadow: 0 0 25px rgba(255,0,0,0.2);
 }
-a {
-    color: #FF3B3B;
-}
-a:hover {
-    color: #66B3FF;
-}
+a { color: #FF3B3B; }
+a:hover { color: #66B3FF; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,11 +53,6 @@ def get_leaders():
 def get_standings():
     return leaguestandingsv3.LeagueStandingsV3(season="2025-26").get_data_frames()[0]
 
-@st.cache_data(ttl=600)
-def get_games_today():
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    return scoreboardv2.ScoreboardV2(game_date=today).get_data_frames()
-
 @st.cache_data(ttl=3600)
 def player_id_map():
     return {p["full_name"]: p["id"] for p in players.get_active_players()}
@@ -70,9 +62,22 @@ def player_photo(name):
     return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png" if pid else \
            "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 
+# ---------- ESPN GAME DATA ----------
+def fetch_espn_games(days_ahead=0):
+    """Pull live game data from ESPN's scoreboard API."""
+    base_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+    date = (datetime.datetime.now() + datetime.timedelta(days=days_ahead)).strftime("%Y%m%d")
+    url = f"{base_url}?dates={date}"
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return data.get("events", [])
+    except Exception:
+        return []
+
 # ---------- HEADER ----------
 st.title("🏠 Hot Shot Props — NBA Home Hub")
-st.caption("Live news, games, leaders, injuries & standings")
+st.caption("Live news, leaders, games, injuries & standings")
 
 # =========================================================
 # 📰 LATEST NBA NEWS
@@ -95,52 +100,20 @@ def fetch_latest_nba_news(limit=3):
     return news_items
 
 news_items = fetch_latest_nba_news()
-
-if not news_items:
-    st.info("No NBA headlines available right now.")
-else:
-    for article in news_items:
-        st.markdown(
-            f"""
-            <div class='section'>
-                <h3><a href="{article['link']}" target="_blank">{article['title']}</a></h3>
-                <p>{article['summary']}</p>
-            </div>
-            """, unsafe_allow_html=True)
+for article in news_items:
+    st.markdown(
+        f"""
+        <div class='section'>
+            <h3><a href="{article['link']}" target="_blank">{article['title']}</a></h3>
+            <p>{article['summary']}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 # =========================================================
-# 🏟️ GAMES TONIGHT (Always Visible)
+# 🏀 TOP PERFORMERS
 # =========================================================
-st.markdown("<h2>🏟️ Games Tonight</h2>", unsafe_allow_html=True)
-
-try:
-    _, games, *_ = get_games_today()
-    if not games.empty:
-        for _, g in games.iterrows():
-            st.markdown(
-                f"""
-                <div class='section'>
-                    <b>{g['VISITOR_TEAM_NAME']}</b> @ <b>{g['HOME_TEAM_NAME']}</b><br>
-                    <i>Tipoff:</i> {g['GAME_STATUS_TEXT']} (EST)
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.info("No games scheduled tonight.")
-except Exception:
-    st.warning("Couldn't load today's schedule.")
-
-import streamlit.components.v1 as components
-
-# ---------- SEASON LEADERS (3x2 Grid + Dual Team Colors) ----------
-st.markdown("""
-<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
-           font-family:'Oswald',sans-serif;text-align:center;">
-🏀 Top Performers (Per Game Averages)
-</h2>
-""", unsafe_allow_html=True)
-
+st.markdown("<h2>🏀 Top Performers (Per Game Averages)</h2>", unsafe_allow_html=True)
 df = get_leaders()
-
 if not df.empty:
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
     df["REB_Avg"] = (df["REB"] / df["GP"]).round(1)
@@ -158,114 +131,51 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
-    # Primary and secondary colors (official NBA palette)
     team_colors = {
-        "ATL": ("#E03A3E", "#C1D32F"), "BOS": ("#007A33", "#BA9653"),
-        "BKN": ("#000000", "#FFFFFF"), "CHA": ("#1D1160", "#00788C"),
-        "CHI": ("#CE1141", "#000000"), "CLE": ("#860038", "#FDBB30"),
-        "DAL": ("#00538C", "#002B5E"), "DEN": ("#0E2240", "#FEC524"),
-        "DET": ("#C8102E", "#1D42BA"), "GSW": ("#1D428A", "#FFC72C"),
-        "HOU": ("#CE1141", "#C4CED4"), "IND": ("#002D62", "#FDBB30"),
-        "LAC": ("#C8102E", "#1D428A"), "LAL": ("#552583", "#FDB927"),
-        "MEM": ("#5D76A9", "#12173F"), "MIA": ("#98002E", "#F9A01B"),
-        "MIL": ("#00471B", "#EEE1C6"), "MIN": ("#0C2340", "#236192"),
-        "NOP": ("#0C2340", "#85714D"), "NYK": ("#F58426", "#006BB6"),
-        "OKC": ("#007AC1", "#EF3B24"), "ORL": ("#0077C0", "#C4CED4"),
-        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020"),
-        "POR": ("#E03A3E", "#000000"), "SAC": ("#5A2D81", "#63727A"),
-        "SAS": ("#C4CED4", "#000000"), "TOR": ("#CE1141", "#A1A1A4"),
-        "UTA": ("#002B5C", "#F9A01B"), "WAS": ("#002B5C", "#E31837")
+        "LAL": ("#552583", "#FDB927"), "GSW": ("#1D428A", "#FFC72C"),
+        "BOS": ("#007A33", "#BA9653"), "DAL": ("#00538C", "#002B5E"),
+        "MIA": ("#98002E", "#F9A01B"), "MIL": ("#00471B", "#EEE1C6"),
+        "DEN": ("#0E2240", "#FEC524"), "NYK": ("#F58426", "#006BB6"),
+        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020")
     }
 
     html = """
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(230px, 1fr));
+        grid-template-columns: repeat(3, 1fr);
         gap: 25px;
-        justify-items: center;
-        margin: 25px auto;
-        max-width: 1000px;
-    }
-    @media (max-width: 900px) {
-        .leader-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-    @media (max-width: 600px) {
-        .leader-grid { grid-template-columns: 1fr; }
+        margin-top: 20px;
     }
     .leader-card {
-        background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
+        background: linear-gradient(180deg, #0B0B0B, #111);
         border-radius: 18px;
-        padding: 18px 10px;
+        padding: 18px;
         text-align: center;
-        box-shadow: 0 0 25px rgba(255,111,0,0.2);
+        box-shadow: 0 0 30px rgba(255,0,0,0.2);
         transition: all 0.25s ease-in-out;
-        overflow: hidden;
-        width: 230px;
-        border: 1px solid rgba(255,255,255,0.05);
     }
     .leader-card:hover {
-        transform: translateY(-6px);
-        box-shadow: 0 0 35px var(--team-primary);
-    }
-    .leader-name {
-        font-family: 'Oswald', sans-serif;
-        font-size: 1.3rem;
-        color: #FFFFFF;
-        margin-bottom: 2px;
-        letter-spacing: 0.5px;
-        text-shadow: 0 0 6px rgba(255,255,255,0.4);
-    }
-    .leader-team {
-        color: #FFB266;
-        font-size: 0.9rem;
-        margin-bottom: 8px;
-    }
-    .leader-photo {
-        width: 120px;
-        height: 120px;
-        border-radius: 50%;
-        overflow: hidden;
-        margin: 0 auto 10px;
-        border: 3px solid var(--team-primary);
-        box-shadow: 0 0 25px var(--team-primary);
+        transform: translateY(-5px);
+        box-shadow: 0 0 40px var(--team-primary);
     }
     .leader-photo img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
+        width: 120px; height: 120px;
         border-radius: 50%;
+        border: 3px solid var(--team-primary);
+        box-shadow: 0 0 25px var(--team-secondary);
     }
-    .leader-cat {
-        font-family: 'Oswald', sans-serif;
-        color: #FF9F43;
-        font-size: 1.1rem;
-        margin-top: 8px;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
-        text-shadow: 0 0 10px #FF9F43AA;
-    }
-    .leader-stat {
-        font-family: 'Bebas Neue', 'Oswald', sans-serif;
-        font-size: 3rem;
-        font-weight: 900;
+    .leader-name {
+        font-family: 'Oswald';
+        font-size: 1.2rem;
         color: var(--team-primary);
-        letter-spacing: 1px;
-        -webkit-text-stroke: 1.2px var(--team-secondary);
-        text-shadow:
-            0 0 6px var(--team-primary),
-            0 0 14px var(--team-secondary),
-            0 0 24px rgba(255,255,255,0.15);
-        margin-top: 6px;
-        margin-bottom: 6px;
-        transition: transform 0.2s ease, text-shadow 0.2s ease;
+        text-shadow: 0 0 6px var(--team-secondary);
     }
-    .leader-card:hover .leader-stat {
-        transform: scale(1.1);
-        text-shadow:
-            0 0 8px var(--team-primary),
-            0 0 18px var(--team-secondary),
-            0 0 32px rgba(255,255,255,0.2);
+    .leader-team { font-size: 0.9rem; color: var(--team-secondary); }
+    .leader-stat {
+        font-size: 3rem;
+        color: var(--team-primary);
+        -webkit-text-stroke: 1px var(--team-secondary);
     }
     </style>
     <div class='leader-grid'>
@@ -275,25 +185,99 @@ if not df.empty:
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
-        primary, secondary = team_colors.get(team_abbr, ("#FF6F00", "#FFD580"))
-
+        primary, secondary = team_colors.get(team_abbr, ("#FF3B3B", "#0066FF"))
         html += f"""
-        <div class='leader-card' style="--team-primary: {primary}; --team-secondary: {secondary};">
+        <div class='leader-card' style="--team-primary:{primary};--team-secondary:{secondary};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
-            <div class='leader-photo'>
-                <img src='{photo}' alt='{leader["PLAYER"]}'>
-            </div>
-            <div class='leader-cat'>{cat}</div>
+            <div class='leader-photo'><img src='{photo}'></div>
             <div class='leader-stat'>{leader[key]}</div>
+            <div>{cat}</div>
         </div>
         """
-
     html += "</div>"
-
     components.html(html, height=800, scrolling=True)
-else:
-    st.info("Leader data not available.")
+
+# =========================================================
+# 🕒 GAMES TONIGHT + TOMORROW (ESPN LIVE)
+# =========================================================
+def render_games_section(title, games):
+    st.markdown(f"<h2 style='color:#FF3B3B;text-shadow:0 0 10px #0066FF;'>🏟️ {title}</h2>", unsafe_allow_html=True)
+
+    html = """
+    <style>
+    .game-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 25px;
+        margin-top: 20px;
+    }
+    .game-card {
+        background: linear-gradient(180deg, #0B0B0B, #111);
+        border-radius: 18px;
+        padding: 15px;
+        text-align: center;
+        box-shadow: 0 0 25px rgba(255,0,0,0.2);
+        transition: all 0.25s ease-in-out;
+    }
+    .game-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 0 40px var(--team-primary);
+    }
+    .team-logos img {
+        width: 60px; height: 60px;
+        border-radius: 50%;
+        margin: 0 8px;
+    }
+    .team-name {
+        color: var(--team-primary);
+        font-weight: bold;
+        font-size: 1rem;
+    }
+    .game-info {
+        color: #EAEAEA;
+        font-size: 0.9rem;
+        margin-top: 5px;
+    }
+    </style>
+    <div class='game-grid'>
+    """
+
+    for game in games:
+        comp = game.get("competitions", [])[0]
+        competitors = comp.get("competitors", [])
+        if len(competitors) < 2:
+            continue
+
+        home = next(c for c in competitors if c["homeAway"] == "home")
+        away = next(c for c in competitors if c["homeAway"] == "away")
+        home_team, away_team = home["team"], away["team"]
+        home_color = "#" + home_team.get("color", "FF3B3B")
+        away_color = "#" + away_team.get("color", "0066FF")
+
+        venue = comp.get("venue", {}).get("fullName", "Unknown Arena")
+        broadcast = ", ".join([c["shortName"] for c in comp.get("broadcasts", [])]) or "TBD"
+        date = datetime.datetime.fromisoformat(game["date"][:-1])
+        time_est = date.astimezone(datetime.timezone(datetime.timedelta(hours=-5))).strftime("%I:%M %p EST")
+
+        html += f"""
+        <div class='game-card' style="--team-primary:{home_color};--team-secondary:{away_color};">
+            <div class='team-logos'>
+                <img src='{away_team["logo"]}'><img src='{home_team["logo"]}'>
+            </div>
+            <div class='team-name'>{away_team["displayName"]} @ {home_team["displayName"]}</div>
+            <div class='game-info'>{away_team["record"]["summary"]} ({away_team["standingSummary"]}) vs {home_team["record"]["summary"]} ({home_team["standingSummary"]})</div>
+            <div class='game-info'><b>Tipoff:</b> {time_est}</div>
+            <div class='game-info'><b>Network:</b> {broadcast}</div>
+            <div class='game-info'><b>Arena:</b> {venue}</div>
+        </div>
+        """
+    html += "</div>"
+    components.html(html, height=900, scrolling=True)
+
+# Live pull — no cache
+render_games_section("Games Tonight", fetch_espn_games(0))
+render_games_section("Tomorrow’s Games", fetch_espn_games(1))
 
 # =========================================================
 # 💀 INJURY REPORT

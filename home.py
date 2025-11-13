@@ -148,8 +148,13 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS ----------
-st.markdown("## 🏀 Top Performers (Per Game Averages)")
+# ---------- SEASON LEADERS (Redesigned Hero Cards) ----------
+st.markdown("""
+<h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
+           font-family:'Oswald',sans-serif;">
+🏀 Top Performers (Per Game Averages)
+</h2>
+""", unsafe_allow_html=True)
 
 df = get_leaders()
 
@@ -166,22 +171,98 @@ if not df.empty:
         "Points": "PTS_Avg",
         "Rebounds": "REB_Avg",
         "Assists": "AST_Avg",
-        "3PT Field Goals Made": "FG3M_Avg",
+        "3PT Made": "FG3M_Avg",
         "Blocks": "BLK_Avg",
-        "Steals": "STL_Avg",
-        "Turnovers": "TOV_Avg"
+        "Steals": "STL_Avg"
     }
+
+    # --- Modern Styling ---
+    st.markdown("""
+    <style>
+    .leader-card {
+        position: relative;
+        display: flex;
+        align-items: center;
+        background: linear-gradient(145deg, #1b1b1b, #101010);
+        border-radius: 18px;
+        padding: 18px 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 0 15px rgba(255,111,0,0.25);
+        overflow: hidden;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .leader-card:hover {
+        transform: scale(1.03);
+        box-shadow: 0 0 25px rgba(255,111,0,0.45);
+    }
+    .leader-photo {
+        position: relative;
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        overflow: hidden;
+        margin-right: 20px;
+        flex-shrink: 0;
+        border: 3px solid #FF6F00;
+        background: url('https://cdn-icons-png.flaticon.com/512/616/616408.png') no-repeat center;
+        background-size: 110%;
+    }
+    .leader-photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        mix-blend-mode: normal;
+        border-radius: 50%;
+    }
+    .leader-info {
+        flex-grow: 1;
+        color: #EAEAEA;
+        font-family: 'Roboto', sans-serif;
+    }
+    .leader-name {
+        font-family: 'Oswald', sans-serif;
+        font-size: 1.4rem;
+        color: #FFFFFF;
+        margin-bottom: 4px;
+    }
+    .leader-team {
+        font-size: 0.95rem;
+        color: #FF9F43;
+        margin-bottom: 4px;
+    }
+    .leader-stat {
+        font-family: 'Oswald', sans-serif;
+        font-size: 2.5rem;
+        color: #FF6F00;
+        font-weight: bold;
+        position: absolute;
+        top: 8px;
+        left: 150px;
+        text-shadow: 0 0 10px rgba(255,111,0,0.5);
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         st.markdown(
-            f"<div class='section leader'>"
-            f"<img src='{photo}'>"
-            f"<div><b>{leader['PLAYER']}</b><br>"
-            f"{leader['TEAM']} — {cat}: <b>{leader[key]}</b></div></div>",
+            f"""
+            <div class='leader-card'>
+                <div class='leader-photo'>
+                    <img src='{photo}' alt='{leader["PLAYER"]}'>
+                </div>
+                <div class='leader-stat'>{leader[key]}</div>
+                <div class='leader-info'>
+                    <div class='leader-name'>{leader["PLAYER"]}</div>
+                    <div class='leader-team'>{leader["TEAM"]}</div>
+                    <div><b>{cat}</b></div>
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True
         )
+
 else:
     st.info("Leader data not available.")
 

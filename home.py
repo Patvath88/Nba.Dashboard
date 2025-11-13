@@ -66,40 +66,37 @@ def player_photo(name):
 def team_logo(abbr):
     return f"https://cdn.nba.com/logos/nba/{abbr}/primary/L/logo.svg"
 
-# ---------- NEW HELPER: Tweets from X ----------
-@st.cache_data(ttl=300)
-def get_latest_nba_tweets(usernames: list, count: int = 3):
-    """Fetch latest tweets from specified verified X users."""
-    bearer_token = os.getenv("X_BEARER_TOKEN")
-    if not bearer_token:
-        st.warning("X API bearer token not provided; tweets will not load.")
-        return []
-    headers = {"Authorization": f"Bearer {bearer_token}"}
-    tweets = []
-    for user in usernames:
-        # get user id
-        resp = requests.get(f"https://api.twitter.com/2/users/by/username/{user}",
-                            headers=headers, timeout=10)
-        if resp.status_code != 200:
-            continue
-        user_id = resp.json().get("data", {}).get("id")
-        if not user_id:
-            continue
-        t_resp = requests.get(
-            f"https://api.twitter.com/2/users/{user_id}/tweets",
-            params={"max_results": count, "tweet.fields": "created_at,author_id,text"},
-            headers=headers, timeout=10
+# ---------- LATEST NBA NEWS — image tiles with links ----------
+st.markdown("## 🔔 Latest NBA News")
+
+news_items = [
+    {
+        "title": "Anthony Davis trade rumors: Ranking every NBA team as a possible landing spot for Mavericks' star big man",
+        "url": "https://www.cbssports.com/nba/news/anthony-davis-trade-rumors-landing-spots-mavericks-nico-harrison-rebuild/",
+        "image": "https://cdn.cbssports.com/nba/news/2025/11/12/ad-getty.png"
+    },
+    {
+        "title": "Rockets Drop in Latest NBA Power Rankings",
+        "url": "https://www.si.com/nba/rockets-drop-in-latest-nba-power-rankings",
+        "image": "https://sportsillustrated.cbsistatic.com/i?img=/upload/2025/11/09/rockets-power-rankings.jpg"
+    },
+    {
+        "title": "Kia Rookie Ladder: Hornets' duo makes its mark in Top 5",
+        "url": "https://www.nba.com/news/kia-rookie-ladder-nov-12-2025",
+        "image": "https://cdn.nba.com/some-image-for-rookie-ladder.jpg"
+    }
+]
+
+cols = st.columns(len(news_items))
+for idx, item in enumerate(news_items):
+    with cols[idx]:
+        st.markdown(
+            f"<a href='{item['url']}' target='_blank'>"
+            f"<img src='{item['image']}' style='width:100%;border-radius:8px;'/>"
+            f"</a>"
+            f"<br><small>{item['title']}</small>",
+            unsafe_allow_html=True
         )
-        if t_resp.status_code != 200:
-            continue
-        for t in t_resp.json().get("data", []):
-            tweets.append({
-                "username": user,
-                "created_at": t["created_at"],
-                "text": t["text"]
-            })
-    tweets = sorted(tweets, key=lambda x: x["created_at"], reverse=True)[:count]
-    return tweets
 
 # ---------- NEW HELPER: Upcoming Games via ESPN (EST) ----------
 @st.cache_data(ttl=600)

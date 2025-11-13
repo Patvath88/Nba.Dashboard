@@ -68,61 +68,96 @@ def team_logo(abbr):
 st.title("🏠 Hot Shot Props — NBA Home Hub")
 st.caption("Live leaders, games, injuries & standings")
 
-# ---------- LATEST NBA NEWS (moved below header) ----------
-st.markdown("## 📰 Latest NBA News")
+# ---------- LATEST NBA NEWS (Polished Front-Page Style) ----------
+st.markdown("""
+    <h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
+               font-family:'Oswald',sans-serif;">
+        📰 Latest NBA News
+    </h2>
+""", unsafe_allow_html=True)
 
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "2c85c76c2b2a434d9dd402e2380db754")
 
 @st.cache_data(ttl=300)
-def fetch_news_from_newsapi(api_key, count=5):
-    url = f"https://newsapi.org/v2/everything?q=NBA%20basketball&language=en&sortBy=publishedAt&pageSize={count}&apiKey={api_key}"
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            return []
-        data = r.json().get("articles", [])
-        if not data:
-            return []
-        return [{"title": a.get("title"), "url": a.get("url"), "image": a.get("urlToImage")} for a in data if a.get("url")]
-    except Exception:
-        return []
-
-@st.cache_data(ttl=300)
-def fetch_news_from_google(count=5):
-    """Fallback to Google News RSS feed"""
+def fetch_news_from_google(count=6):
+    """Fetch top NBA stories via Google News RSS."""
+    import feedparser
     feed = feedparser.parse("https://news.google.com/rss/search?q=NBA&hl=en-US&gl=US&ceid=US:en")
     items = []
     for entry in feed.entries[:count]:
-        # Extract image if available
-        img_url = ""
+        img = "https://cdn-icons-png.flaticon.com/512/814/814513.png"
         if "media_content" in entry:
-            img_url = entry.media_content[0]['url']
-        elif "links" in entry and len(entry.links) > 1 and 'image' in entry.links[1].type:
-            img_url = entry.links[1].href
+            img = entry.media_content[0].get("url", img)
+        elif "links" in entry:
+            for l in entry.links:
+                if "image" in l.type:
+                    img = l.href
         items.append({
             "title": entry.title,
             "url": entry.link,
-            "image": img_url or "https://cdn-icons-png.flaticon.com/512/814/814513.png"
+            "image": img
         })
     return items
 
-# Try NewsAPI first, fallback to Google News
-news_items = fetch_news_from_newsapi(NEWSAPI_KEY, 4)
-if not news_items:
-    news_items = fetch_news_from_google(4)
+news_items = fetch_news_from_google()
 
 if not news_items:
-    st.info("No recent NBA news found.")
+    st.info("No current NBA headlines available.")
 else:
-    cols = st.columns(len(news_items))
-    for idx, item in enumerate(news_items):
-        with cols[idx]:
-            st.markdown(
-                f"<a href='{item['url']}' target='_blank'>"
-                f"<img src='{item['image']}' style='width:100%;border-radius:8px;'/>"
-                f"</a><br><small>{item['title']}</small>",
-                unsafe_allow_html=True
-            )
+    st.markdown("""
+    <style>
+    .news-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 20px;
+        margin-top: 10px;
+    }
+    .news-card {
+        background: #1c1c1c;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 0 12px rgba(255,111,0,0.1);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .news-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 0 18px rgba(255,111,0,0.25);
+    }
+    .news-img {
+        width: 100%;
+        height: 160px;
+        object-fit: cover;
+    }
+    .news-text {
+        padding: 10px 14px;
+        font-size: 0.9rem;
+        color: #EAEAEA;
+    }
+    .news-text a {
+        color: #FF9F43;
+        text-decoration: none;
+        font-weight: 500;
+    }
+    .news-text a:hover {
+        text-decoration: underline;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    html = "<div class='news-container'>"
+    for n in news_items:
+        html += f"""
+        <div class='news-card'>
+            <a href='{n['url']}' target='_blank'>
+                <img src='{n['image']}' class='news-img'/>
+            </a>
+            <div class='news-text'>
+                <a href='{n['url']}' target='_blank'>{n['title']}</a>
+            </div>
+        </div>
+        """
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
 # ---------- SEASON LEADERS ----------
 st.markdown("## 🏀 Top Performers (Per Game Averages)")

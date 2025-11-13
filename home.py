@@ -148,7 +148,7 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (True 3x2 Grid + Team Colors) ----------
+# ---------- SEASON LEADERS (3x2 Grid + Team Colors) ----------
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;text-align:center;">
@@ -175,7 +175,6 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
-    # Team color mapping
     team_colors = {
         "ATL": "#E03A3E", "BOS": "#007A33", "BKN": "#000000", "CHA": "#1D1160",
         "CHI": "#CE1141", "CLE": "#860038", "DAL": "#00538C", "DEN": "#0E2240",
@@ -191,17 +190,11 @@ if not df.empty:
     <style>
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(250px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
         gap: 25px;
         justify-items: center;
         margin: 30px auto;
         max-width: 1000px;
-    }
-    @media (max-width: 900px) {
-        .leader-grid { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
-    }
-    @media (max-width: 600px) {
-        .leader-grid { grid-template-columns: 1fr; }
     }
     .leader-card {
         position: relative;
@@ -224,15 +217,11 @@ if not df.empty:
         font-size: 1.2rem;
         color: #FFFFFF;
         margin-bottom: 2px;
-        position: relative;
-        z-index: 1;
     }
     .leader-team {
         color: #FFB266;
         font-size: 0.9rem;
         margin-bottom: 8px;
-        position: relative;
-        z-index: 1;
     }
     .leader-photo {
         width: 120px;
@@ -242,8 +231,10 @@ if not df.empty:
         margin: 0 auto 10px;
         border: 3px solid var(--team-color);
         box-shadow: 0 0 15px var(--team-color);
-        position: relative;
-        z-index: 1;
+        transition: transform 0.2s ease;
+    }
+    .leader-photo:hover {
+        transform: scale(1.05);
     }
     .leader-photo img {
         width: 100%;
@@ -256,8 +247,6 @@ if not df.empty:
         color: #FF9F43;
         font-size: 1rem;
         margin-top: 8px;
-        position: relative;
-        z-index: 1;
     }
     .leader-stat {
         font-family: 'Oswald', sans-serif;
@@ -266,21 +255,19 @@ if not df.empty:
         font-weight: bold;
         text-shadow: 0 0 10px var(--team-color);
         margin-top: 4px;
-        position: relative;
-        z-index: 1;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    cards_html = "<div class='leader-grid'>"
-
+    # Create grid layout correctly
+    cards = []
     for cat, key in categories.items():
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
         team_color = team_colors.get(team_abbr, "#FF6F00")
 
-        cards_html += f"""
+        card_html = f"""
         <div class='leader-card' style="--team-color: {team_color};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
@@ -291,9 +278,10 @@ if not df.empty:
             <div class='leader-stat'>{leader[key]}</div>
         </div>
         """
+        cards.append(card_html)
 
-    cards_html += "</div>"
-    st.markdown(cards_html, unsafe_allow_html=True)
+    grid_html = "<div class='leader-grid'>" + "".join(cards) + "</div>"
+    st.markdown(grid_html, unsafe_allow_html=True)
 
 else:
     st.info("Leader data not available.")

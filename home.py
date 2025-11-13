@@ -1,31 +1,47 @@
 # -------------------------------------------------
-# HOT SHOT PROPS — NBA HOME HUB (Full Restored + Enhanced)
+# HOT SHOT PROPS — NBA HOME HUB (Final Restored Edition)
 # -------------------------------------------------
 import streamlit as st
 import pandas as pd
 import datetime
 import requests
+from bs4 import BeautifulSoup
 from nba_api.stats.endpoints import leagueleaders, leaguestandingsv3, scoreboardv2
 from nba_api.stats.static import players
 from urllib.parse import quote
 import feedparser
-from bs4 import BeautifulSoup
 import streamlit.components.v1 as components
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(page_title="Hot Shot Props | NBA Home Hub",
                    page_icon="🏀", layout="wide")
 
-# ---------- STYLE ----------
+# ---------- GLOBAL STYLE ----------
 st.markdown("""
 <style>
-body {background:#121212;color:#EAEAEA;font-family:'Roboto',sans-serif;}
-h1,h2,h3 {color:#FF6F00;text-shadow:0 0 8px #FF9F43;font-family:'Oswald',sans-serif;}
-.section {background:#1C1C1C;border-radius:12px;padding:15px;margin-bottom:20px;
-          box-shadow:0 0 12px rgba(255,111,0,0.1);}
-.status-active{color:#00FF80;font-weight:bold;}
-.status-questionable{color:#FFD700;font-weight:bold;}
-.status-out{color:#FF5252;font-weight:bold;}
+body {
+    background-color: #000000 !important;
+    color: #EAEAEA !important;
+    font-family: 'Roboto', sans-serif;
+}
+h1, h2, h3 {
+    color: #FF3B3B;
+    text-shadow: 0 0 8px #0066FF;
+    font-family: 'Oswald', sans-serif;
+}
+.section {
+    background: #0A0A0A;
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 20px;
+    box-shadow: 0 0 20px rgba(0,102,255,0.2);
+}
+a {
+    color: #FF3B3B;
+}
+a:hover {
+    color: #66B3FF;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,12 +57,9 @@ def get_standings():
     return leaguestandingsv3.LeagueStandingsV3(season="2025-26").get_data_frames()[0]
 
 @st.cache_data(ttl=600)
-def get_injuries():
-    try:
-        url = "https://cdn.nba.com/static/json/injury/injury_2025.json"
-        return pd.DataFrame(requests.get(url, timeout=10).json()["league"]["injuries"])
-    except:
-        return pd.DataFrame()
+def get_games_today():
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    return scoreboardv2.ScoreboardV2(game_date=today).get_data_frames()
 
 @st.cache_data(ttl=3600)
 def player_id_map():
@@ -59,17 +72,12 @@ def player_photo(name):
 
 # ---------- HEADER ----------
 st.title("🏠 Hot Shot Props — NBA Home Hub")
-st.caption("Live leaders, news, injuries & standings")
+st.caption("Live news, games, leaders, injuries & standings")
 
 # =========================================================
-# 📰 LATEST NBA NEWS (GOOGLE RSS)
+# 📰 LATEST NBA NEWS
 # =========================================================
-st.markdown("""
-<h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
-           font-family:'Oswald',sans-serif;margin-top:30px;">
-📰 Latest NBA News
-</h2>
-""", unsafe_allow_html=True)
+st.markdown("<h2>📰 Latest NBA News</h2>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=900)
 def fetch_latest_nba_news(limit=3):
@@ -89,63 +97,42 @@ def fetch_latest_nba_news(limit=3):
 news_items = fetch_latest_nba_news()
 
 if not news_items:
-    st.info("No NBA headlines available at the moment.")
+    st.info("No NBA headlines available right now.")
 else:
-    st.markdown("""
-    <style>
-    .headline-card {
-        background: #1C1C1C;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 0 10px rgba(255,111,0,0.1);
-        transition: all 0.25s ease-in-out;
-    }
-    .headline-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 0 16px rgba(255,111,0,0.25);
-    }
-    .headline-title {
-        font-family: 'Oswald', sans-serif;
-        font-size: 1.25rem;
-        color: #FF9F43;
-        margin-bottom: 8px;
-    }
-    .headline-title a {
-        color: #FF9F43;
-        text-decoration: none;
-    }
-    .headline-title a:hover {
-        color: #FFD480;
-        text-decoration: underline;
-    }
-    .headline-summary {
-        font-family: 'Roboto', sans-serif;
-        font-size: 0.95rem;
-        line-height: 1.5em;
-        color: #EAEAEA;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
     for article in news_items:
         st.markdown(
             f"""
-            <div class='headline-card'>
-                <div class='headline-title'>
-                    <a href="{article['link']}" target="_blank">{article['title']}</a>
-                </div>
-                <div class='headline-summary'>
-                    {article['summary']}
-                </div>
+            <div class='section'>
+                <h3><a href="{article['link']}" target="_blank">{article['title']}</a></h3>
+                <p>{article['summary']}</p>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
+            """, unsafe_allow_html=True)
 
 # =========================================================
-# 🏀 TOP PERFORMERS (Enhanced Dual Color + Animated Text)
+# 🏟️ GAMES TONIGHT (Always Visible)
 # =========================================================
+st.markdown("<h2>🏟️ Games Tonight</h2>", unsafe_allow_html=True)
+
+try:
+    _, games, *_ = get_games_today()
+    if not games.empty:
+        for _, g in games.iterrows():
+            st.markdown(
+                f"""
+                <div class='section'>
+                    <b>{g['VISITOR_TEAM_NAME']}</b> @ <b>{g['HOME_TEAM_NAME']}</b><br>
+                    <i>Tipoff:</i> {g['GAME_STATUS_TEXT']} (EST)
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("No games scheduled tonight.")
+except Exception:
+    st.warning("Couldn't load today's schedule.")
+
+# =========================================================
+# 🏀 TOP PERFORMERS
+# =========================================================
+st.markdown("<h2>🏀 Top Performers (Per Game Averages)</h2>", unsafe_allow_html=True)
 df = get_leaders()
 if not df.empty:
     df["PTS_Avg"] = (df["PTS"] / df["GP"]).round(1)
@@ -165,96 +152,55 @@ if not df.empty:
     }
 
     team_colors = {
-        "ATL": ("#E03A3E", "#C1D32F"), "BOS": ("#007A33", "#BA9653"),
-        "BKN": ("#000000", "#FFFFFF"), "CHA": ("#1D1160", "#00788C"),
-        "CHI": ("#CE1141", "#000000"), "CLE": ("#860038", "#FDBB30"),
-        "DAL": ("#00538C", "#002B5E"), "DEN": ("#0E2240", "#FEC524"),
-        "DET": ("#C8102E", "#1D42BA"), "GSW": ("#1D428A", "#FFC72C"),
-        "HOU": ("#CE1141", "#C4CED4"), "IND": ("#002D62", "#FDBB30"),
-        "LAC": ("#C8102E", "#1D428A"), "LAL": ("#552583", "#FDB927"),
-        "MEM": ("#5D76A9", "#12173F"), "MIA": ("#98002E", "#F9A01B"),
-        "MIL": ("#00471B", "#EEE1C6"), "MIN": ("#0C2340", "#236192"),
-        "NOP": ("#0C2340", "#85714D"), "NYK": ("#F58426", "#006BB6"),
-        "OKC": ("#007AC1", "#EF3B24"), "ORL": ("#0077C0", "#C4CED4"),
-        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020"),
-        "POR": ("#E03A3E", "#000000"), "SAC": ("#5A2D81", "#63727A"),
-        "SAS": ("#C4CED4", "#000000"), "TOR": ("#CE1141", "#A1A1A4"),
-        "UTA": ("#002B5C", "#F9A01B"), "WAS": ("#002B5C", "#E31837")
+        "LAL": ("#552583", "#FDB927"), "GSW": ("#1D428A", "#FFC72C"),
+        "BOS": ("#007A33", "#BA9653"), "DAL": ("#00538C", "#002B5E"),
+        "MIA": ("#98002E", "#F9A01B"), "MIL": ("#00471B", "#EEE1C6"),
+        "DEN": ("#0E2240", "#FEC524"), "NYK": ("#F58426", "#006BB6"),
+        "PHI": ("#006BB6", "#ED174C"), "PHX": ("#1D1160", "#E56020")
     }
 
     html = """
     <style>
-    @keyframes shimmer {
-        0% { text-shadow: 0 0 8px var(--team-primary); }
-        50% { text-shadow: 0 0 18px var(--team-secondary); }
-        100% { text-shadow: 0 0 8px var(--team-primary); }
-    }
     .leader-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(230px, 1fr));
+        grid-template-columns: repeat(3, 1fr);
         gap: 25px;
-        justify-items: center;
-        margin: 25px auto;
-        max-width: 1000px;
+        margin-top: 20px;
     }
     .leader-card {
-        background: linear-gradient(180deg, #141414 0%, #0b0b0b 100%);
+        background: linear-gradient(180deg, #0B0B0B, #111);
         border-radius: 18px;
-        padding: 18px 10px;
+        padding: 18px;
         text-align: center;
-        box-shadow: 0 0 25px rgba(255,111,0,0.2);
+        box-shadow: 0 0 30px rgba(255,0,0,0.2);
         transition: all 0.25s ease-in-out;
-        overflow: hidden;
-        width: 230px;
-        border: 1px solid rgba(255,255,255,0.05);
+        width: 100%;
     }
-    .leader-name, .leader-team {
-        animation: shimmer 3s infinite alternate;
+    .leader-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 0 40px var(--team-primary);
+    }
+    .leader-photo img {
+        width: 120px; height: 120px;
+        border-radius: 50%;
+        border: 3px solid var(--team-primary);
+        box-shadow: 0 0 25px var(--team-secondary);
     }
     .leader-name {
-        font-family: 'Oswald', sans-serif;
-        font-size: 1.3rem;
-        font-weight: 700;
+        font-family: 'Oswald';
+        font-size: 1.2rem;
+        font-weight: bold;
         color: var(--team-primary);
-        margin-bottom: 2px;
-        -webkit-text-stroke: 0.8px var(--team-secondary);
+        text-shadow: 0 0 6px var(--team-secondary);
     }
     .leader-team {
-        font-family: 'Oswald', sans-serif;
         font-size: 0.9rem;
-        font-weight: 600;
-        color: var(--team-primary);
-        -webkit-text-stroke: 0.7px var(--team-secondary);
-        text-transform: uppercase;
-        margin-bottom: 8px;
-    }
-    .leader-photo {
-        width: 120px;
-        height: 120px;
-        border-radius: 50%;
-        overflow: hidden;
-        margin: 0 auto 10px;
-        border: 3px solid var(--team-primary);
-        box-shadow: 0 0 25px var(--team-primary);
-    }
-    .leader-cat {
-        font-family: 'Oswald', sans-serif;
-        color: #FF9F43;
-        font-size: 1.1rem;
-        margin-top: 8px;
-        text-transform: uppercase;
+        color: var(--team-secondary);
     }
     .leader-stat {
-        font-family: 'Bebas Neue', 'Oswald', sans-serif;
         font-size: 3rem;
-        font-weight: 900;
         color: var(--team-primary);
-        -webkit-text-stroke: 1.2px var(--team-secondary);
-        text-shadow:
-            0 0 6px var(--team-primary),
-            0 0 14px var(--team-secondary),
-            0 0 24px rgba(255,255,255,0.15);
-        margin-top: 6px;
+        -webkit-text-stroke: 1px var(--team-secondary);
     }
     </style>
     <div class='leader-grid'>
@@ -264,25 +210,25 @@ if not df.empty:
         leader = df.loc[df[key].idxmax()]
         photo = player_photo(leader["PLAYER"])
         team_abbr = leader["TEAM"]
-        primary, secondary = team_colors.get(team_abbr, ("#FF6F00", "#FFD580"))
+        primary, secondary = team_colors.get(team_abbr, ("#FF3B3B", "#0066FF"))
         html += f"""
         <div class='leader-card' style="--team-primary:{primary};--team-secondary:{secondary};">
             <div class='leader-name'>{leader["PLAYER"]}</div>
             <div class='leader-team'>{leader["TEAM"]}</div>
             <div class='leader-photo'><img src='{photo}'></div>
-            <div class='leader-cat'>{cat}</div>
             <div class='leader-stat'>{leader[key]}</div>
+            <div>{cat}</div>
         </div>
         """
     html += "</div>"
     components.html(html, height=800, scrolling=True)
+else:
+    st.warning("Leader data not available.")
 
 # =========================================================
 # 💀 INJURY REPORT
 # =========================================================
-st.markdown("## 💀 Injury Report")
-st.caption("Live injury data — pulled directly from ESPN.com")
-
+st.markdown("<h2>💀 Injury Report</h2>", unsafe_allow_html=True)
 @st.cache_data(ttl=900)
 def fetch_injury_report():
     url = "https://www.espn.com/nba/injuries"
@@ -300,8 +246,7 @@ def fetch_injury_report():
             cols = [c.get_text(strip=True) for c in row.find_all("td")]
             if len(cols) >= 4:
                 player, pos, injury, status = cols[:4]
-                data.append({"team": team_name, "player": player, "position": pos,
-                             "injury": injury, "status": status})
+                data.append({"team": team_name, "player": player, "position": pos, "injury": injury, "status": status})
     return pd.DataFrame(data)
 
 inj_df = fetch_injury_report()
@@ -315,16 +260,14 @@ else:
     st.warning("No injury data currently available from ESPN.")
 
 # =========================================================
-# 🏆 NBA STANDINGS
+# 🏆 STANDINGS
 # =========================================================
-st.markdown("## 🏆 NBA Standings")
+st.markdown("<h2>🏆 NBA Standings</h2>", unsafe_allow_html=True)
 stand = get_standings()
 if not stand.empty:
     east = stand[stand["Conference"] == "East"]
     west = stand[stand["Conference"] == "West"]
     cols = ["TeamCity", "TeamName", "WINS", "LOSSES", "WinPCT"]
-    if "Streak" in east.columns:
-        cols.append("Streak")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### Eastern Conference")

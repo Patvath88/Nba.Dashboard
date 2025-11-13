@@ -383,7 +383,7 @@ else:
 
 
 # =========================================================
-# 🏆 NBA STANDINGS — Enhanced Leaderboard + Bracket
+# 🏆 NBA STANDINGS — Enhanced Leaderboard + Bracket (Fixed)
 # =========================================================
 st.markdown("""
 <h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;font-family:'Oswald',sans-serif;">
@@ -392,7 +392,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 stand = get_standings()
+
 if not stand.empty:
+    # Normalize the column names for safety
+    stand.columns = [c.replace(" ", "") for c in stand.columns]
+    # Determine abbreviation column (try multiple options)
+    team_col = next((c for c in stand.columns if c.lower() in ["teamtricode", "teamabbreviation", "teamslug"]), None)
+
     east = stand[stand["Conference"] == "East"].sort_values("PlayoffRank")
     west = stand[stand["Conference"] == "West"].sort_values("PlayoffRank")
 
@@ -408,9 +414,11 @@ if not stand.empty:
             <div style='padding:8px 0;'>
         """
         for _, row in df.iterrows():
-            team_name = f"{row['TeamCity']} {row['TeamName']}"
-            logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{row['TeamTricode'].lower()}.png"
-            winpct = round(row['WinPCT'] * 100, 1)
+            team_abbr = str(row.get(team_col, "nba")).lower()
+            team_name = f"{row.get('TeamCity', '')} {row.get('TeamName', '')}"
+            logo_url = f"https://a.espncdn.com/i/teamlogos/nba/500/{team_abbr}.png"
+
+            winpct = round(row.get('WinPCT', 0) * 100, 1)
             streak = row.get('Streak', '')
             html += f"""
             <div style='display:flex;align-items:center;justify-content:space-between;
@@ -424,7 +432,7 @@ if not stand.empty:
                     </div>
                 </div>
                 <div style='color:#FFB266;font-family:"Roboto",sans-serif;'>
-                    <b>{row['WINS']}-{row['LOSSES']}</b>
+                    <b>{row.get('WINS', 0)}-{row.get('LOSSES', 0)}</b>
                     <span style='color:#66B3FF;font-size:0.85rem;margin-left:8px;'>{winpct}%</span>
                     <span style='color:#FF6F00;font-size:0.8rem;margin-left:8px;'>{streak}</span>
                 </div>
@@ -450,9 +458,9 @@ if not stand.empty:
 
     def make_bracket_html(east_df, west_df):
         def matchup_block(seed1, seed8, side):
-            t1 = f"{seed1['TeamTricode']} ({int(seed1['PlayoffRank'])})"
-            t8 = f"{seed8['TeamTricode']} ({int(seed8['PlayoffRank'])})"
             color = "#FF3B3B" if side == "East" else "#66B3FF"
+            t1 = f"{seed1.get('TeamName', seed1.get('TeamCity', ''))} ({int(seed1['PlayoffRank'])})"
+            t8 = f"{seed8.get('TeamName', seed8.get('TeamCity', ''))} ({int(seed8['PlayoffRank'])})"
             return f"""
             <div style='padding:10px;border-left:3px solid {color};
                         margin-bottom:8px;background:#111;border-radius:8px;
@@ -484,5 +492,3 @@ if not stand.empty:
 
 else:
     st.warning("Standings currently unavailable.")
-
-st.caption("⚡ Hot Shot Props — Live Data © 2025")

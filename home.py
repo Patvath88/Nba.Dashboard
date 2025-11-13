@@ -148,9 +148,9 @@ else:
             unsafe_allow_html=True
         )
 
-# ---------- SEASON LEADERS (Redesigned Hero Cards) ----------
+# ---------- SEASON LEADERS (Clean ESPN-Style Cards) ----------
 st.markdown("""
-<h2 style="color:#FF6F00;text-shadow:0 0 8px #FF9F43;
+<h2 style="color:#FF6F00;text-shadow:0 0 10px #FF9F43;
            font-family:'Oswald',sans-serif;">
 🏀 Top Performers (Per Game Averages)
 </h2>
@@ -176,69 +176,85 @@ if not df.empty:
         "Steals": "STL_Avg"
     }
 
-    # --- Modern Styling ---
     st.markdown("""
     <style>
     .leader-card {
         position: relative;
         display: flex;
         align-items: center;
-        background: linear-gradient(145deg, #1b1b1b, #101010);
-        border-radius: 18px;
-        padding: 18px 20px;
-        margin-bottom: 20px;
-        box-shadow: 0 0 15px rgba(255,111,0,0.25);
+        background: linear-gradient(160deg, #1a1a1a 0%, #0f0f0f 100%);
+        border-radius: 14px;
+        padding: 12px 18px;
+        margin-bottom: 14px;
+        box-shadow: 0 0 15px rgba(255,111,0,0.2);
         overflow: hidden;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        transition: all 0.25s ease-in-out;
     }
     .leader-card:hover {
-        transform: scale(1.03);
-        box-shadow: 0 0 25px rgba(255,111,0,0.45);
+        box-shadow: 0 0 25px rgba(255,111,0,0.4);
+        transform: translateY(-2px);
     }
     .leader-photo {
-        position: relative;
-        width: 120px;
-        height: 120px;
+        width: 95px;
+        height: 95px;
         border-radius: 50%;
         overflow: hidden;
         margin-right: 20px;
         flex-shrink: 0;
         border: 3px solid #FF6F00;
-        background: url('https://cdn-icons-png.flaticon.com/512/616/616408.png') no-repeat center;
-        background-size: 110%;
+        background: radial-gradient(circle at center, #222 0%, #000 100%);
+        position: relative;
+    }
+    .leader-photo::after {
+        content: "";
+        background: url('https://cdn-icons-png.flaticon.com/512/1055/1055646.png') no-repeat center;
+        background-size: 75%;
+        opacity: 0.08;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
     }
     .leader-photo img {
         width: 100%;
         height: 100%;
         object-fit: cover;
-        mix-blend-mode: normal;
         border-radius: 50%;
     }
     .leader-info {
         flex-grow: 1;
         color: #EAEAEA;
         font-family: 'Roboto', sans-serif;
+        position: relative;
     }
     .leader-name {
         font-family: 'Oswald', sans-serif;
-        font-size: 1.4rem;
-        color: #FFFFFF;
+        font-size: 1.3rem;
+        color: #FFF;
         margin-bottom: 4px;
+        text-shadow: 0 0 6px rgba(0,0,0,0.8);
     }
     .leader-team {
         font-size: 0.95rem;
-        color: #FF9F43;
+        color: #FFB266;
         margin-bottom: 4px;
     }
+    .leader-cat {
+        font-weight: bold;
+        color: #FF6F00;
+        text-transform: uppercase;
+        font-size: 0.9rem;
+    }
     .leader-stat {
+        position: absolute;
+        top: -10px;
+        left: 110px;
         font-family: 'Oswald', sans-serif;
-        font-size: 2.5rem;
+        font-size: 2.2rem;
         color: #FF6F00;
         font-weight: bold;
-        position: absolute;
-        top: 8px;
-        left: 150px;
-        text-shadow: 0 0 10px rgba(255,111,0,0.5);
+        text-shadow: 0 0 10px rgba(255,111,0,0.4);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -256,7 +272,7 @@ if not df.empty:
                 <div class='leader-info'>
                     <div class='leader-name'>{leader["PLAYER"]}</div>
                     <div class='leader-team'>{leader["TEAM"]}</div>
-                    <div><b>{cat}</b></div>
+                    <div class='leader-cat'>{cat}</div>
                 </div>
             </div>
             """,

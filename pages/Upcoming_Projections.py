@@ -10,13 +10,13 @@ from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="🎯 Upcoming Game Projections", layout="wide")
 st.title("🏀 Upcoming Game Projections")
 
-# ---------------------- REFRESH ----------------------
-REFRESH_INTERVAL = 60  # auto-refresh every 60 seconds
+REFRESH_INTERVAL = 60
 if "last_refresh" not in st.session_state:
     st.session_state["last_refresh"] = time.time()
 if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
@@ -24,12 +24,15 @@ if time.time() - st.session_state["last_refresh"] > REFRESH_INTERVAL:
     st.rerun()
 
 st.caption(f"🔄 Auto-refresh every {REFRESH_INTERVAL}s | Last updated {time.strftime('%H:%M:%S')}")
+
 if st.button("🔁 Manual Refresh Now"):
     st.session_state["last_refresh"] = time.time()
     st.rerun()
 
 # ---------------------- LOAD DATA ----------------------
 path = "saved_projections.csv"
+results_path = "results_history.csv"
+
 try:
     data = pd.read_csv(path)
 except FileNotFoundError:
@@ -39,6 +42,10 @@ except FileNotFoundError:
 if data.empty:
     st.info("No projection data available.")
     st.stop()
+
+# Initialize results file
+if not os.path.exists(results_path):
+    pd.DataFrame(columns=["player","date","stat","projection","actual","result"]).to_csv(results_path, index=False)
 
 nba_players = players.get_active_players()
 player_map = {p["full_name"]: p["id"] for p in nba_players}
@@ -58,23 +65,18 @@ def get_player_photo(pid):
             continue
     return None
 
-
 def get_player_team_abbr(player_name: str) -> str:
-    """Get player's current team abbreviation from NBA API."""
     try:
         pid = player_map.get(player_name)
         if not pid:
             return ""
         info = commonplayerinfo.CommonPlayerInfo(player_id=pid).get_data_frames()[0]
-        team_abbr = str(info.loc[0, "TEAM_ABBREVIATION"]).lower()
-        return team_abbr
+        return str(info.loc[0, "TEAM_ABBREVIATION"]).lower()
     except Exception:
         return ""
 
-
 @st.cache_data(ttl=600)
 def get_games_from_espn(date_to_fetch: date):
-    """Fetch NBA games for a given date (EST) from ESPN public API."""
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_to_fetch.strftime('%Y%m%d')}"
         r = requests.get(url, timeout=10)
@@ -87,10 +89,8 @@ def get_games_from_espn(date_to_fetch: date):
             competitors = comp["competitors"]
             home = next(c for c in competitors if c["homeAway"] == "home")
             away = next(c for c in competitors if c["homeAway"] == "away")
-
             utc_time = datetime.fromisoformat(comp["date"].replace("Z", "+00:00"))
             est_time = utc_time.astimezone(ZoneInfo("America/New_York"))
-
             games.append({
                 "date": est_time.date(),
                 "time": est_time.strftime("%I:%M %p ET"),
@@ -103,35 +103,20 @@ def get_games_from_espn(date_to_fetch: date):
     except Exception:
         return []
 
-
 def get_next_game_for_team(team_abbr):
-    """Find the next scheduled game for a given team abbreviation."""
     if not team_abbr:
         return None
-
     today = date.today()
-    for d in range(0, 7):  # look up to a week ahead
+    for d in range(0, 7):
         games = get_games_from_espn(today + timedelta(days=d))
         for g in games:
             if g["home_abbr"] == team_abbr.lower():
-                return {
-                    "date": g["date"],
-                    "time": g["time"],
-                    "home_away": "Home",
-                    "opponent": g["away_team"]
-                }
+                return {"date": g["date"], "time": g["time"], "home_away": "Home", "opponent": g["away_team"]}
             elif g["away_abbr"] == team_abbr.lower():
-                return {
-                    "date": g["date"],
-                    "time": g["time"],
-                    "home_away": "Away",
-                    "opponent": g["home_team"]
-                }
+                return {"date": g["date"], "time": g["time"], "home_away": "Away", "opponent": g["home_team"]}
     return None
 
-
 def get_latest_player_stats(pid):
-    """Fetch most recent game stats for player (PTS, REB, AST, etc.)."""
     try:
         logs = playergamelog.PlayerGameLog(player_id=pid, season='2025-26').get_data_frames()[0]
         if logs.empty:
@@ -153,12 +138,10 @@ def get_latest_player_stats(pid):
     except Exception:
         return None
 
-
 def generate_stat_chart(stat_name, proj_value, history_list):
-    """Generate a small inline chart comparing projection vs actual progression."""
     fig, ax = plt.subplots(figsize=(1.8, 0.8))
-    ax.plot(range(len(history_list)), history_list, linewidth=1.8, color="#00FFFF", label="Actual", alpha=0.9)
-    ax.axhline(proj_value, color="white", linestyle="--", linewidth=1, label="Projection")
+    ax.plot(range(len(history_list)), history_list, linewidth=1.8, color="#00FFFF", alpha=0.9)
+    ax.axhline(proj_value, color="white", linestyle="--", linewidth=1)
     ax.set_xticks([]); ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -170,25 +153,44 @@ def generate_stat_chart(stat_name, proj_value, history_list):
     plt.close(fig)
     return buf
 
-# ---------------------- SESSION STATE (persist player stat history) ----------------------
+# ---------------------- SESSION STATE ----------------------
 if "player_history" not in st.session_state:
     st.session_state["player_history"] = {}
 
-# ---------------------- FILTER UPCOMING ----------------------
-today = pd.Timestamp.now().normalize()
-upcoming_games = [
-    row for _, row in data.iterrows()
-    if pd.isna(pd.to_datetime(row.get("game_date"), errors="coerce")) or
-    pd.to_datetime(row.get("game_date"), errors="coerce") >= today
-]
+# ---------------------- POST-GAME RESULT LOGGER ----------------------
+def log_game_results(player_name, pid, proj_dict):
+    """Compare final stats vs projections and log to results_history.csv"""
+    results_file = "results_history.csv"
+    stats = get_latest_player_stats(pid)
+    if not stats or stats["date"] >= date.today():
+        return  # game not finished yet
 
-if not upcoming_games:
-    st.info("No upcoming games with saved projections.")
-    st.stop()
+    # Load or create results file
+    results = pd.read_csv(results_file)
+    if ((results["player"] == player_name) & (results["date"] == str(stats["date"]))).any():
+        return
 
-df_upcoming = pd.DataFrame(upcoming_games)
+    new_entries = []
+    for stat, proj in proj_dict.items():
+        if stat not in stats:
+            continue
+        actual = stats[stat]
+        result = "Hit" if actual >= proj else "Miss"
+        new_entries.append({
+            "player": player_name,
+            "date": stats["date"],
+            "stat": stat,
+            "projection": proj,
+            "actual": actual,
+            "result": result
+        })
+    results = pd.concat([results, pd.DataFrame(new_entries)], ignore_index=True)
+    results.to_csv(results_file, index=False)
 
 # ---------------------- DISPLAY ----------------------
+today = pd.Timestamp.now().normalize()
+df_upcoming = data[pd.to_datetime(data["game_date"], errors="coerce") >= today]
+
 for player_name, group in df_upcoming.groupby("player"):
     pid = player_map.get(player_name)
     if not pid:
@@ -199,15 +201,15 @@ for player_name, group in df_upcoming.groupby("player"):
     latest_proj = group.iloc[-1].to_dict()
     live_stats = get_latest_player_stats(pid)
 
-    # Initialize player stat history
-    if player_name not in st.session_state["player_history"]:
-        st.session_state["player_history"][player_name] = {stat: [] for stat in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
+    # Log results when games finish
+    log_game_results(player_name, pid, latest_proj)
 
-    # Update history with new live data if available
+    if player_name not in st.session_state["player_history"]:
+        st.session_state["player_history"][player_name] = {s: [] for s in ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]}
+
     if live_stats and live_stats["date"] == date.today():
         for stat in st.session_state["player_history"][player_name]:
-            current_val = live_stats.get(stat, 0)
-            st.session_state["player_history"][player_name][stat].append(current_val)
+            st.session_state["player_history"][player_name][stat].append(live_stats.get(stat, 0))
 
     st.markdown("---")
     col_photo, col_info = st.columns([1, 3])
@@ -218,21 +220,18 @@ for player_name, group in df_upcoming.groupby("player"):
     with col_info:
         st.subheader(player_name)
         if next_game:
-            st.caption(
-                f"📅 **Game Date:** {next_game['date']} | 🕒 {next_game['time']} | "
-                f"🏠 **{next_game['home_away']}** | 🆚 **{next_game['opponent']}**"
-            )
+            st.caption(f"📅 **Game Date:** {next_game['date']} | 🕒 {next_game['time']} | 🏠 **{next_game['home_away']}** | 🆚 **{next_game['opponent']}**")
         else:
             st.caption("📅 **Game Date:** TBD | 🆚 **Opponent:** TBD")
 
-    # Render projection cards
+    # Stat Cards
     compare_stats = ["PTS","REB","AST","FG3M","STL","BLK","TOV","PRA"]
     cols = st.columns(4)
     for i, stat in enumerate(compare_stats):
         proj = latest_proj.get(stat, 0)
-        history = st.session_state["player_history"][player_name][stat]
-        chart_buf = generate_stat_chart(stat, proj, history if history else [0])
-        live_val = history[-1] if history else 0
+        hist = st.session_state["player_history"][player_name][stat]
+        chart_buf = generate_stat_chart(stat, proj, hist if hist else [0])
+        live_val = hist[-1] if hist else 0
         color = "#00FF88" if live_val >= proj and live_val > 0 else "#00FFFF"
         with cols[i % 4]:
             st.markdown(
@@ -248,12 +247,21 @@ for player_name, group in df_upcoming.groupby("player"):
                     <span style='color:#00FFFF'>Proj: {proj}</span><br>
                     <small>{'✅ Met' if live_val >= proj and live_val > 0 else 'Tracking ⏳'}</small><br>
                 </div>
-                """,
-                unsafe_allow_html=True
+                """, unsafe_allow_html=True
             )
             st.image(chart_buf, use_container_width=True)
 
     if live_stats and live_stats["date"] == date.today():
-        st.success("📡 Live tracking active — stats auto-refresh every 60 s (history preserved)")
+        st.success("📡 Live tracking active — stats auto-refresh every 60 s")
     else:
         st.info("🕒 Upcoming game — awaiting actual stats after tip-off.")
+
+# ---------------------- NAVIGATION ----------------------
+st.markdown("---")
+st.markdown(
+    """
+    ### 📈 View Completed Game Results
+    👉 [Open Completed Projections Dashboard](Completed_Game_Projections.py)
+    """,
+    unsafe_allow_html=True
+)
